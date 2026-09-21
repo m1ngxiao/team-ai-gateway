@@ -1,0 +1,605 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "path": "apps/src-tauri/icons/128x128.png",
+      "category": "static-asset-review-required",
+      "sha256": "1e21ee9d8c21a276f16cd8ca1bc2b2028e8e7b7bc1772eccc2541c9791898b7e",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/128x128@2x.png",
+      "category": "static-asset-review-required",
+      "sha256": "81cf1cd52ee42dddbbce9db3f32ccddbe323590fb3e80e0321a61fec94f8f5bc",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/32x32.png",
+      "category": "static-asset-review-required",
+      "sha256": "8bf4731c679fe388f79024fc65245ef66e7ca629e45742b23f30d10d82424c98",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/Square107x107Logo.png",
+      "category": "static-asset-review-required",
+      "sha256": "b93c3c0bef025a53f8f63356ed58aec8c2f983ee930bc39c34ac7bdc922c0af8",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/Square142x142Logo.png",
+      "category": "static-asset-review-required",
+      "sha256": "8420b71e84f4f6e9a90c8ef4cb516156dcfc9b3811de019b16090cc2cb45fc3e",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/Square150x150Logo.png",
+      "category": "static-asset-review-required",
+      "sha256": "9a533babc6e7abc86148fba8ddbd3514adc06a49d1de2ef6cbc3b63ca36a22d3",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/Square284x284Logo.png",
+      "category": "static-asset-review-required",
+      "sha256": "311a6843137451eb1c544b552e70fc7d32547002c359e25e429dfac635132c3d",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/Square30x30Logo.png",
+      "category": "static-asset-review-required",
+      "sha256": "f829c6f41c655612daf2437b5d1a9f94ac841ad0bbf2632ecdb7edbd4f0acada",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/Square310x310Logo.png",
+      "category": "static-asset-review-required",
+      "sha256": "9e549c79fc6626662614194885df00dbce902e4635346279893b02984c2062fd",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/Square44x44Logo.png",
+      "category": "static-asset-review-required",
+      "sha256": "73d188ead375a280b2af92c74f5ac00ce9e795fb2515344556f9b97c7cd58fe7",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/Square71x71Logo.png",
+      "category": "static-asset-review-required",
+      "sha256": "3fb928faceffef7edd30f5252464a42c31d67e3b7335c4dbf2cea83885af5f02",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/Square89x89Logo.png",
+      "category": "static-asset-review-required",
+      "sha256": "b9e3fa2ff6fd6581a1ffc4233b6edecdc847ccc9ff068af6ff12152cbff376f0",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/StoreLogo.png",
+      "category": "static-asset-review-required",
+      "sha256": "e164e9206431897fe41b2ef3562c74da2e522640ec83ad0212e3cc61faf65d0c",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/icon.icns",
+      "category": "static-asset-review-required",
+      "sha256": "66bad40033e02bd0baa58b9abecfaacbadde8e551998071ff74ab07e954297e8",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/icon.ico",
+      "category": "static-asset-review-required",
+      "sha256": "c87af5aa810fa5c8bf15b941fbf34dfd3d5f6cba7093cd117f3b86cafa33aa61",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/icon.png",
+      "category": "static-asset-review-required",
+      "sha256": "7a7ea04514674c814f039b0211cd71ab8476cda9aeab4d05d05818c8ef1d00bc",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/icons/tray-template.png",
+      "category": "static-asset-review-required",
+      "sha256": "a6be0009b97d25ebb4bf4b3160d200419b126d12e1868bc133aaab272002447e",
+      "reason": "Reviewed upstream application icon asset; fixed path, file digest, and image signature."
+    },
+    {
+      "path": "apps/src-tauri/src/app_storage/env.rs",
+      "category": "user-home-path",
+      "sha256": "d76b192b2ab49613d815c5c92e157f78d79f94d4393554029b623086a15e7f42",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/src-tauri/src/app_storage/migration.rs",
+      "category": "user-home-path",
+      "sha256": "18b748b84e5b5d24b18c2f61a1d09605b97dbc94afd413f612c8e34047e48846",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/src-tauri/src/app_storage/migration.rs",
+      "category": "user-home-path",
+      "sha256": "1e87410f7252e37af145fe231318253384d5f5a74646fe3debb8dd439b7521f4",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/src-tauri/src/commands/codex_projects.rs",
+      "category": "user-home-path",
+      "sha256": "ff8dc39e6a145e45466e1654cf6ecbbec4e73dd39b6647435a71b2fa6468b0b9",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/src-tauri/src/tests/lib_tests.rs",
+      "category": "user-home-path",
+      "sha256": "62d3a0cacde2c2e83d201097c9a57c6463289c4377c180bc5ec3c63933d5e935",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/src-tauri/src/tests/lib_tests.rs",
+      "category": "user-home-path",
+      "sha256": "b1744f2c68100be91d319cbe2c42d7f0f772ada57ff865e0d733904c7c5ecdb9",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/src-tauri/src/tests/lib_tests.rs",
+      "category": "user-home-path",
+      "sha256": "d76b192b2ab49613d815c5c92e157f78d79f94d4393554029b623086a15e7f42",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/src/lib/i18n/messages/sections/en-skills.ts",
+      "category": "private-install-path",
+      "sha256": "2419983070a84e07ee515faa4d18854d5a06fc67bc323bf14fd9d5235f988a40",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/src/lib/i18n/messages/sections/ko-skills.ts",
+      "category": "private-install-path",
+      "sha256": "2419983070a84e07ee515faa4d18854d5a06fc67bc323bf14fd9d5235f988a40",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/src/lib/i18n/messages/sections/ru-skills.ts",
+      "category": "private-install-path",
+      "sha256": "2419983070a84e07ee515faa4d18854d5a06fc67bc323bf14fd9d5235f988a40",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/accounts-reset-credit.spec.ts",
+      "category": "user-home-path",
+      "sha256": "86db2f0a57f59c1f4577af098ce06ad689ab322a05d7ecb9edf46ffe228da786",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/accounts-toolbar.spec.ts",
+      "category": "user-home-path",
+      "sha256": "86db2f0a57f59c1f4577af098ce06ad689ab322a05d7ecb9edf46ffe228da786",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/accounts-usage-auto-refresh.spec.ts",
+      "category": "user-home-path",
+      "sha256": "86db2f0a57f59c1f4577af098ce06ad689ab322a05d7ecb9edf46ffe228da786",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/api-keys-model-prefix.spec.ts",
+      "category": "user-home-path",
+      "sha256": "86db2f0a57f59c1f4577af098ce06ad689ab322a05d7ecb9edf46ffe228da786",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/codex-cli-onboarding.spec.ts",
+      "category": "user-home-path",
+      "sha256": "86db2f0a57f59c1f4577af098ce06ad689ab322a05d7ecb9edf46ffe228da786",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/codex-projects-client.test.mjs",
+      "category": "user-home-path",
+      "sha256": "b98d692c4574a80e508cf6fa38e6f27ae5348e616448edaa7fe675e363669fd2",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/codex-skills-client.test.mjs",
+      "category": "private-install-path",
+      "sha256": "b6d4531b1856f0581f83087fafe7c75bd76b41200c7731ab04b4b3496860104c",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/gateway-heartbeat-settings.spec.ts",
+      "category": "user-home-path",
+      "sha256": "86db2f0a57f59c1f4577af098ce06ad689ab322a05d7ecb9edf46ffe228da786",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/navigation-cache.spec.ts",
+      "category": "user-home-path",
+      "sha256": "86db2f0a57f59c1f4577af098ce06ad689ab322a05d7ecb9edf46ffe228da786",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/public-origins.test.mjs",
+      "category": "credential-url",
+      "sha256": "ec25b8fa54a9d7a878a86e6f38233af24d5d27d184b396136d6d7f0251d33c19",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "apps/tests/request-logs-duration.spec.ts",
+      "category": "user-home-path",
+      "sha256": "86db2f0a57f59c1f4577af098ce06ad689ab322a05d7ecb9edf46ffe228da786",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/core/src/storage/accounts_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "1fa513ed43a42a7e2daac07f5b4a07ff891fd3656ab75d4962169040c34da67a",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/core/src/storage/proxy_storage_tests.rs",
+      "category": "credential-url",
+      "sha256": "40fd4394d7e43f20128cef4ac755b3a7b7ca4d01ac519273b6d92434469ec966",
+      "reason": "Reviewed synthetic percent-encoded proxy credentials targeting the reserved .example domain in a storage unit test."
+    },
+    {
+      "path": "crates/service/src/account/account_plan_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "ea59ee94502ee1384607d176efc439dfc4db102a05134ad1ccce6ff82a653b2e",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/account/proxy_testing/errors.rs",
+      "category": "credential-url",
+      "sha256": "f8c7f2987069485166a19282090fd6bfda8b12c5ccf46c99846068ed92369f32",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/account/tests/account_import_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "1b111022544c344122c7cbe7c44a2608fb6f713c27655cdcb5be90ae44e8795e",
+      "reason": "Reviewed intentionally non-verifiable JWT fixture with a short synthetic signature for account import and routing unit tests."
+    },
+    {
+      "path": "crates/service/src/account/tests/account_import_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "2c2318908e06b1013abdc66d411bc6d2ef7aa069b5168049ce75efc767e6513e",
+      "reason": "Reviewed human-readable nonfunctional import or no-fallback test token; exact value digest only."
+    },
+    {
+      "path": "crates/service/src/account/tests/account_import_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "7737934e474b9999558617f7f210697321ee8844110e871612a0e4e9fa985d6e",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/account/tests/account_import_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "85a6ebe9fd2d721fba57be3e183e87af69fc39ee9e4dac1c23e4b50c426bdae9",
+      "reason": "Reviewed human-readable nonfunctional import or no-fallback test token; exact value digest only."
+    },
+    {
+      "path": "crates/service/src/account/tests/account_import_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "a8e71364067c99c4b3625c36ea0899ea1723a334405398ac1a03d01a0cebcf51",
+      "reason": "Reviewed intentionally non-verifiable JWT fixture with a short synthetic signature for account import and routing unit tests."
+    },
+    {
+      "path": "crates/service/src/account/tests/account_import_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "d2ab87c24c4e6a6469f4807fa85d16f3948ae3895b45b46d4b903ee633bf0587",
+      "reason": "Reviewed intentionally non-verifiable JWT fixture with a short synthetic signature for account import and routing unit tests."
+    },
+    {
+      "path": "crates/service/src/codex_profile_tests.rs",
+      "category": "user-home-path",
+      "sha256": "928cd28cdeb14f383bb5cf4cf5fc35e8cb4a759a131f19a8b2c4fb4b9ed52e53",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/codex_runtime.rs",
+      "category": "user-home-path",
+      "sha256": "928cd28cdeb14f383bb5cf4cf5fc35e8cb4a759a131f19a8b2c4fb4b9ed52e53",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/auth/tests/token_exchange_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "342af5a5c7c2f9f5c1df32b90e67ccc7bd737d3ed67b5a700b2276c3a3dbb6e2",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/auth/tests/token_exchange_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "872c26509811a62a5550cdf1854ca778eb735d81bbf69769801d6b5c6c153ef1",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/auth/tests/token_exchange_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "8931686edbed3d4df5ea25a91be8dcff32e9adbfe901a654e99d9f6a59fce38f",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/core/runtime_config.rs",
+      "category": "credential-url",
+      "sha256": "f8c7f2987069485166a19282090fd6bfda8b12c5ccf46c99846068ed92369f32",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/observability/http_bridge/delivery_tests.rs",
+      "category": "user-home-path",
+      "sha256": "b66c54d228343bba855fabbfc9587da38dcdab68767ad0cecdd26751b474ab9b",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/observability/http_bridge/delivery_tests.rs",
+      "category": "user-home-path",
+      "sha256": "f29707671dfd4cbf8ea412b80ea8ce28c1232707dc5ec175b51763127a08301c",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/observability/tests/http_bridge_tests.rs",
+      "category": "user-home-path",
+      "sha256": "0115a7d8ee87a7726088381fed146c5c8bd0542b9de053c32dce9e328e65b5b3",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/observability/tests/http_bridge_tests.rs",
+      "category": "user-home-path",
+      "sha256": "b66c54d228343bba855fabbfc9587da38dcdab68767ad0cecdd26751b474ab9b",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/observability/tests/http_bridge_tests.rs",
+      "category": "user-home-path",
+      "sha256": "f29707671dfd4cbf8ea412b80ea8ce28c1232707dc5ec175b51763127a08301c",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/upstream/attempt_flow/postprocess_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "a5731d63a02af9ea41ef5e982b973eb28e65bb0e53f05f0617ba65a4900a777b",
+      "reason": "Reviewed human-readable nonfunctional import or no-fallback test token; exact value digest only."
+    },
+    {
+      "path": "crates/service/src/gateway/upstream/support/candidates_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "ea59ee94502ee1384607d176efc439dfc4db102a05134ad1ccce6ff82a653b2e",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/http/responses_websocket_tests.rs",
+      "category": "credential-url",
+      "sha256": "f8c7f2987069485166a19282090fd6bfda8b12c5ccf46c99846068ed92369f32",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/http/responses_websocket_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "ea59ee94502ee1384607d176efc439dfc4db102a05134ad1ccce6ff82a653b2e",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/http/tests/proxy_runtime_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "92db3d96accdb4295f73be210895ee58c0c93924cd83d33ba990d33f534ff6d0",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/usage/tests/usage_http_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "e1720bdf8e8e6d8429490702306f9d9b822cf935b46ab44bfa05d44027b1278d",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/usage/tests/usage_refresh_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "0915cfb5234467c260c22c453fa9ecdb3aa40bdd0d3db85e4ef58c3e406c513d",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/src/usage/tests/usage_refresh_tests.rs",
+      "category": "embedded-secret",
+      "sha256": "8931686edbed3d4df5ea25a91be8dcff32e9adbfe901a654e99d9f6a59fce38f",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway/availability/auth_headers.rs",
+      "category": "embedded-secret",
+      "sha256": "872c26509811a62a5550cdf1854ca778eb735d81bbf69769801d6b5c6c153ef1",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway/availability/auth_headers.rs",
+      "category": "embedded-secret",
+      "sha256": "e4a42497912472f323051785dcb0222c70cbf49476dac662d7bd0dfe65344763",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/anthropic.rs",
+      "category": "embedded-secret",
+      "sha256": "36953019192a1ed6c311380db9f31c61d96ee7a7c95ae2182ece2a5d38d920b2",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/anthropic.rs",
+      "category": "embedded-secret",
+      "sha256": "55f757cc7d7900bb26e23a18ce8024672d6089725cfe60153e272314bdcdf4fb",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/anthropic.rs",
+      "category": "embedded-secret",
+      "sha256": "a8039dcafa704c44d31c9c3b837972e11d1a64ee4906558894dbcaf110993038",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/anthropic.rs",
+      "category": "embedded-secret",
+      "sha256": "d8db321d0d95377857ea8f7bfd04e4eb21c2aa122115021d0a4f84de39741168",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/anthropic.rs",
+      "category": "embedded-secret",
+      "sha256": "dbceae17901093a9ef09889efa96699c3ab814540d719f7279e629716eaf4028",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/basic.rs",
+      "category": "embedded-secret",
+      "sha256": "86b33af31717d72f7fff68efd0121cd561a3f72d10d553a67308174bd6dfc7f4",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/basic.rs",
+      "category": "embedded-secret",
+      "sha256": "bb08ec37af6eea2de29e242675986145a6d11ced5ea95fd7dca34c7cc0176ff7",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/basic.rs",
+      "category": "embedded-secret",
+      "sha256": "be755c3733fa6cd7ea311afb840ad1b75d449712a15e1a33cf3d19301abba74a",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/fast_policy.rs",
+      "category": "embedded-secret",
+      "sha256": "fa22bab9fafdb0cd2ce3b775e121ecf465245c3e3ae9490eb3356f041e68d844",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/images.rs",
+      "category": "embedded-secret",
+      "sha256": "2e3f9370e0e1d39cc43b63edd0ae35914013965c16ad916cc22d0280d9b49765",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/images.rs",
+      "category": "embedded-secret",
+      "sha256": "a55b8938109c9fd679e09533d732ba6fdfc293b37d4617353bd12c544f680058",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/images.rs",
+      "category": "embedded-secret",
+      "sha256": "dfb6cc1db2a43cee4e2a01d32866f50e7911b5ad0ec8dfffd694c12b4ab21a4f",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/images.rs",
+      "category": "embedded-secret",
+      "sha256": "f76e1ec9d4d58676dee96a56aafe714f6db06ccceb37c127b55da18c437a3f12",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/retry_logging.rs",
+      "category": "embedded-secret",
+      "sha256": "61fbc8d6597c1e1c300daa0d7989ed95a825a1538434664bae3cf369e8dafa12",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/gateway_logs/retry_logging.rs",
+      "category": "embedded-secret",
+      "sha256": "b89c833a0d7d6c109994658577af81f0c8d2ba00d539013f252d1e76271b7a9c",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "credential-url",
+      "sha256": "f8c7f2987069485166a19282090fd6bfda8b12c5ccf46c99846068ed92369f32",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "embedded-secret",
+      "sha256": "161a4dd22ad88b589ee1f4d0c6f6cbff2780244b01ae84445580d3e63e2b4c25",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "embedded-secret",
+      "sha256": "165659fb29ecedd4e1387e85e377348c8c771d71c572eeb21178b0a1f78f3a96",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "embedded-secret",
+      "sha256": "294f4412e70ca207ac310bb815bbaf16428897eb0129648e7223aed76e508d54",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "embedded-secret",
+      "sha256": "436a88bd33e8d576bcdae9bf5b94deab3d941dc6366321ed729b0cf726cc88f8",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "embedded-secret",
+      "sha256": "761813d436f6ac16678df52f70eaf848d55484cd114355db9045e43135914a20",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "embedded-secret",
+      "sha256": "85edbcbc28ad2ef0143e40de40c4cafa0d5ca6c34973d6c62bdb58547ac1d705",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "embedded-secret",
+      "sha256": "8b0e24e7a775db6ac2e95886eb6d96e0bd7f8ce9fb3a3309ac83a46aa81db04c",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "embedded-secret",
+      "sha256": "b591af88aff892f1dc459a175fc3e476421f9e1723ee15ef2bd4e6d3803966e7",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "embedded-secret",
+      "sha256": "ba204ba44c1cc1d03020305f9386eb3d4d00cd35badff14ae0ef276c8254d3e8",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "crates/service/tests/rpc.rs",
+      "category": "provider-key",
+      "sha256": "8160f4db6d799d7f883d71a4f34fd2417757cfbb228e04d4750ff356b475bffc",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "scripts/tests/test_deployment.py",
+      "category": "credential-url",
+      "sha256": "093866188144b0216fb125431572e8ac2df8980dfeeb6ebeb3d9f3987d1e4c1d",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "services/dashboard/tests/conftest.py",
+      "category": "embedded-secret",
+      "sha256": "0ed62e217b5bd4ab427d08cec2ec58a8da4f74b2c7b529b6cb7bcafe46bba587",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "services/dashboard/tests/test_configure.py",
+      "category": "credential-url",
+      "sha256": "7ddcba9e3e77c3b73ed526aa78b7b1219560d13715c1c1bfa6e4556b15e7096b",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "services/dashboard/tests/test_frontend.mjs",
+      "category": "embedded-secret",
+      "sha256": "d3ca1796182ca4584e4b90c8c4feb3c298bad710185d218cd6c60ca7deba5cce",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "services/dashboard/tests/test_server.py",
+      "category": "credential-url",
+      "sha256": "093866188144b0216fb125431572e8ac2df8980dfeeb6ebeb3d9f3987d1e4c1d",
+      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    }
+  ]
+}

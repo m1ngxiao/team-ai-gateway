@@ -1,0 +1,46 @@
+# Local configuration, credentials and mutable runtime state
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+**/private/
+**/data/
+**/backups/
+**/.cloudflared/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.pem
+*.key
+*.p12
+*.log
+*.local.*
+# Generated artifacts and dependencies
+node_modules/
+.next/
+out/
+target/
+dist/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.tsbuildinfo
+next-env.d.ts
+playwright-report/
+test-results/
+coverage/
+*.tar
+*.tar.gz
+*.zip
+*.exe
+# Editor state
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

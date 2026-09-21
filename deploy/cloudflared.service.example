@@ -1,0 +1,21 @@
+# Optional separate service. Create a cloudflared user and grant it access
+# only to its configuration and tunnel credential; never put credentials here.
+[Unit]
+Description=Cloudflare Tunnel for Team AI Gateway
+After=network-online.target team-ai-gateway.service
+Wants=network-online.target
+
+[Service]
+User=cloudflared
+Group=cloudflared
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /etc/cloudflared/team-ai-gateway.yml tunnel run
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

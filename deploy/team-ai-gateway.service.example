@@ -1,0 +1,19 @@
+# Review checkout paths before installing. Add --dashboard to both commands
+# only after initializing the optional dashboard configuration.
+[Unit]
+Description=Team AI Gateway
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/team-ai-gateway
+ExecStart=/bin/bash /srv/team-ai-gateway/scripts/server.sh --env-file /srv/team-ai-gateway/deploy/.env up
+ExecStop=/bin/bash /srv/team-ai-gateway/scripts/server.sh --env-file /srv/team-ai-gateway/deploy/.env stop
+TimeoutStartSec=180
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

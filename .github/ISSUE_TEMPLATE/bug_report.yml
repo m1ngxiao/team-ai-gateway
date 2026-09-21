@@ -1,0 +1,39 @@
+name: Bug report / 问题反馈
+description: Report a reproducible problem with the gateway, UI, dashboard or deployment tools.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "请提供可复现的最小示例。不要粘贴账号 Token、API Key、数据库、私有配置或包含这些内容的日志。安全漏洞请按 SECURITY.md 报告。"
+  - type: input
+    id: revision
+    attributes:
+      label: Version or commit / 版本或提交
+      placeholder: "Commit SHA or release version"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / 运行环境
+      description: "OS and architecture, source or Docker deployment, relevant runtime versions."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: "Use synthetic data and a minimal request when possible."
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior / 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence / 已脱敏的错误信息
+      description: "Include failing test commands or concise logs; remove credentials and private account details."

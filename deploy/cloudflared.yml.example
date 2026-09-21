@@ -1,0 +1,23 @@
+# Optional host-managed tunnel. Deployment scripts never start cloudflared.
+# Replace placeholders and match PUBLIC_*_ORIGIN in deploy/.env.
+tunnel: <TUNNEL_UUID>
+credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
+metrics: 127.0.0.1:20241
+ingress:
+  - hostname: api.example.com
+    path: ^/v1/(models|responses|responses/compact|chat/completions|messages|messages/count_tokens)$
+    service: http://127.0.0.1:48760
+  - hostname: api.example.com
+    service: http_status:404
+  - hostname: admin.example.com
+    service: http://127.0.0.1:48761
+    originRequest:
+      access:
+        required: true
+        teamName: <ACCESS_TEAM_NAME>
+        audTag:
+          - <ADMIN_ACCESS_APPLICATION_AUD>
+  # Remove this route if the optional dashboard is not deployed.
+  - hostname: stats.example.com
+    service: http://127.0.0.1:48763
+  - service: http_status:404

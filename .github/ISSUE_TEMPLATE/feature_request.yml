@@ -1,0 +1,23 @@
+name: Feature request / 功能建议
+description: Describe a use case and the behavior that would help.
+title: "[Feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case / 使用场景
+      description: "Explain the task that is difficult with the current behavior."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 期望行为
+      description: "Describe a concrete example and how to verify success."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and compatibility / 替代方案与兼容性
+      description: "Mention existing workarounds and effects on accounts, permissions or stored data."

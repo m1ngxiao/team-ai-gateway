@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="tech">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow"><meta name="theme-color" content="#f7f9fd">
+  <title>Team AI Gateway · 团队 Codex 用量</title>
+  <link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="login-panel" class="login-panel">
+    <div class="login-brand"><span class="brand-icon">AI</span><strong>Team AI Gateway</strong></div>
+    <div class="glass-card login-card"><span class="badge">团队 Codex 用量</span><h1>登录看板</h1><p class="muted">查看账号额度和团队用量。</p>
+      <form id="login-form"><label for="username">账号</label><input id="username" name="username" value="team" autocomplete="username" maxlength="64" required>
+        <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+        <button type="submit" class="primary login-submit" id="login-button">登录</button><p id="login-error" class="error" role="alert"></p>
+      </form><div class="login-note"><span class="icon" data-icon="lock" aria-hidden="true"></span>使用看板账号登录，不需要平台 API Key。</div>
+    </div>
+  </section>
+
+  <div id="dashboard" class="app-shell" hidden>
+    <aside class="glass-sidebar">
+      <div class="sidebar-brand"><span class="brand-icon">AI</span><div><strong>Team AI Gateway</strong><span>团队 Codex 用量</span></div></div>
+      <nav aria-label="看板导航">
+        <a href="#overview" data-view="overview" aria-current="page"><span class="icon" data-icon="home" aria-hidden="true"></span><span>仪表盘</span></a>
+        <a href="#accounts" data-view="accounts"><span class="icon" data-icon="users" aria-hidden="true"></span><span>OpenAI 账号池</span><span class="nav-readonly">只读</span></a>
+        <a href="#apikeys" data-view="apikeys"><span class="icon" data-icon="key" aria-hidden="true"></span><span>平台密钥</span><span class="nav-readonly">只读</span></a>
+        <a href="#models" data-view="models"><span class="icon" data-icon="cube" aria-hidden="true"></span><span>模型目录</span><span class="nav-readonly">只读</span></a>
+      </nav>
+      <div class="sidebar-footer"><span class="icon" data-icon="lock" aria-hidden="true"></span><div><strong>团队看板</strong><span>仅供查看</span></div></div>
+    </aside>
+
+    <div class="workspace">
+      <header class="glass-header"><div class="header-title"><h1 id="page-title">仪表盘</h1><span id="sync-badge" class="badge">正在读取统计</span></div>
+        <div class="header-actions"><span class="readonly-badge"><span class="icon" data-icon="lock" aria-hidden="true"></span>只读模式</span><button id="refresh"><span class="icon" data-icon="refresh" aria-hidden="true"></span>刷新统计</button><button id="logout" class="quiet">退出登录</button></div>
+      </header>
+
+      <main>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <div class="page-meta"><p id="updated" class="muted">正在读取统计…</p><div id="period-controls" class="periods" aria-label="统计范围"><button data-period="today" aria-pressed="true">今日</button><button data-period="week" aria-pressed="false">近 7 天</button><button data-period="recorded" aria-pressed="false">累计记录</button></div></div>
+
+        <section id="view-overview" class="view" aria-label="仪表盘">
+          <div class="summary resource-summary">
+            <article class="glass-card metric"><div class="metric-label"><span>总账号数</span><span class="icon blue" data-icon="users" aria-hidden="true"></span></div><strong id="overview-account-count">—</strong></article>
+            <article class="glass-card metric"><div class="metric-label"><span>启用账号</span><span class="icon green" data-icon="check" aria-hidden="true"></span></div><strong id="overview-enabled-count">—</strong></article>
+            <article class="glass-card metric"><div class="metric-label"><span>平台密钥</span><span class="icon violet" data-icon="key" aria-hidden="true"></span></div><strong id="overview-key-count">—</strong></article>
+            <article class="glass-card metric metric-highlight"><div class="metric-label"><span>请求次数</span><span class="icon" data-icon="activity" aria-hidden="true"></span></div><strong id="total-requests">—</strong></article>
+          </div>
+          <div class="summary">
+            <article class="glass-card metric"><div class="metric-label"><span>总 Token</span><span class="icon amber" data-icon="bolt" aria-hidden="true"></span></div><strong id="total-tokens">—</strong></article>
+            <article class="glass-card metric"><div class="metric-label"><span>缓存输入</span><span class="icon blue" data-icon="database" aria-hidden="true"></span></div><strong id="total-cached">—</strong></article>
+            <article class="glass-card metric"><div class="metric-label"><span>输出 Token</span><span class="icon violet" data-icon="activity" aria-hidden="true"></span></div><strong id="total-output">—</strong></article>
+            <article class="glass-card metric"><div class="metric-label"><span>参考金额（美元）</span><span class="icon green" data-icon="dollar" aria-hidden="true"></span></div><strong id="total-cost">—</strong></article>
+          </div>
+          <div class="overview-columns"><section class="glass-card section-card"><div class="section-title"><h2>账号额度</h2><a href="#accounts" data-view="accounts" class="text-link">查看账号 <span aria-hidden="true">→</span></a></div><div id="overview-accounts" class="accounts"></div></section>
+            <section class="glass-card section-card"><div class="section-title"><h2>模型使用情况</h2><span class="muted">近 7 天</span></div><div id="models" class="models"></div></section></div>
+        </section>
+
+        <section id="view-accounts" class="view" aria-labelledby="accounts-title" hidden>
+          <div class="page-heading"><div><h2 id="accounts-title">OpenAI 账号池</h2><p class="muted">账号分组、套餐与剩余额度</p></div><div class="actions"><button disabled title="仅管理员可以导入账号">导入账号</button><button disabled class="primary" title="仅管理员可以添加账号"><span aria-hidden="true">＋</span> 添加账号</button></div></div>
+          <div class="glass-card"><div class="section-title table-title"><h3>账号列表</h3><span id="account-count" class="muted"></span></div><div class="table-frame"><table class="account-table"><thead><tr><th scope="col">账号信息</th><th scope="col">额度详情</th><th scope="col">顺序</th><th scope="col">账号代理</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody id="accounts"></tbody></table></div></div>
+        </section>
+
+        <section id="view-apikeys" class="view" aria-labelledby="keys-title" hidden>
+          <div class="page-heading"><div><h2 id="keys-title">平台密钥</h2><p id="keys-sort-order" class="muted">按今日 Token 用量从高到低排列</p></div><button class="primary" disabled title="仅管理员可以创建密钥"><span aria-hidden="true">＋</span> 创建密钥</button></div>
+          <div class="key-summary"><article class="glass-card metric"><div class="metric-label"><span>总使用 Token</span><span class="icon blue" data-icon="bolt" aria-hidden="true"></span></div><strong id="keys-total-tokens">—</strong></article><article class="glass-card metric"><div class="metric-label"><span>参考金额（美元）</span><span class="icon green" data-icon="dollar" aria-hidden="true"></span></div><strong id="keys-total-cost">—</strong></article></div>
+          <section class="glass-card group-summary" aria-labelledby="groups-title">
+            <div class="section-title table-title"><h3 id="groups-title">各组使用量</h3><span id="groups-period" class="muted" aria-live="polite"></span></div>
+            <p id="groups-note" class="footnote group-note">按 Key 当前所属分组汇总成员用量，历史用量随分组调整。组名对应 Key 的账号分组筛选。</p>
+            <div class="table-frame"><table class="group-table" aria-describedby="groups-note"><thead><tr><th scope="col">分组</th><th scope="col">Key 数</th><th scope="col">请求数</th><th scope="col">输入 Token</th><th scope="col">缓存 Token</th><th scope="col">输出 Token</th><th scope="col" aria-sort="descending" aria-describedby="groups-period">总 Token ↓</th><th scope="col">估算费用（美元）</th></tr></thead><tbody id="key-groups"></tbody></table></div>
+          </section>
+          <div class="glass-card table-frame"><table class="key-table"><thead><tr><th scope="col">密钥名称</th><th scope="col">协议</th><th scope="col">轮转策略</th><th scope="col">绑定模型</th><th scope="col">最近调用</th><th scope="col" aria-sort="descending" aria-describedby="keys-sort-order">TOKEN / 金额 ↓</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody id="keys"></tbody></table></div>
+          <p class="footnote">显示名称和编号，不显示完整密钥。美元金额为估算，仅供参考。</p>
+        </section>
+
+        <section id="view-models" class="view" aria-labelledby="catalog-title" hidden>
+          <div class="page-heading"><div><h2 id="catalog-title">模型目录</h2></div><button class="primary" disabled title="仅管理员可以添加模型">添加模型</button></div>
+          <div class="glass-card"><div class="catalog-toolbar"><div><h3>模型列表</h3><span id="catalog-count" class="muted" aria-live="polite"></span></div>
+            <div class="catalog-filters"><label class="sr-only" for="catalog-search">搜索模型</label><input id="catalog-search" type="search" placeholder="搜索模型名称或 ID" maxlength="128" autocomplete="off">
+              <label class="sr-only" for="catalog-status">模型状态</label><select id="catalog-status"><option value="all">全部模型</option><option value="enabled">已启用</option><option value="disabled">已禁用</option></select></div></div>
+            <div class="table-frame"><table class="catalog-table"><thead><tr><th scope="col">模型</th><th scope="col">来源</th><th scope="col">状态</th><th scope="col">价格（美元 / 百万 Token）<span class="price-legend">输入 / 缓存读 / 缓存写 / 输出</span></th><th scope="col">指令</th><th scope="col">路由</th><th scope="col">操作</th></tr></thead><tbody id="catalog-rows"></tbody></table></div></div>
+          <p id="catalog-unlisted" class="footnote" hidden></p>
+        </section>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

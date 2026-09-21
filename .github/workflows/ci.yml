@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  core:
+    name: Frontend and Rust workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install pinned pnpm and frontend dependencies
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.30.3 --activate
+          pnpm -C apps install --frozen-lockfile
+      - name: Test frontend runtime
+        run: pnpm -C apps exec node --test --test-concurrency=1
+      - name: Build embedded management UI
+        run: |
+          pnpm -C apps run build
+          test -s apps/out/index.html
+      - name: Install Rust build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev cmake
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+          rustc --version
+      - name: Test complete Rust workspace with embedded UI
+        run: cargo test --locked --release --workspace -- --test-threads=1
+
+  dashboard:
+    name: Read-only dashboard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install pinned dashboard dependencies
+        run: python -m pip install -r services/dashboard/requirements-dev.txt
+      - name: Test collector, configuration and authentication
+        working-directory: services/dashboard
+        run: python -m pytest -q tests
+      - name: Test dashboard frontend
+        run: node --test --test-concurrency=1 services/dashboard/tests/test_frontend.mjs
+
+  publication:
+    name: Deployment and publication checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Check committed publication inputs
+        run: python scripts/check-publication.py
+      - name: Install pinned test dependencies
+        run: python -m pip install -r services/dashboard/requirements-dev.txt
+      - name: Test deployment safeguards and publication scanner
+        run: python -m pytest -q scripts/tests
+      - name: Validate Compose examples without starting services
+        run: |
+          docker compose version
+          python - <<'PY'
+          import importlib.util
+          import json
+          import subprocess
+          from pathlib import Path
+
+          root = Path.cwd()
+          spec = importlib.util.spec_from_file_location("deployment", root / "scripts/deployment.py")
+          deployment = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(deployment)
+          compose = root / "deploy/compose.yml"
+          result = subprocess.run(
+              ["docker", "compose", "--env-file", "deploy/.env.example", "-f", str(compose),
+               "--profile", "dashboard", "config", "--format", "json"],
+              env=deployment.compose_environment(compose), capture_output=True, text=True, check=True,
+          )
+          deployment.validate_config(json.loads(result.stdout), root)
+          print("Compose examples satisfy deployment boundaries; no service was started.")
+          PY
+      - name: Check shell entrypoint syntax
+        run: bash -n scripts/server.sh
