@@ -4,7 +4,7 @@ import re
 
 from .account_details import positive_int
 
-PUBLIC_MODELS = frozenset({"gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
+PUBLIC_MODELS = frozenset({"claude-sonnet-5", "gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
                           "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark",
                           "gpt-5.2", "gpt-5.2-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
                           "gpt-reserve", "codex-auto-review", "gpt-image-2"})
@@ -73,6 +73,7 @@ def key_metadata(row):
     model = row["model_slug"]
     binding = "request" if model is None or (isinstance(model, str) and not model.strip()) else "fixed" if model in PUBLIC_MODELS else "unlisted"
     return {"display_id": row["id"] if re.fullmatch(r"gk_[a-f0-9]{12}", str(row["id"])) else None,
+            "upstream_provider": choice(row["upstream_provider"], {"openai", "claude"}),
             "protocol": choice(protocol, {"openai_compat", "anthropic_native", "gemini_native"}),
             "rotation": choice(row["rotation_strategy"], {"account_rotation", "aggregate_api_rotation", "hybrid_rotation", "hybrid_aggregate_first_rotation"}),
             "model_binding": binding, "bound_model": model if binding == "fixed" else None,

@@ -3,7 +3,11 @@
 import type { MessageCatalog } from "../types";
 
 export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
+  "Claude 账号池": "Claude Account Pool",
   "Claude 订阅账号池": "Claude subscription account pool",
+  "仅管理 Claude.ai 订阅账号，不包含 Claude API Key 上游。": "Manage Claude.ai subscription accounts here; Claude API key upstreams are separate.",
+  "账号总数": "Total accounts",
+  "未知方案": "Unknown plan",
   "Claude.ai Pro、Max、Team 账号独立轮转。平台 Key 选择 Claude 池后只使用这里启用的账号。":
     "Claude.ai Pro, Max, and Team accounts rotate independently. A Claude platform key uses only enabled accounts here.",
   "添加 Claude 账号": "Add Claude account",
@@ -15,6 +19,7 @@ export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
   "需要重新登录": "Sign-in required",
   "已停用": "Disabled",
   "启用 Claude 账号": "Enable Claude account",
+  "停用 Claude 账号": "Disable Claude account",
   "重新登录": "Sign in again",
   "删除 Claude 账号": "Delete Claude account",
   "登录 Claude 订阅账号": "Sign in to Claude subscription account",

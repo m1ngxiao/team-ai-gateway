@@ -41,7 +41,7 @@
 | `openai` | OpenAI 账号池及其现有的聚合 API 路由策略；不能绑定 Claude 聚合上游 |
 | `claude` | `account_rotation` 使用独立的 Claude.ai 订阅账号池；原有 `aggregate_api_rotation` 仍使用 Claude API Key 聚合上游。两种策略都不会回落到 OpenAI 账号池；不支持跨池混合轮转 |
 
-Claude 订阅账号在后台「账号」页面发起登录。管理员打开授权链接，使用 Claude.ai Pro、Max 或 Team 账号授权，再将网页显示的 `CODE#STATE` 一次性授权码粘贴回后台。登录后账号默认停用；先在模型目录中为 Claude 模型配置 `account_pool`、`source_id=claude` 路由，再启用账号并发送真实请求验证。若启用了分销计费，模型还须配置价格；该价格用于平台内部计量，不表示订阅账号按 API 价格结算。Claude 账号的授权令牌写入私有 SQLite 数据库，备份时须按凭据保护。
+Claude 订阅账号在后台「Claude 账号池」页面发起登录。管理员打开授权链接，使用 Claude.ai Pro、Max 或 Team 账号授权，再将网页显示的 `CODE#STATE` 一次性授权码粘贴回后台。登录后账号默认停用；先在模型目录中为 Claude 模型配置 `account_pool`、`source_id=claude` 路由，再启用账号并发送真实请求验证。若启用了分销计费，模型还须配置价格；该价格用于平台内部计量，不表示订阅账号按 API 价格结算。Claude 账号的授权令牌写入私有 SQLite 数据库，备份时须按凭据保护。
 
 以下是 Claude 订阅账号池平台 Key 的后台管理 RPC 请求结构；这不是客户端生成请求，不应发送到公开模型 API 地址：
 

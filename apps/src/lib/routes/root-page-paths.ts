@@ -1,6 +1,7 @@
 export const ROOT_PAGE_PATHS = [
   "/",
   "/accounts",
+  "/claude-accounts",
   "/account-manager",
   "/aggregate-api",
   "/apikeys",

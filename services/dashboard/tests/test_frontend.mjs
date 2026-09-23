@@ -20,7 +20,7 @@ class Element {
 }
 function setup(fetchImpl = () => { throw new Error("Unexpected network request"); }) {
   const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map((match) => [match[1], new Element()]));
-  const nav = ["overview", "accounts", "apikeys", "models"].map((view) => Object.assign(new Element("a"), { dataset: { view } }));
+  const nav = ["overview", "accounts", "claude-accounts", "apikeys", "models"].map((view) => Object.assign(new Element("a"), { dataset: { view } }));
   const periods = ["today", "week", "recorded"].map((period) => Object.assign(new Element("button"), { dataset: { period } }));
   const document = {
     hidden: false,
@@ -35,12 +35,17 @@ function setup(fetchImpl = () => { throw new Error("Unexpected network request")
   return { context, elements, nav, periods };
 }
 const usage = (tokens) => ({ requests: 3, input_tokens: tokens, cached_tokens: 20, output_tokens: 30, total_tokens: tokens, estimated_usd: .2 });
+const blankUsage = () => ({ requests: 0, input_tokens: 0, cached_tokens: 0, output_tokens: 0, total_tokens: 0, estimated_usd: 0 });
 const fixture = {
   generated_at: Math.floor(Date.now()/1000),
   accounts: [{ id: "acct-aaaaaaaaaaaa", label: "账号 01", plan: "pro", status: "enabled", captured_at: 1,
     primary: { minutes: 10080, remaining_percent: 31, resets_at: null }, secondary: { minutes: null, remaining_percent: null, resets_at: null } }],
+  claude_accounts: [],
   keys: [{ id: "key-bbbbbbbbbbbb", label: "同事 B", status: "enabled", last_used_at: null, usage: { today: usage(100), week: usage(200), recorded: usage(300) } }],
-  totals: { today: usage(100), week: usage(200), recorded: usage(300) }, models_week: [{ model: "gpt-6-astra", usage: usage(200) }]
+  totals: { today: usage(100), week: usage(200), recorded: usage(300) }, models_week: [{ model: "gpt-6-astra", usage: usage(200) }],
+  pool_usage: { openai: { today: usage(100), week: usage(200), recorded: usage(300) },
+    claude: { today: blankUsage(), week: blankUsage(), recorded: blankUsage() },
+    unattributed: { today: blankUsage(), week: blankUsage(), recorded: blankUsage() } }
 };
 
 function groupedFixture() {
@@ -134,17 +139,86 @@ test("refresh updates group membership and usage without changing the chosen per
   assert.equal(elements.get("key-groups").children.length, 0);
 });
 
-test("original-style navigation switches local views without network calls", () => {
+test("navigation switches account-pool and usage views without network calls", () => {
   const { context, elements, nav } = setup();
   vm.runInContext('navigate("accounts")', context);
   assert.equal(elements.get("page-title").textContent, "OpenAI 账号池");
   assert.equal(elements.get("view-accounts").hidden, false);
   assert.equal(elements.get("view-overview").hidden, true);
-  assert.equal(elements.get("period-controls").hidden, true);
+  assert.equal(elements.get("period-controls").hidden, false);
   assert.equal(nav[1].attrs["aria-current"], "page");
+  vm.runInContext('navigate("claude-accounts")', context);
+  assert.equal(elements.get("page-title").textContent, "Claude 账号池");
+  assert.equal(elements.get("view-claude-accounts").hidden, false);
+  assert.equal(elements.get("view-accounts").hidden, true);
+  assert.equal(elements.get("period-controls").hidden, false);
+  assert.equal(nav[2].attrs["aria-current"], "page");
   vm.runInContext('navigate("apikeys")', context);
   assert.equal(elements.get("view-apikeys").hidden, false);
   assert.equal(elements.get("period-controls").hidden, false);
+});
+
+test("Claude subscription accounts have a separate read-only view and no invented quota", () => {
+  const { context, elements } = setup();
+  const data = structuredClone(fixture);
+  data.claude_accounts = [
+    { id: "acct-cccccccccccc", label: "Claude 01", email: "claude@example.com", plan: "pro", status: "enabled", sort_order: 0, updated_at: 1900000000 },
+    { id: "acct-dddddddddddd", label: "Claude 02", email: null, plan: "max", status: "needs_login", sort_order: 1, updated_at: null }
+  ];
+  vm.runInContext(`snapshot = ${JSON.stringify(data)}; renderAccounts();`, context);
+  assert.equal(elements.get("overview-account-count").textContent, "3");
+  assert.equal(elements.get("overview-enabled-count").textContent, "2");
+  assert.equal(elements.get("account-count").textContent, "共 1 个账号");
+  assert.equal(elements.get("claude-account-count").textContent, "共 2 个账号");
+  assert.equal(elements.get("accounts").children.length, 1);
+  assert.equal(elements.get("claude-accounts").children.length, 2);
+  assert.match(elements.get("claude-accounts").textContent, /claude@example.com.*PRO.*启用.*暂无额度数据.*Claude 02.*MAX.*需重新登录/s);
+  assert.match(elements.get("overview-accounts").textContent, /Claude · PRO.*订阅额度暂不可查/s);
+  assert.ok(!elements.get("accounts").textContent.includes("claude@example.com"));
+  assert.match(html, /href="#claude-accounts" data-view="claude-accounts"/);
+  assert.match(html, /Claude 订阅剩余额度目前无法查询/);
+});
+
+test("actual-source pool usage reconciles with team totals and changes with period", () => {
+  const { context, elements, periods } = setup();
+  const data = structuredClone(fixture);
+  data.pool_usage = {
+    openai: { today: usage(70), week: usage(120), recorded: usage(170) },
+    claude: { today: usage(20), week: usage(40), recorded: usage(60) },
+    unattributed: { today: usage(10), week: usage(40), recorded: usage(70) }
+  };
+  data.keys[0].upstream_provider = "claude";
+  vm.runInContext(`snapshot = ${JSON.stringify(data)}; renderUsage();`, context);
+  assert.equal(elements.get("keys").children[0].children[1].textContent, "Claude");
+  assert.equal(elements.get("overview-claude-tokens").textContent, "20");
+  assert.equal(elements.get("overview-unattributed-tokens").textContent, "10");
+  assert.equal(elements.get("claude-pool-usage").textContent, "20 Token");
+  periods[1].listeners.click();
+  assert.equal(elements.get("overview-openai-tokens").textContent, "120");
+  assert.equal(elements.get("overview-claude-tokens").textContent, "40");
+  assert.equal(elements.get("overview-unattributed-tokens").textContent, "40");
+  assert.equal(elements.get("total-tokens").textContent, "200");
+  assert.match(html, /聚合 API、旧记录及无法区分来源的历史汇总计入未归属/);
+  assert.match(html, /上游厂商/);
+});
+
+test("old snapshots wait for Claude account and pool data instead of claiming zero", () => {
+  const { context, elements } = setup();
+  const old = structuredClone(fixture);
+  delete old.claude_accounts;
+  delete old.pool_usage;
+  vm.runInContext(`snapshot = ${JSON.stringify(old)}; renderAccounts(); renderUsage();`, context);
+  assert.equal(elements.get("overview-account-count").textContent, "—");
+  assert.equal(elements.get("claude-account-count").textContent, "账号数量待更新");
+  assert.match(elements.get("claude-accounts").textContent, /等待新版采集器统计/);
+  assert.equal(elements.get("overview-claude-tokens").textContent, "—");
+  assert.equal(elements.get("claude-pool-usage").textContent, "统计待更新");
+  assert.equal(elements.get("total-tokens").textContent, "100");
+  // The new server validates old JSON and serializes default values.
+  old.claude_accounts = []; old.pool_usage = null;
+  vm.runInContext(`snapshot = ${JSON.stringify(old)}; renderAccounts(); renderUsage();`, context);
+  assert.equal(elements.get("claude-account-count").textContent, "账号数量待更新");
+  assert.equal(elements.get("overview-account-count").textContent, "—");
 });
 
 test("invalid hash never opens an admin/settings view", () => {
@@ -153,7 +227,7 @@ test("invalid hash never opens an admin/settings view", () => {
   assert.equal(elements.get("page-title").textContent, "仪表盘");
 });
 
-test("all three views render safe fields and period summaries agree", () => {
+test("account and usage views render safe fields and period summaries agree", () => {
   const { context, elements, periods } = setup();
   vm.runInContext(`snapshot = ${JSON.stringify(fixture)}; renderAccounts(); renderUsage(); renderModels();`, context);
   assert.equal(elements.get("overview-account-count").textContent, "1");
@@ -177,7 +251,7 @@ test("platform key names render above their identifiers without exposing secrets
   assert.equal(cell.children[0].className, "key-label");
   assert.equal(cell.children[1].textContent, "gk_123456789abc");
   assert.ok(!elements.get("keys").textContent.includes("secret-must-not-render"));
-  assert.equal(elements.get("keys").children[0].children.length, 8);
+  assert.equal(elements.get("keys").children[0].children.length, 9);
 });
 
 test("key rows sort numerically by total tokens in the selected period", () => {
@@ -308,7 +382,7 @@ test("historical-only snapshots show zero keys and an empty state", () => {
   vm.runInContext(`snapshot = ${JSON.stringify(data)}; renderAccounts(); renderUsage();`, context);
   assert.equal(elements.get("overview-key-count").textContent, "0");
   assert.equal(elements.get("keys").textContent, "暂无密钥记录。");
-  assert.equal(elements.get("keys").children[0].children[0].colSpan, 8);
+  assert.equal(elements.get("keys").children[0].children[0].colSpan, 9);
   assert.equal(elements.get("total-tokens").textContent, "100");
 });
 
@@ -399,7 +473,7 @@ test("model directory navigation, search and status filter only read local data"
   vm.runInContext(`snapshot = ${JSON.stringify(data)}; renderCatalog(); navigate("models");`, context);
   assert.equal(elements.get("view-models").hidden, false);
   assert.equal(elements.get("period-controls").hidden, true);
-  assert.equal(nav[3].attrs["aria-current"], "page");
+  assert.equal(nav[4].attrs["aria-current"], "page");
   assert.equal(elements.get("catalog-rows").children.length, 2);
   assert.match(elements.get("catalog-rows").textContent, /10 \/ 1 \/ 12.5 \/ 50/);
   assert.match(elements.get("catalog-rows").textContent, /账号池 × 1聚合 API × 1/);
@@ -449,7 +523,7 @@ test("weekly-only Pro has no separate 5h card limit, but missing data is not unl
 });
 
 test("team branding and concise copy replace admin-facing footnotes", () => {
-  assert.match(html, /<title>Team AI Gateway · 团队 Codex 用量<\/title>/);
+  assert.match(html, /<title>Team AI Gateway · 团队 AI 用量<\/title>/);
   assert.equal((html.match(/<strong>Team AI Gateway<\/strong>/g) || []).length, 2);
   assert.equal((html.match(/class="brand-icon">AI/g) || []).length, 2);
   for (const phrase of ["CodexManager", "快照", "前 6 个自然日", "额度未知不等于", "不能精确换算", "TOKEN / 金额</th><th scope=\"col\">名称"]) assert.ok(!html.includes(phrase), phrase);

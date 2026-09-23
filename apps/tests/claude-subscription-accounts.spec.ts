@@ -52,7 +52,7 @@ test("Claude subscription login, activation, and removal stay in the separate ac
       case "claudeAccount/loginComplete":
         account = {
           id: "claude:test", label: "claude@example.com", email: "claude@example.com",
-          organizationUuid: "org-test", subscriptionType: "max", status: "disabled",
+          organizationUuid: "org-test", subscriptionType: "claude_max_5x", status: "disabled",
           sort: 0, expiresAt: 2_000_000_000, lastError: null,
         };
         result = { accountId: "claude:test", status: "disabled" };
@@ -73,6 +73,12 @@ test("Claude subscription login, activation, and removal stay in the separate ac
   });
 
   await page.goto("/accounts/");
+  await expect(page.getByRole("heading", { name: "OpenAI 账号池" })).toBeVisible();
+  await expect(page.getByText("尚无 Claude 订阅账号，点击“添加 Claude 账号”开始登录。")).toHaveCount(0);
+  await page.getByRole("link", { name: "Claude 账号池" }).click();
+  await expect(page).toHaveURL(/\/claude-accounts\/$/);
+  await expect(page.getByRole("heading", { name: "Claude 账号池" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "OpenAI 账号池" })).toHaveCount(0);
   await expect(page.getByText("尚无 Claude 订阅账号，点击“添加 Claude 账号”开始登录。")).toBeVisible();
   await page.getByRole("button", { name: "添加 Claude 账号" }).click();
   const dialog = page.getByRole("dialog", { name: "登录 Claude 订阅账号" });
@@ -81,13 +87,16 @@ test("Claude subscription login, activation, and removal stay in the separate ac
   await dialog.getByLabel("一次性授权码").fill("test-code#test-state");
   await dialog.getByRole("button", { name: "完成登录" }).click();
   await expect(page.getByText("claude@example.com")).toBeVisible();
-  await expect(page.getByText("已停用", { exact: true })).toBeVisible();
+  await expect(page.getByText("Max", { exact: true })).toBeVisible();
+  await expect(page.getByText("claude_max_5x", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("已停用", { exact: true }).last()).toBeVisible();
   expect(calls.find((call) => call.method === "claudeAccount/loginComplete")?.params).toMatchObject({
     loginId: "test-state", code: "test-code#test-state",
   });
 
   await page.getByRole("switch", { name: "启用 Claude 账号 claude@example.com" }).click();
-  await expect(page.getByText("轮转中", { exact: true })).toBeVisible();
+  await expect(page.getByText("轮转中", { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole("switch", { name: "停用 Claude 账号 claude@example.com" })).toBeChecked();
   expect(calls.find((call) => call.method === "claudeAccount/updateStatus")?.params).toMatchObject({
     accountId: "claude:test", status: "active",
   });

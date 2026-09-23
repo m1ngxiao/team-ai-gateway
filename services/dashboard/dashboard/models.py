@@ -22,6 +22,12 @@ class Periods(ClosedModel):
     recorded: Usage
 
 
+class PoolUsage(ClosedModel):
+    openai: Periods
+    claude: Periods
+    unattributed: Periods
+
+
 class Window(ClosedModel):
     minutes: int | None = Field(default=None, gt=0)
     remaining_percent: float | None = Field(default=None, ge=0, le=100)
@@ -51,6 +57,16 @@ class Account(ClosedModel):
     reset_next_expires_at: int | None = Field(default=None, gt=0)
 
 
+class ClaudeAccount(ClosedModel):
+    id: str = Field(pattern=r"^acct-[a-f0-9]{12}$")
+    label: str = Field(min_length=1, max_length=32)
+    email: str | None = Field(default=None, max_length=254, pattern=r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$")
+    plan: Literal["pro", "max", "team", "enterprise", "free", "unknown"] = "unknown"
+    status: Literal["enabled", "disabled", "needs_login", "unknown"] = "unknown"
+    sort_order: int | None = None
+    updated_at: int | None = Field(default=None, ge=0)
+
+
 class Key(ClosedModel):
     id: str = Field(pattern=r"^key-[a-f0-9]{12}$")
     label: str = Field(min_length=1, max_length=128)
@@ -66,6 +82,7 @@ class Key(ClosedModel):
     quota_limit_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
     quota_config_known: bool = False
     is_historical: bool = False
+    upstream_provider: Literal["openai", "claude", "unknown"] = "unknown"
 
 
 class KeyGroup(ClosedModel):
@@ -108,9 +125,11 @@ class Snapshot(ClosedModel):
     generated_at: int = Field(ge=0)
     timezone: Literal["Asia/Shanghai"]
     accounts: list[Account] = Field(max_length=1000)
+    claude_accounts: list[ClaudeAccount] = Field(default_factory=list, max_length=1000)
     keys: list[Key] = Field(max_length=5000)
     key_groups: list[KeyGroup] = Field(default_factory=list, max_length=5001)
     totals: Periods
+    pool_usage: PoolUsage | None = None
     models_week: list[ModelUsage] = Field(max_length=50)
     model_catalog: list[CatalogModel] = Field(default_factory=list, max_length=500)
     catalog_unlisted_count: int = Field(default=0, ge=0)

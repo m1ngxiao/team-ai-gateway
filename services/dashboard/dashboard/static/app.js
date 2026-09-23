@@ -36,10 +36,10 @@ function icon(name) {
 }
 document.querySelectorAll("[data-icon]").forEach((el) => el.append(icon(el.dataset.icon).firstChild));
 function navigate(next, changeHash = true) {
-  view = ["overview", "accounts", "apikeys", "models"].includes(next) ? next : "overview";
-  for (const name of ["overview", "accounts", "apikeys", "models"]) $("view-" + name).hidden = name !== view;
-  $("page-title").textContent = { overview: "仪表盘", accounts: "OpenAI 账号池", apikeys: "平台密钥", models: "模型目录" }[view];
-  $("period-controls").hidden = ["accounts", "models"].includes(view);
+  view = ["overview", "accounts", "claude-accounts", "apikeys", "models"].includes(next) ? next : "overview";
+  for (const name of ["overview", "accounts", "claude-accounts", "apikeys", "models"]) $("view-" + name).hidden = name !== view;
+  $("page-title").textContent = { overview: "仪表盘", accounts: "OpenAI 账号池", "claude-accounts": "Claude 账号池", apikeys: "平台密钥", models: "模型目录" }[view];
+  $("period-controls").hidden = view === "models";
   document.querySelectorAll("nav [data-view]").forEach((link) => {
     if (link.dataset.view === view) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
@@ -48,7 +48,7 @@ function navigate(next, changeHash = true) {
 function showLogin(message = "") {
   sessionVersion++; csrf = ""; snapshot = null; countdowns = []; $("dashboard").hidden = true; $("login-panel").hidden = false;
   $("login-error").textContent = message;
-  for (const id of ["accounts", "overview-accounts", "keys", "key-groups", "models", "catalog-rows"]) $(id).replaceChildren();
+  for (const id of ["accounts", "claude-accounts", "overview-accounts", "keys", "key-groups", "models", "catalog-rows"]) $(id).replaceChildren();
 }
 async function api(path, options = {}) {
   const response = await fetch(path, { cache: "no-store", credentials: "same-origin", ...options });
@@ -56,7 +56,7 @@ async function api(path, options = {}) {
   return response.json();
 }
 function status(value) {
-  return node("span", ({ enabled: "启用", disabled: "停用", unavailable: "不可用", unknown: "未知" })[value], "status " + value);
+  return node("span", ({ enabled: "启用", disabled: "停用", needs_login: "需重新登录", unavailable: "不可用", unknown: "未知" })[value] || "未知", "status " + value);
 }
 function windowLabel(minutes, fallback) {
   if (!minutes) return fallback;
@@ -137,21 +137,38 @@ function accountCard(account) {
   title.append(avatar, label); head.append(title, accountStatus(account)); card.append(head);
   card.append(accountWindows(account), node("p", "最近更新：" + date(account.captured_at), "account-time")); return card;
 }
+function claudeAccountCard(account) {
+  const card = node("article", undefined, "account"), head = node("div", undefined, "account-head"), title = node("div", undefined, "account-title");
+  const avatar = node("span", undefined, "account-avatar claude-avatar"); avatar.append(icon("users"));
+  const label = node("div", account.email || account.label, "account-label");
+  label.append(node("span", "Claude · " + (account.plan === "unknown" ? "套餐未知" : account.plan.toUpperCase()), "account-plan"));
+  title.append(avatar, label); head.append(title, status(account.status)); card.append(head);
+  card.append(node("p", "订阅额度暂不可查", "claude-quota-note"), node("p", "最近更新：" + date(account.updated_at), "account-time"));
+  return card;
+}
 function currentKeys() {
   // Also handle snapshots written by an older collector during deployment.
   return snapshot.keys.filter((key) => key.is_historical !== true);
 }
 function renderAccounts() {
   countdowns = [];
+  // The server validates old snapshots and supplies an empty default list;
+  // pool_usage is the collector-version marker that old snapshots lack.
+  const hasClaudeData = Array.isArray(snapshot.claude_accounts) && snapshot.pool_usage != null,
+    claudeAccounts = hasClaudeData ? snapshot.claude_accounts : [];
   $("account-count").textContent = "共 " + snapshot.accounts.length + " 个账号";
-  $("overview-account-count").textContent = number(snapshot.accounts.length);
-  $("overview-enabled-count").textContent = number(snapshot.accounts.filter((a) => a.status === "enabled").length);
+  $("claude-account-count").textContent = hasClaudeData ? "共 " + claudeAccounts.length + " 个账号" : "账号数量待更新";
+  $("overview-account-count").textContent = hasClaudeData ? number(snapshot.accounts.length + claudeAccounts.length) : "—";
+  $("overview-enabled-count").textContent = hasClaudeData ? number([...snapshot.accounts, ...claudeAccounts].filter((a) => a.status === "enabled").length) : "—";
   $("overview-key-count").textContent = number(currentKeys().length);
-  $("accounts").replaceChildren(); $("overview-accounts").replaceChildren();
-  for (const account of snapshot.accounts.slice(0, 2)) $("overview-accounts").append(accountCard(account));
-  if (snapshot.accounts.length > 2) $("overview-accounts").append(node("p", "其余账号请在“OpenAI 账号池”中查看。", "muted"));
+  $("accounts").replaceChildren(); $("claude-accounts").replaceChildren(); $("overview-accounts").replaceChildren();
+  const highlighted = snapshot.accounts.slice(0, claudeAccounts.length ? 1 : 2);
+  for (const account of highlighted) $("overview-accounts").append(accountCard(account));
+  if (claudeAccounts.length) $("overview-accounts").append(claudeAccountCard(claudeAccounts[0]));
+  if (snapshot.accounts.length + claudeAccounts.length > highlighted.length + Math.min(claudeAccounts.length, 1))
+    $("overview-accounts").append(node("p", "其余账号请在对应账号池中查看。", "muted"));
+  if (!snapshot.accounts.length && !claudeAccounts.length) $("overview-accounts").append(node("div", hasClaudeData ? "暂无可展示账号。" : "账号统计待更新。", "empty"));
   if (!snapshot.accounts.length) {
-    $("overview-accounts").append(node("div", "暂无可展示账号。", "empty"));
     const row = node("tr"), cell = node("td", "暂无可展示账号。"); cell.colSpan = 6; row.append(cell); $("accounts").append(row);
   }
   for (const account of snapshot.accounts) {
@@ -182,6 +199,19 @@ function renderAccounts() {
     const readonly = node("span", undefined, "readonly-cell"); readonly.append(icon("lock"), node("span", "仅查看")); operation.append(readonly);
     row.append(name, quota, order, proxy, state, operation); $("accounts").append(row);
   }
+  if (!claudeAccounts.length) {
+    const row = node("tr"), cell = node("td", hasClaudeData ? "暂无 Claude 订阅账号。" : "等待新版采集器统计。", "empty"); cell.colSpan = 6; row.append(cell); $("claude-accounts").append(row);
+  }
+  for (const account of claudeAccounts) {
+    const row = node("tr"), name = node("td"), title = node("div", account.email || account.label, "account-label");
+    name.append(title);
+    if (account.email) name.append(node("div", account.label, "account-alias"));
+    const plan = node("td"); plan.append(node("span", account.plan === "unknown" ? "套餐未知" : account.plan.toUpperCase(), "table-tag"));
+    const order = node("td"); order.append(node("span", account.sort_order == null ? "—" : String(account.sort_order), "sort-value"));
+    row.append(name, plan, order, node("td", undefined)); row.children[3].append(status(account.status));
+    row.append(node("td", date(account.updated_at)), node("td", "暂无额度数据"));
+    $("claude-accounts").append(row);
+  }
 }
 function renderGroupUsage() {
   const body = $("key-groups"); body.replaceChildren();
@@ -205,6 +235,20 @@ function renderGroupUsage() {
     row.append(cost); body.append(row);
   }
 }
+function renderPoolUsage() {
+  const pool = snapshot.pool_usage;
+  for (const [name, overviewId, usageId, requestsId] of [
+    ["openai", "overview-openai-tokens", "openai-pool-usage", "openai-pool-requests"],
+    ["claude", "overview-claude-tokens", "claude-pool-usage", "claude-pool-requests"],
+    ["unattributed", "overview-unattributed-tokens", null, null]
+  ]) {
+    const value = pool && pool[name] && pool[name][period];
+    $(overviewId).textContent = value ? compact(value.total_tokens) : "—";
+    $(overviewId).title = value ? number(value.total_tokens) + " Token" : "等待新版采集器统计";
+    if (usageId) $(usageId).textContent = value ? number(value.total_tokens) + " Token" : "统计待更新";
+    if (requestsId) $(requestsId).textContent = value ? number(value.requests) + " 次请求 · 参考金额 " + money(value.estimated_usd) : "等待新版采集器统计";
+  }
+}
 function renderUsage() {
   const total = snapshot.totals[period];
   for (const [id, field] of [["total-tokens", "total_tokens"], ["total-cached", "cached_tokens"], ["total-output", "output_tokens"]]) {
@@ -213,14 +257,15 @@ function renderUsage() {
   $("total-requests").textContent = number(total.requests); $("total-cost").textContent = money(total.estimated_usd);
   $("keys-total-tokens").textContent = compact(total.total_tokens); $("keys-total-tokens").title = number(total.total_tokens);
   $("keys-total-cost").textContent = money(total.estimated_usd);
+  renderPoolUsage();
   renderGroupUsage();
   $("keys").replaceChildren();
   // currentKeys returns a filtered copy; sorting never changes the snapshot.
   const keys = currentKeys().sort((a, b) => b.usage[period].total_tokens - a.usage[period].total_tokens);
   $("keys-sort-order").textContent = "按" + ({ today: "今日", week: "近 7 天", recorded: "累计" })[period] + " Token 用量从高到低排列";
-  if (!keys.length) { const tr = node("tr"), td = node("td", "暂无密钥记录。"); td.colSpan = 8; tr.append(td); $("keys").append(tr); }
+  if (!keys.length) { const tr = node("tr"), td = node("td", "暂无密钥记录。"); td.colSpan = 9; tr.append(td); $("keys").append(tr); }
   for (const key of keys) {
-    const usage = key.usage[period], row = node("tr"), identifier = node("td"), state = node("td"), operation = node("td"), protocol = node("td"), rotation = node("td"), tokens = node("td", undefined, "key-usage");
+    const usage = key.usage[period], row = node("tr"), identifier = node("td"), state = node("td"), operation = node("td"), provider = node("td"), protocol = node("td"), rotation = node("td"), tokens = node("td", undefined, "key-usage");
     const keyId = key.display_id || key.id;
     const keyName = typeof key.label === "string" ? key.label.trim() : "";
     identifier.className = "key-identity";
@@ -228,6 +273,7 @@ function renderUsage() {
     if (keyName && keyName !== keyId) identifier.append(node("span", keyId, "key-id"));
     if (key.group_name !== undefined) identifier.append(node("div", key.group_name || "全部分组（未限制）", "group-badge"));
     identifier.title = "显示名称和编号，不是完整密钥";
+    provider.append(node("span", ({ openai: "OpenAI", claude: "Claude" })[key.upstream_provider] || "未知", "table-tag"));
     protocol.append(node("span", ({ openai_compat: "OpenAI 兼容", anthropic_native: "Anthropic 原生", gemini_native: "Gemini 原生" })[key.protocol] || "未知协议", "table-tag"));
     rotation.append(node("span", ({ account_rotation: "账号轮转", aggregate_api_rotation: "聚合 API 轮转", hybrid_rotation: "混合轮转 · 账号优先", hybrid_aggregate_first_rotation: "混合轮转 · 聚合优先" })[key.rotation] || "未知", "table-tag"));
     const boundModel = ({ request: "跟随请求", fixed: key.bound_model, unlisted: "已绑定 · 模型未公开", unknown: "未知" })[key.model_binding || "unknown"];
@@ -243,7 +289,7 @@ function renderUsage() {
       node("div", "请求 " + number(usage.requests) + " · 输入 " + number(usage.input_tokens) + " · 缓存 " + number(usage.cached_tokens) + " · 输出 " + number(usage.output_tokens)));
     tokens.append(details); state.append(status(key.status));
     const readonly = node("span", undefined, "readonly-cell"); readonly.append(icon("lock"), node("span", "仅查看")); operation.append(readonly);
-    row.append(identifier, protocol, rotation, node("td", boundModel), node("td", key.last_used_at ? date(key.last_used_at) : "从未调用"), tokens, state, operation);
+    row.append(identifier, provider, protocol, rotation, node("td", boundModel), node("td", key.last_used_at ? date(key.last_used_at) : "从未调用"), tokens, state, operation);
     $("keys").append(row);
   }
   document.querySelectorAll("[data-period]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.period === period)));

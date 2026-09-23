@@ -3,7 +3,11 @@
 import type { MessageCatalog } from "../types";
 
 export const KO_ACCOUNTS_MESSAGES: MessageCatalog = {
+  "Claude 账号池": "Claude 계정 풀",
   "Claude 订阅账号池": "Claude 구독 계정 풀",
+  "仅管理 Claude.ai 订阅账号，不包含 Claude API Key 上游。": "여기서는 Claude.ai 구독 계정만 관리합니다. Claude API 키 업스트림은 별도입니다.",
+  "账号总数": "전체 계정",
+  "未知方案": "알 수 없는 요금제",
   "Claude.ai Pro、Max、Team 账号独立轮转。平台 Key 选择 Claude 池后只使用这里启用的账号。":
     "Claude.ai Pro, Max, Team 계정은 별도로 순환합니다. Claude 플랫폼 키는 여기서 활성화된 계정만 사용합니다.",
   "添加 Claude 账号": "Claude 계정 추가",
@@ -15,6 +19,7 @@ export const KO_ACCOUNTS_MESSAGES: MessageCatalog = {
   "需要重新登录": "재로그인 필요",
   "已停用": "비활성화됨",
   "启用 Claude 账号": "Claude 계정 활성화",
+  "停用 Claude 账号": "Claude 계정 비활성화",
   "重新登录": "다시 로그인",
   "删除 Claude 账号": "Claude 계정 삭제",
   "登录 Claude 订阅账号": "Claude 구독 계정 로그인",

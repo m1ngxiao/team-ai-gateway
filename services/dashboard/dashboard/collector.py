@@ -26,17 +26,18 @@ FIELDS = ("requests", "input_tokens", "cached_tokens", "output_tokens", "total_t
 ALLOWED_COLUMNS = {
     **CATALOG_COLUMNS,
     "accounts": {"id", "status", "created_at", "updated_at", "label", "sort", "group_name"},
+    "claude_subscription_accounts": {"id", "email", "subscription_type", "status", "sort", "updated_at"},
     "account_subscriptions": {"account_id", "account_plan_type", "plan_type", "expires_at", "renews_at"},
     "account_quota_capacity_overrides": {"account_id", "primary_window_tokens", "secondary_window_tokens"},
     "account_proxy_settings": {"account_id", "enabled"},
     "usage_snapshots": {"id", "account_id", "used_percent", "window_minutes", "resets_at",
                         "secondary_used_percent", "secondary_window_minutes", "secondary_resets_at", "captured_at", "credits_json"},
-    "api_keys": {"id", "name", "status", "created_at", "last_used_at", "rotation_strategy", "model_slug", "account_group_filter"},
+    "api_keys": {"id", "name", "status", "created_at", "last_used_at", "rotation_strategy", "model_slug", "account_group_filter", "upstream_provider"},
     "api_key_profiles": {"key_id", "protocol_type", "default_model"},
     "api_key_quota_limits": {"key_id", "quota_limit_tokens"},
-    "request_token_stats": {"request_log_id", "key_id", "model", "usage_included", "created_at",
+    "request_token_stats": {"request_log_id", "key_id", "model", "usage_included", "created_at", "actual_source_kind",
                             "input_tokens", "cached_input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd"},
-    "request_token_stat_hourly_rollups": {"key_id", "model", "bucket_start", "bucket_end", "request_count",
+    "request_token_stat_hourly_rollups": {"key_id", "model", "bucket_start", "bucket_end", "request_count", "actual_source_kind",
                                           "input_tokens", "cached_input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd"},
     "request_token_stat_rollups": {"key_id", "model", "source_rows", "input_tokens",
                                     "cached_input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd"},
@@ -113,6 +114,20 @@ def safe_status(value):
     return "unknown"
 
 
+def claude_plan(value):
+    value = str(value or "").strip().lower().replace("-", "_")
+    if value.startswith("claude_"):
+        value = value.removeprefix("claude_")
+    for plan in ("pro", "max", "team", "enterprise", "free"):
+        if value == plan or value.startswith(plan + "_"):
+            return plan
+    return "unknown"
+
+
+def claude_status(value):
+    return {"active": "enabled", "disabled": "disabled", "needs_login": "needs_login"}.get(value, "unknown")
+
+
 def group_identity(value, secret):
     # Group names have the same trimmed, case-sensitive identity as gateway routing.
     # Validate display text separately so redacted names never merge unrelated groups.
@@ -140,7 +155,7 @@ def collect_key_groups(raw_keys, periods, secret):
         ensure(gid, label, kind)["key_count"] += 1
         membership[key["id"]] = gid
 
-    for period_name, (by_key, _, _) in periods.items():
+    for period_name, (by_key, _, _, _) in periods.items():
         for key_id, usage in by_key.items():
             gid = membership.get(key_id)
             if gid is None:
@@ -165,12 +180,12 @@ def quota_window(row, prefix=""):
 
 
 def aggregate(connection, start: int | None, end: int):
-    """raw + disjoint hourly archives; undated legacy data is all-time only."""
+    """Raw + disjoint archives; only recorded actual sources count toward a pool."""
     raw_filter = "t.created_at < ?" if start is None else "t.created_at >= ? AND t.created_at < ?"
     hourly_filter = "h.bucket_end <= ?" if start is None else "h.bucket_start >= ? AND h.bucket_end <= ?"
     args = [end, end] if start is None else [start, end, start, end]
     sql = f"""
-      SELECT t.key_id, t.model,
+      SELECT t.key_id, t.model,t.actual_source_kind AS actual_source_kind,
         COUNT(t.request_log_id) AS requests,
         SUM(CASE WHEN t.usage_included=1 THEN MAX(COALESCE(t.input_tokens,0),0) ELSE 0 END) AS input_tokens,
         SUM(CASE WHEN t.usage_included=1 THEN MAX(COALESCE(t.cached_input_tokens,0),0) ELSE 0 END) AS cached_tokens,
@@ -178,19 +193,33 @@ def aggregate(connection, start: int | None, end: int):
         SUM(CASE WHEN t.usage_included<>1 THEN 0 ELSE MAX(COALESCE(t.total_tokens,
           COALESCE(t.input_tokens,0)-COALESCE(t.cached_input_tokens,0)+COALESCE(t.output_tokens,0)),0) END) AS total_tokens,
         SUM(CASE WHEN t.usage_included=1 THEN MAX(COALESCE(t.estimated_cost_usd,0),0) ELSE 0 END) AS estimated_usd
-      FROM request_token_stats t WHERE {raw_filter} GROUP BY t.key_id,t.model
+      FROM request_token_stats t WHERE {raw_filter} GROUP BY t.key_id,t.model,t.actual_source_kind
       UNION ALL
-      SELECT h.key_id,h.model,SUM(h.request_count),SUM(h.input_tokens),SUM(h.cached_input_tokens),
+      SELECT h.key_id,h.model,h.actual_source_kind AS actual_source_kind,SUM(h.request_count),SUM(h.input_tokens),SUM(h.cached_input_tokens),
         SUM(h.output_tokens),SUM(h.total_tokens),SUM(h.estimated_cost_usd)
-      FROM request_token_stat_hourly_rollups h WHERE {hourly_filter} GROUP BY h.key_id,h.model
+      FROM request_token_stat_hourly_rollups h WHERE {hourly_filter} GROUP BY h.key_id,h.model,h.actual_source_kind
     """
     if start is None:
         sql += """ UNION ALL
-          SELECT l.key_id,l.model,SUM(l.source_rows),SUM(l.input_tokens),SUM(l.cached_input_tokens),
+          SELECT l.key_id,l.model,NULL AS actual_source_kind,SUM(l.source_rows),SUM(l.input_tokens),SUM(l.cached_input_tokens),
             SUM(l.output_tokens),SUM(l.total_tokens),SUM(l.estimated_cost_usd)
           FROM request_token_stat_rollups l GROUP BY l.key_id,l.model"""
+    # Older gateways lack actual_source_kind. Treat those rows as unattributed
+    # instead of assigning them to a pool based on today's Key configuration.
+    for _ in range(3):
+        try:
+            rows = connection.execute(sql, args)
+            break
+        except sqlite3.OperationalError as exc:
+            if str(exc) == "no such column: t.actual_source_kind":
+                sql = sql.replace("t.actual_source_kind", "NULL")
+            elif str(exc) == "no such column: h.actual_source_kind":
+                sql = sql.replace("h.actual_source_kind", "NULL")
+            else:
+                raise
     by_key, by_model, total = {}, {}, zero()
-    for row in connection.execute(sql, args):
+    by_pool = {"openai": zero(), "claude": zero(), "unattributed": zero()}
+    for row in rows:
         item = {field: safe_number(row[field], floating=field == "estimated_usd") for field in FIELDS}
         merge(by_key.setdefault(row["key_id"], zero()), item)
         model = row["model"]
@@ -199,7 +228,9 @@ def aggregate(connection, start: int | None, end: int):
             model = "other"
         merge(by_model.setdefault(model, zero()), item)
         merge(total, item)
-    return by_key, by_model, total
+        pool = {"openai_account": "openai", "claude_subscription_account": "claude"}.get(row["actual_source_kind"], "unattributed")
+        merge(by_pool[pool], item)
+    return by_key, by_model, total, by_pool
 
 
 def collect(config, now=None):
@@ -225,14 +256,30 @@ def collect(config, now=None):
             WHERE x.account_id=a.id ORDER BY x.captured_at DESC,x.id DESC LIMIT 1)
           ORDER BY a.sort,a.updated_at DESC,a.id
         """).fetchall()
-        raw_keys = connection.execute("""
+        try:
+            raw_claude_accounts = connection.execute("""
+              SELECT id,email,subscription_type,status,sort,updated_at
+              FROM claude_subscription_accounts ORDER BY sort,updated_at DESC,id
+            """).fetchall()
+        except sqlite3.OperationalError as exc:
+            if str(exc) != "no such table: claude_subscription_accounts":
+                raise
+            raw_claude_accounts = []
+        key_sql = """
           SELECT k.id,k.name,k.status,k.created_at,k.last_used_at,k.account_group_filter,
             COALESCE(p.protocol_type,'openai_compat') AS protocol_type,
             COALESCE(k.rotation_strategy,'account_rotation') AS rotation_strategy,
-            COALESCE(p.default_model,k.model_slug) AS model_slug,q.quota_limit_tokens
+            COALESCE(p.default_model,k.model_slug) AS model_slug,q.quota_limit_tokens,
+            k.upstream_provider AS upstream_provider
           FROM api_keys k LEFT JOIN api_key_profiles p ON p.key_id=k.id
           LEFT JOIN api_key_quota_limits q ON q.key_id=k.id ORDER BY k.created_at DESC,k.id
-        """).fetchall()
+        """
+        try:
+            raw_keys = connection.execute(key_sql).fetchall()
+        except sqlite3.OperationalError as exc:
+            if str(exc) != "no such column: k.upstream_provider":
+                raise
+            raw_keys = connection.execute(key_sql.replace("k.upstream_provider", "'unknown'")).fetchall()
         catalog, unlisted = collect_catalog(connection)
         periods = {
             "today": aggregate(connection, int(today.timestamp()), end),
@@ -263,6 +310,18 @@ def collect(config, now=None):
                          "capacity_override": bool(capacity_primary or capacity_secondary),
                          "capacity_primary_tokens": capacity_primary, "capacity_secondary_tokens": capacity_secondary,
                          **credits_details(row["credits_json"], optional_timestamp(row["captured_at"]))})
+    claude_accounts = []
+    for row in raw_claude_accounts:
+        pid = public_id("acct", row["id"], secret)
+        claude_accounts.append({
+            "id": pid,
+            "label": safe_label(config.get("account_aliases", {}).get(row["id"]), "Claude " + pid[-6:]),
+            "email": email_from_label(row["email"]),
+            "plan": claude_plan(row["subscription_type"]),
+            "status": claude_status(row["status"]),
+            "sort_order": max(0, row["sort"]) if type(row["sort"]) is int else None,
+            "updated_at": optional_timestamp(row["updated_at"]),
+        })
     # Only current keys belong in the list. Deleted/unattributed usage remains
     # in the independently aggregated team totals and model usage above.
     keys = []
@@ -284,9 +343,12 @@ def collect(config, now=None):
             merge(tail, item)
         models = models[:49] + [("other-models", tail)]
     snapshot = {"schema_version": 1, "generated_at": now, "timezone": "Asia/Shanghai",
-                "accounts": accounts, "keys": keys, "model_catalog": catalog, "catalog_unlisted_count": unlisted,
+                "accounts": accounts, "claude_accounts": claude_accounts,
+                "keys": keys, "model_catalog": catalog, "catalog_unlisted_count": unlisted,
                 "key_groups": collect_key_groups(raw_keys, periods, secret),
                 "totals": {name: data[2] for name, data in periods.items()},
+                "pool_usage": {pool: {name: data[3][pool] for name, data in periods.items()}
+                               for pool in ("openai", "claude", "unattributed")},
                 "models_week": [{"model": model, "usage": item} for model, item in models]}
     return Snapshot.model_validate(snapshot).model_dump()
 

@@ -20,6 +20,7 @@ import {
   type ClaudeSubscriptionLoginStart,
 } from "@/lib/api/claude-subscription-client";
 import { getAppErrorMessage } from "@/lib/api/transport";
+import { formatClaudeSubscriptionPlan } from "@/lib/claude-subscription-plan";
 import { useI18n } from "@/lib/i18n/provider";
 
 interface ClaudeSubscriptionAccountsPanelProps {
@@ -50,6 +51,9 @@ export function ClaudeSubscriptionAccountsPanel({ serviceAddr, enabled }: Claude
   const [busy, setBusy] = useState(false);
   const [busyAccountId, setBusyAccountId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<ClaudeSubscriptionAccount | null>(null);
+  const activeCount = accounts.filter((account) => account.status === "active").length;
+  const disabledCount = accounts.filter((account) => account.status === "disabled").length;
+  const needsLoginCount = accounts.filter((account) => account.status === "needs_login").length;
 
   if (!enabled) return null;
 
@@ -126,6 +130,7 @@ export function ClaudeSubscriptionAccountsPanel({ serviceAddr, enabled }: Claude
             <CardTitle>{t("Claude 订阅账号池")}</CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">
               {t("Claude.ai Pro、Max、Team 账号独立轮转。平台 Key 选择 Claude 池后只使用这里启用的账号。")}
+              {" "}{t("仅管理 Claude.ai 订阅账号，不包含 Claude API Key 上游。")}
             </p>
           </div>
           <div className="flex gap-2">
@@ -139,6 +144,21 @@ export function ClaudeSubscriptionAccountsPanel({ serviceAddr, enabled }: Claude
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
+          {!isLoading && !isError ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                [t("账号总数"), accounts.length],
+                [t("轮转中"), activeCount],
+                [t("已停用"), disabledCount],
+                [t("需要重新登录"), needsLoginCount],
+              ].map(([label, count]) => (
+                <div key={label} className="rounded-lg border border-border/70 bg-card/40 px-3 py-2">
+                  <p className="text-xs text-muted-foreground">{label}</p>
+                  <p className="mt-1 text-xl font-semibold tabular-nums">{count}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {isLoading ? <p className="text-sm text-muted-foreground">{t("正在加载账号...")}</p> : null}
           {isError ? <p className="text-sm text-destructive">{t("Claude 账号加载失败，请刷新重试")}</p> : null}
           {!isLoading && !isError && accounts.length === 0 ? (
@@ -149,6 +169,12 @@ export function ClaudeSubscriptionAccountsPanel({ serviceAddr, enabled }: Claude
               <div className="min-w-0 space-y-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="max-w-[280px] truncate font-medium" title={account.email || account.label}>{account.email || account.label}</span>
+                  <Badge
+                    variant="outline"
+                    aria-label={`${t("订阅方案")}: ${t(formatClaudeSubscriptionPlan(account.subscriptionType))}`}
+                  >
+                    {t(formatClaudeSubscriptionPlan(account.subscriptionType))}
+                  </Badge>
                   <Badge variant={account.status === "needs_login" ? "destructive" : account.status === "active" ? "default" : "secondary"}>
                     {t(statusLabel(account.status))}
                   </Badge>
@@ -162,7 +188,7 @@ export function ClaudeSubscriptionAccountsPanel({ serviceAddr, enabled }: Claude
                   </Button>
                 ) : null}
                 <Switch
-                  aria-label={`${t("启用 Claude 账号")} ${account.email || account.label}`}
+                  aria-label={`${t(account.status === "active" ? "停用 Claude 账号" : "启用 Claude 账号")} ${account.email || account.label}`}
                   checked={account.status === "active"}
                   disabled={busyAccountId !== null || account.status === "needs_login"}
                   onCheckedChange={(active) => void updateStatus(account, active)}

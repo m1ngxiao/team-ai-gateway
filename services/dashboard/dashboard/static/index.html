@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow"><meta name="theme-color" content="#f7f9fd">
-  <title>Team AI Gateway · 团队 Codex 用量</title>
+  <title>Team AI Gateway · 团队 AI 用量</title>
   <link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script>
 </head>
 <body>
   <section id="login-panel" class="login-panel">
     <div class="login-brand"><span class="brand-icon">AI</span><strong>Team AI Gateway</strong></div>
-    <div class="glass-card login-card"><span class="badge">团队 Codex 用量</span><h1>登录看板</h1><p class="muted">查看账号额度和团队用量。</p>
+    <div class="glass-card login-card"><span class="badge">团队 AI 用量</span><h1>登录看板</h1><p class="muted">查看账号状态和团队用量。</p>
       <form id="login-form"><label for="username">账号</label><input id="username" name="username" value="team" autocomplete="username" maxlength="64" required>
         <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
         <button type="submit" class="primary login-submit" id="login-button">登录</button><p id="login-error" class="error" role="alert"></p>
@@ -19,10 +19,11 @@
 
   <div id="dashboard" class="app-shell" hidden>
     <aside class="glass-sidebar">
-      <div class="sidebar-brand"><span class="brand-icon">AI</span><div><strong>Team AI Gateway</strong><span>团队 Codex 用量</span></div></div>
+      <div class="sidebar-brand"><span class="brand-icon">AI</span><div><strong>Team AI Gateway</strong><span>团队 AI 用量</span></div></div>
       <nav aria-label="看板导航">
         <a href="#overview" data-view="overview" aria-current="page"><span class="icon" data-icon="home" aria-hidden="true"></span><span>仪表盘</span></a>
         <a href="#accounts" data-view="accounts"><span class="icon" data-icon="users" aria-hidden="true"></span><span>OpenAI 账号池</span><span class="nav-readonly">只读</span></a>
+        <a href="#claude-accounts" data-view="claude-accounts"><span class="icon" data-icon="users" aria-hidden="true"></span><span>Claude 账号池</span><span class="nav-readonly">只读</span></a>
         <a href="#apikeys" data-view="apikeys"><span class="icon" data-icon="key" aria-hidden="true"></span><span>平台密钥</span><span class="nav-readonly">只读</span></a>
         <a href="#models" data-view="models"><span class="icon" data-icon="cube" aria-hidden="true"></span><span>模型目录</span><span class="nav-readonly">只读</span></a>
       </nav>
@@ -51,13 +52,26 @@
             <article class="glass-card metric"><div class="metric-label"><span>输出 Token</span><span class="icon violet" data-icon="activity" aria-hidden="true"></span></div><strong id="total-output">—</strong></article>
             <article class="glass-card metric"><div class="metric-label"><span>参考金额（美元）</span><span class="icon green" data-icon="dollar" aria-hidden="true"></span></div><strong id="total-cost">—</strong></article>
           </div>
-          <div class="overview-columns"><section class="glass-card section-card"><div class="section-title"><h2>账号额度</h2><a href="#accounts" data-view="accounts" class="text-link">查看账号 <span aria-hidden="true">→</span></a></div><div id="overview-accounts" class="accounts"></div></section>
+          <section class="glass-card section-card pool-breakdown" aria-labelledby="pool-usage-title">
+            <div class="section-title"><h2 id="pool-usage-title">上游池用量</h2><span class="muted">按请求记录中的实际上游来源归因</span></div>
+            <div class="pool-breakdown-grid"><div><span>OpenAI 账号池</span><strong id="overview-openai-tokens">—</strong></div><div><span>Claude 账号池</span><strong id="overview-claude-tokens">—</strong></div><div><span>未归属</span><strong id="overview-unattributed-tokens">—</strong></div></div>
+            <p class="footnote">账号池仅统计实际路由到订阅账号的请求；聚合 API、旧记录及无法区分来源的历史汇总计入未归属。三项合计为全站总 Token，不按 Key 当前厂商回填历史。</p>
+          </section>
+          <div class="overview-columns"><section class="glass-card section-card"><div class="section-title"><h2>账号概览</h2><div class="account-links"><a href="#accounts" data-view="accounts" class="text-link">OpenAI <span aria-hidden="true">→</span></a><a href="#claude-accounts" data-view="claude-accounts" class="text-link">Claude <span aria-hidden="true">→</span></a></div></div><div id="overview-accounts" class="accounts"></div></section>
             <section class="glass-card section-card"><div class="section-title"><h2>模型使用情况</h2><span class="muted">近 7 天</span></div><div id="models" class="models"></div></section></div>
         </section>
 
         <section id="view-accounts" class="view" aria-labelledby="accounts-title" hidden>
           <div class="page-heading"><div><h2 id="accounts-title">OpenAI 账号池</h2><p class="muted">账号分组、套餐与剩余额度</p></div><div class="actions"><button disabled title="仅管理员可以导入账号">导入账号</button><button disabled class="primary" title="仅管理员可以添加账号"><span aria-hidden="true">＋</span> 添加账号</button></div></div>
+          <div class="pool-page-usage glass-card"><span>当前时段已归因至 OpenAI 账号池</span><strong id="openai-pool-usage">—</strong><small id="openai-pool-requests">—</small></div>
           <div class="glass-card"><div class="section-title table-title"><h3>账号列表</h3><span id="account-count" class="muted"></span></div><div class="table-frame"><table class="account-table"><thead><tr><th scope="col">账号信息</th><th scope="col">额度详情</th><th scope="col">顺序</th><th scope="col">账号代理</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody id="accounts"></tbody></table></div></div>
+        </section>
+
+        <section id="view-claude-accounts" class="view" aria-labelledby="claude-accounts-title" hidden>
+          <div class="page-heading"><div><h2 id="claude-accounts-title">Claude 账号池</h2><p class="muted">Claude.ai 订阅账号，仅展示账号状态与已归因用量</p></div><span class="readonly-badge"><span class="icon" data-icon="lock" aria-hidden="true"></span>仅查看</span></div>
+          <div class="pool-page-usage glass-card"><span>当前时段已归因至 Claude 账号池</span><strong id="claude-pool-usage">—</strong><small id="claude-pool-requests">—</small></div>
+          <div class="glass-card"><div class="section-title table-title"><h3>账号列表</h3><span id="claude-account-count" class="muted"></span></div><div class="table-frame"><table class="account-table claude-account-table"><thead><tr><th scope="col">账号信息</th><th scope="col">套餐</th><th scope="col">顺序</th><th scope="col">状态</th><th scope="col">最近更新</th><th scope="col">额度</th></tr></thead><tbody id="claude-accounts"></tbody></table></div></div>
+          <p class="footnote">Claude 订阅剩余额度目前无法查询，页面不展示推测值。用量按请求实际来源归因，不代表订阅方最终账单；无法归因的记录计入仪表盘“未归属”。</p>
         </section>
 
         <section id="view-apikeys" class="view" aria-labelledby="keys-title" hidden>
@@ -68,7 +82,7 @@
             <p id="groups-note" class="footnote group-note">按 Key 当前所属分组汇总成员用量，历史用量随分组调整。组名对应 Key 的账号分组筛选。</p>
             <div class="table-frame"><table class="group-table" aria-describedby="groups-note"><thead><tr><th scope="col">分组</th><th scope="col">Key 数</th><th scope="col">请求数</th><th scope="col">输入 Token</th><th scope="col">缓存 Token</th><th scope="col">输出 Token</th><th scope="col" aria-sort="descending" aria-describedby="groups-period">总 Token ↓</th><th scope="col">估算费用（美元）</th></tr></thead><tbody id="key-groups"></tbody></table></div>
           </section>
-          <div class="glass-card table-frame"><table class="key-table"><thead><tr><th scope="col">密钥名称</th><th scope="col">协议</th><th scope="col">轮转策略</th><th scope="col">绑定模型</th><th scope="col">最近调用</th><th scope="col" aria-sort="descending" aria-describedby="keys-sort-order">TOKEN / 金额 ↓</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody id="keys"></tbody></table></div>
+          <div class="glass-card table-frame"><table class="key-table"><thead><tr><th scope="col">密钥名称</th><th scope="col">上游厂商</th><th scope="col">协议</th><th scope="col">轮转策略</th><th scope="col">绑定模型</th><th scope="col">最近调用</th><th scope="col" aria-sort="descending" aria-describedby="keys-sort-order">TOKEN / 金额 ↓</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody id="keys"></tbody></table></div>
           <p class="footnote">显示名称和编号，不显示完整密钥。美元金额为估算，仅供参考。</p>
         </section>
 

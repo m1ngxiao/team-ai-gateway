@@ -53,7 +53,7 @@ test("accounts 模式管理员菜单按任务域分组并保留账号体系入�
     sections.map((section) => section.routes.map((route) => route.path)),
     [
       ["/"],
-      ["/accounts", "/aggregate-api"],
+      ["/accounts", "/claude-accounts", "/aggregate-api"],
       ["/platform-mode", "/apikeys"],
       ["/models", "/model-groups"],
       ["/account-manager"],
@@ -70,6 +70,7 @@ test("accounts 模式管理员菜单按任务域分组并保留账号体系入�
   assert.equal(routes.getTopLevelRouteLabel("/model-groups", access), "模型组");
   assert.equal(routes.getTopLevelRouteLabel("/platform-mode", access), "Codex 接入方式");
   assert.equal(routes.getTopLevelRouteLabel("/models", access), "模型与路由");
+  assert.equal(routes.getTopLevelRouteLabel("/claude-accounts", access), "Claude 账号池");
   assert.equal(routes.getTopLevelRouteLabel("/skills", access), "Skills 与插件");
 });
 
@@ -83,6 +84,7 @@ test("none/password 单人管理员模式隐藏账号体系入口但保留单人
       assert.deepEqual(paths, [
         "/",
         "/accounts",
+        "/claude-accounts",
         "/aggregate-api",
         "/platform-mode",
         "/apikeys",
@@ -102,6 +104,7 @@ test("none/password 单人管理员模式隐藏账号体系入口但保留单人
         false
       );
       assert.equal(routes.isTopLevelRouteAllowedForRole("/accounts", access), true);
+      assert.equal(routes.isTopLevelRouteAllowedForRole("/claude-accounts", access), true);
       assert.equal(routes.isTopLevelRouteAllowedForRole("/apikeys", access), true);
       assert.equal(routes.getFirstAllowedTopLevelRoutePath(access), "/");
     }
@@ -114,6 +117,7 @@ test("未解析 session mode 时不会闪现账号体系专属入口", () => {
   assert.equal(paths.includes("/account-manager"), false);
   assert.equal(paths.includes("/model-groups"), false);
   assert.equal(paths.includes("/accounts"), true);
+  assert.equal(paths.includes("/claude-accounts"), true);
   assert.equal(paths.includes("/apikeys"), true);
 });
 
@@ -159,6 +163,7 @@ test("accounts 模式成员菜单只保留自助入口", () => {
     false
   );
   assert.equal(routes.isTopLevelRouteAllowedForRole("/model-groups", access), false);
+  assert.equal(routes.isTopLevelRouteAllowedForRole("/claude-accounts", access), false);
 });
 
 

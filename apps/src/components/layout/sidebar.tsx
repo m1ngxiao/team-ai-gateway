@@ -6,6 +6,7 @@ import {
   Cable,
   House,
   Users,
+  Bot,
   UserCog,
   Key,
   Boxes,
@@ -44,6 +45,7 @@ import {
 const NAV_ITEM_BY_PATH = new Map<TopLevelRoutePath, { icon: LucideIcon }>([
   ["/", { icon: House }],
   ["/accounts", { icon: Users }],
+  ["/claude-accounts", { icon: Bot }],
   ["/account-manager", { icon: UserCog }],
   ["/aggregate-api", { icon: Database }],
   ["/apikeys", { icon: Key }],
