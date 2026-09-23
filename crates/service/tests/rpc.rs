@@ -3149,10 +3149,17 @@ fn rpc_chatgpt_auth_tokens_login_enqueues_usage_refresh() {
         .find(|account| account.chatgpt_account_id.as_deref() == Some("org-usage-refresh"))
         .map(|account| account.id)
         .expect("account id");
-    let snapshot = storage
-        .latest_usage_snapshot_for_account(&account_id)
-        .expect("find usage snapshot")
-        .expect("usage snapshot exists");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let snapshot = loop {
+        if let Some(snapshot) = storage
+            .latest_usage_snapshot_for_account(&account_id)
+            .expect("find usage snapshot")
+        {
+            break snapshot;
+        }
+        assert!(std::time::Instant::now() < deadline, "usage snapshot exists");
+        std::thread::sleep(Duration::from_millis(25));
+    };
     assert_eq!(snapshot.used_percent, Some(25.0));
     assert_eq!(snapshot.secondary_used_percent, Some(10.0));
 }
