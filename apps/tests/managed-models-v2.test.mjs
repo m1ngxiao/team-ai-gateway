@@ -176,3 +176,15 @@ test("managed model adapter does not invent Fast speed copy for custom models", 
     { id: "priority", name: "Fast", description: "" },
   ]);
 });
+
+test("GPT-6 Sol uses the official Codex Fast tier description", () => {
+  const info = managedModelV2ToModelInfo(model({
+    slug: "gpt-6-sol",
+    capabilities: { service_tiers: ["priority"] },
+  }));
+  assert.deepEqual(info.serviceTiers, [{
+    id: "priority",
+    name: "Fast",
+    description: "1.5x speed",
+  }]);
+});

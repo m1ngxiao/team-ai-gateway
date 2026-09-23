@@ -2285,6 +2285,7 @@ impl Storage {
             include_str!("../../migrations/133_aggregate_api_user_agent.sql"),
             |s| s.ensure_aggregate_apis_table(),
         )?;
+        self.apply_model_catalog_gpt6_sol_migration()?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;

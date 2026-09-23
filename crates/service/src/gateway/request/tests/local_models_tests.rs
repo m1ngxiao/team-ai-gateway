@@ -300,7 +300,8 @@ fn local_models_lists_image_model_once_with_image_only_capabilities() {
 
     let response = crate::models_v2::models_response_with_storage(&storage)
         .expect("read managed local models");
-    assert_eq!(response.models.len(), 9);
+    assert_eq!(response.models.len(), 10);
+    assert!(response.models.iter().any(|model| model.slug == "gpt-6-sol"));
     let image_models = response
         .models
         .iter()

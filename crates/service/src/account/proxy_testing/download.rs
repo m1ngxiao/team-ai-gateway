@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn download_test_honors_cancel_hook_while_waiting_for_first_chunk() {
         let body_chunks = vec![b"abcdefghij".to_vec()];
-        let (proxy_url, _rx, handle) = start_fake_proxy_download_response(
+        let (proxy_url, request_rx, handle) = start_fake_proxy_download_response(
             "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n",
             body_chunks,
             Duration::from_millis(250),
@@ -440,6 +440,9 @@ mod tests {
         let cancel_flag = Arc::clone(&cancelled);
         let signal = Arc::clone(&cancelled);
         let cancel_thread = thread::spawn(move || {
+            request_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("proxy accepted download request");
             thread::sleep(Duration::from_millis(120));
             signal.store(true, Ordering::SeqCst);
         });

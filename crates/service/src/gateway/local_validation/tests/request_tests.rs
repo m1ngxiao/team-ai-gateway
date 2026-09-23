@@ -289,12 +289,13 @@ fn http_block_policy_rejects_client_accelerated_tiers_and_filters_unsupported_ti
 }
 
 #[test]
-fn http_model_catalog_filters_astra_ultrafast_but_preserves_sol_ultrafast() {
+fn http_model_catalog_filters_unadvertised_ultrafast_tiers() {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
 
     for (model, expected_tier, expected_applied) in [
         ("gpt-6-astra", None, true),
+        ("gpt-6-sol", None, true),
         ("gpt-5.6-sol", Some("ultrafast"), false),
     ] {
         let body = serde_json::to_vec(&serde_json::json!({

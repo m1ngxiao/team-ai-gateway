@@ -149,6 +149,9 @@ function serviceTierDescription(modelSlug: string, id: string): string {
     if (normalizedSlug === "gpt-6-astra") {
       return "2x speed, increased usage";
     }
+    if (normalizedSlug === "gpt-6-sol") {
+      return "1.5x speed";
+    }
     if (
       new Set([
         "gpt-5.4",
