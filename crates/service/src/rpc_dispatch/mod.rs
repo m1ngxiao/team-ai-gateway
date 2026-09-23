@@ -15,6 +15,7 @@ mod aggregate_api;
 mod apikey;
 mod app_settings;
 mod codex_profile;
+mod claude_subscription;
 mod codex_skills;
 mod dashboard;
 mod gateway;
@@ -287,6 +288,9 @@ pub(crate) fn handle_request_with_actor(req: JsonRpcRequest, actor: RpcActor) ->
     }
 
     if let Some(resp) = account::try_handle(&req, &actor) {
+        return JsonRpcMessage::Response(resp);
+    }
+    if let Some(resp) = claude_subscription::try_handle(&req, &actor) {
         return JsonRpcMessage::Response(resp);
     }
     if let Some(resp) = account_manager::try_handle(&req, &actor) {

@@ -1,4 +1,5 @@
 pub(super) mod attempt_flow;
+pub(super) mod claude_subscription;
 pub(super) mod config;
 pub(super) mod executor;
 pub(crate) mod generation_budget;

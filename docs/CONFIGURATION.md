@@ -32,6 +32,71 @@
 
 内置模型目录包含 `gpt-6-sol`，默认路由到 OpenAI 账号池。账号轮转 Key 的 `/v1/models` 采用账号上游提供的模型目录；客户端看到该模型仍取决于账号权限与上游灰度。新增模型本身不会改变账号的访问资格。
 
+### 平台 Key 的上游池
+
+管理员创建或编辑平台 Key 时，`upstreamProvider` 选择上游来源，取值为 `openai` 或 `claude`。它与客户端使用的 `protocolType` 是两个独立设置；仅将协议设为 Anthropic Messages 不会改变账号池。
+
+| `upstreamProvider` | 当前路由范围 |
+| --- | --- |
+| `openai` | OpenAI 账号池及其现有的聚合 API 路由策略；不能绑定 Claude 聚合上游 |
+| `claude` | `account_rotation` 使用独立的 Claude.ai 订阅账号池；原有 `aggregate_api_rotation` 仍使用 Claude API Key 聚合上游。两种策略都不会回落到 OpenAI 账号池；不支持跨池混合轮转 |
+
+Claude 订阅账号在后台「账号」页面发起登录。管理员打开授权链接，使用 Claude.ai Pro、Max 或 Team 账号授权，再将网页显示的 `CODE#STATE` 一次性授权码粘贴回后台。登录后账号默认停用；先在模型目录中为 Claude 模型配置 `account_pool`、`source_id=claude` 路由，再启用账号并发送真实请求验证。若启用了分销计费，模型还须配置价格；该价格用于平台内部计量，不表示订阅账号按 API 价格结算。Claude 账号的授权令牌写入私有 SQLite 数据库，备份时须按凭据保护。
+
+以下是 Claude 订阅账号池平台 Key 的后台管理 RPC 请求结构；这不是客户端生成请求，不应发送到公开模型 API 地址：
+
+```json
+{
+  "id": 1,
+  "method": "apikey/create",
+  "params": {
+    "name": "Claude 订阅账号池示例",
+    "upstreamProvider": "claude",
+    "rotationStrategy": "account_rotation",
+    "protocolType": "anthropic_native",
+    "modelSlug": "claude-sonnet-5"
+  }
+}
+```
+
+继续使用已有 Claude API Key 聚合上游时，可选择 `aggregate_api_rotation` 并指定已启用的 Claude `aggregateApiId`；它是上游 ID，不是 API Key 明文：
+
+```json
+{
+  "id": 1,
+  "method": "apikey/create",
+  "params": {
+    "name": "Claude API 聚合示例",
+    "upstreamProvider": "claude",
+    "rotationStrategy": "aggregate_api_rotation",
+    "aggregateApiId": "agg_claude_example",
+    "protocolType": "anthropic_native"
+  }
+}
+```
+
+修改已有 Key 时使用 `apikey/updateModel`，在 `params` 中传入 Key 的 `id` 和需要更改的字段。历史上未固定 Claude 上游的聚合 API 轮转 Key，需要管理员按下面的形式显式绑定：
+
+```json
+{
+  "id": 2,
+  "method": "apikey/updateModel",
+  "params": {
+    "id": "gk_example",
+    "upstreamProvider": "claude",
+    "confirmRouteReview": true,
+    "rotationStrategy": "aggregate_api_rotation",
+    "aggregateApiId": "agg_claude_example"
+  }
+}
+```
+
+`confirmRouteReview=true` 仅用于迁移时被标记“需检查路由”的 Key；必须由管理员显式传入 `upstreamProvider`，否则标记不会清除，也不能重新启用。旧客户端若在已配置 Claude 上游，或同时配置通用 `compatible` 与 Codex 上游的环境中创建未固定上游的聚合 Key，也须明确传入 `upstreamProvider`。切换到 OpenAI 账号池时须在同一次请求中设置 `upstreamProvider=openai` 和 `rotationStrategy=account_rotation`；切换到 Claude 订阅账号池时设置 `upstreamProvider=claude` 和 `rotationStrategy=account_rotation` 并清空 `aggregateApiId`。不兼容的组合会被拒绝。
+
+Claude 订阅账号池 Key 的 `/v1/models` 只列出配置了启用的 `account_pool/claude` 路由、且池中有活跃账号的模型。Claude API 聚合 Key 仍只列出关联到启用的 Claude API 上游的模型；绑定的 `aggregateApiId` 是优先候选，同池其他 Claude API 上游仍可作为候选。各账号的实际模型权限以发起请求时的上游响应为准。
+
+Claude 订阅账号池 Key 可使用 `POST /v1/messages`、`POST /v1/responses`、本地估算的 `POST /v1/messages/count_tokens` 和 `GET /v1/models`；不支持 `POST /v1/chat/completions`。客户端示例及接口说明见[客户端接入](CLIENTS.md#claude-订阅账号池的接口范围)。后台「协议类型」的路径兼容选项不会扩展这个池的接口范围。
+
 | 兼容配置 | 用途 |
 | --- | --- |
 | `CODEXMANAGER_DB_PATH` | 数据库路径；模板固定 `/data/codexmanager.db` |

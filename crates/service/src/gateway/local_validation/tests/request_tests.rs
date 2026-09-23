@@ -72,6 +72,7 @@ fn sample_api_key(
         status: "active".to_string(),
         created_at: 0,
         last_used_at: None,
+        upstream_provider: Default::default(),
         rotation_strategy: crate::apikey_profile::ROTATION_ACCOUNT.to_string(),
         aggregate_api_id: None,
         aggregate_api_url: None,

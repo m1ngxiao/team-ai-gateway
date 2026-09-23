@@ -69,6 +69,7 @@ fn api_key(id: &str) -> ApiKey {
         model_slug: Some("gpt-test".to_string()),
         reasoning_effort: None,
         service_tier: None,
+        upstream_provider: Default::default(),
         rotation_strategy: "account_rotation".to_string(),
         aggregate_api_id: None,
         account_plan_filter: None,

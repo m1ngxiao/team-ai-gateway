@@ -1,3 +1,5 @@
+import type { ApiKeyUpstreamProvider } from "@/types/api-key";
+
 export interface ApiKeyUpdatePayload {
   name?: string | null;
   modelSlug?: string | null;
@@ -7,6 +9,8 @@ export interface ApiKeyUpdatePayload {
   upstreamBaseUrl?: string | null;
   staticHeadersJson?: string | null;
   rotationStrategy?: string | null;
+  upstreamProvider?: ApiKeyUpstreamProvider;
+  confirmRouteReview?: boolean;
   aggregateApiId?: string | null;
   accountPlanFilter?: string | null;
   accountGroupFilter?: string | null;
@@ -36,6 +40,12 @@ export function buildApiKeyUpdateInvokePayload(
     payload.modelSlug = params.modelSlug || null;
     payload.reasoningEffort = params.reasoningEffort || null;
     payload.serviceTier = params.serviceTier || null;
+  }
+  if ("upstreamProvider" in params) {
+    payload.upstreamProvider = params.upstreamProvider;
+  }
+  if (params.confirmRouteReview === true) {
+    payload.confirmRouteReview = true;
   }
   if (
     "rotationStrategy" in params ||

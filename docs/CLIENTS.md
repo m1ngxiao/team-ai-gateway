@@ -14,7 +14,22 @@
 
 不同客户端有的要求填写含 `/v1` 的 Base URL，有的自动添加路径；以最终请求路径为准，避免出现 `/v1/v1`。不要使用后台 `48761` 或看板 `48763` 端口作为模型 API。
 
-协议兼容不保证所有提供方专属功能均可透传。管理员需要给 Key 配置正确的协议和路由；Anthropic Messages 入口不代表本项目提供 Claude OAuth 登录。第三方 API 上游需要管理员已有的上游 API 凭据。
+协议兼容不保证所有提供方专属功能均可透传。管理员需要给 Key 配置正确的协议、模型和路由。`upstreamProvider=claude` 且 `rotationStrategy=account_rotation` 的 Key 使用 Claude 订阅账号池；`aggregate_api_rotation` 使用原有 Claude API Key 聚合上游。OpenAI 与 Claude 账号池互不回落。上游池设置见[配置参考](CONFIGURATION.md#平台-key-的上游池)。
+
+### Claude 订阅账号池的接口范围
+
+上表列的是中转站整体入口。Claude 订阅账号池 Key 当前只支持以下接口：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /v1/messages` | Anthropic Messages 请求；支持流式响应 |
+| `POST /v1/responses` | Responses 请求；由中转站转换为 Claude Messages，支持流式响应 |
+| `POST /v1/messages/count_tokens` | 中转站本地估算 Token 数，不是 Claude 官方精确计数 |
+| `GET /v1/models` | 返回当前 Key 可见的 Claude 账号池模型 |
+
+这个池**不支持** `POST /v1/chat/completions`。接入时应使用发送 Messages 或 Responses 请求的客户端。Claude API Key 聚合上游的接口范围由其上游协议能力决定。
+
+订阅账号请求会在原有系统指令前加入 Claude Code 的兼容性系统文本块。客户端的系统指令仍按原顺序保留，但上游看到的系统上下文会多出这一块；依赖系统提示完全原样透传的客户端需要注意。
 
 ## 用 curl 检查连接
 
@@ -37,7 +52,7 @@ curl --fail-with-body -N "$TEAM_GATEWAY_ORIGIN/v1/responses" \
   --data '{"model":"YOUR_MODEL","input":"Reply with a short greeting.","stream":true}'
 ```
 
-Anthropic 协议 Key 可使用：
+发送 Anthropic Messages 请求的 Key（包括 Claude 订阅账号池 Key）可使用：
 
 ```bash
 curl --fail-with-body -N "$TEAM_GATEWAY_ORIGIN/v1/messages" \

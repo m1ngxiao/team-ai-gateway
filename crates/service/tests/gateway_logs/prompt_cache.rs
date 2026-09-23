@@ -89,6 +89,7 @@ fn seed_openai_compat_gateway(storage: &Storage, platform_key: &str, key_id: &st
             model_slug: Some(MODEL.to_string()),
             reasoning_effort: None,
             service_tier: None,
+            upstream_provider: Default::default(),
             rotation_strategy: "account_rotation".to_string(),
             aggregate_api_id: None,
             account_plan_filter: None,

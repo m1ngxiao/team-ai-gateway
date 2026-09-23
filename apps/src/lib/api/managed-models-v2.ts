@@ -208,6 +208,8 @@ export function managedModelV2ToModelInfo(model: ManagedModelV2): ModelInfo {
   );
   return {
     slug: model.slug,
+    provider: model.provider,
+    routes: model.routes,
     displayName: model.displayName,
     description: model.description,
     defaultReasoningLevel: model.defaultReasoningEffort,

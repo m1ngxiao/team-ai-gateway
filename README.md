@@ -14,7 +14,7 @@
 - 可选只读看板：独立登录，展示脱敏账号、额度、Key 与分组统计；采集器无网络且只读访问源数据库。
 - 通用 Docker Compose、启动检查、安全目录初始化、SQLite 一致备份及可选 Cloudflare Tunnel 模板。
 
-客户端使用平台 Key，管理员管理上游授权。Anthropic 兼容协议和第三方 API Key 接入不代表支持 Claude OAuth 账号登录。服务端也不会替客户端读写本机 `.codex` 配置。详细能力边界见 [调度说明](docs/SCHEDULING.md) 和 [上游来源](UPSTREAM.md)。
+客户端使用平台 Key，管理员管理上游授权。OpenAI 与 Claude 订阅账号分别保存在独立账号池；平台 Key 必须选择其中一个池。Claude 账号通过后台一次性授权码登录，账号登录后默认停用；管理员配置模型路由并启用账号，再发送真实请求验证。服务端不会替客户端读写本机 `.codex` 配置。详细配置见 [配置参考](docs/CONFIGURATION.md#平台-key-的上游池)，调度边界见 [调度说明](docs/SCHEDULING.md)。
 
 ## 快速开始
 

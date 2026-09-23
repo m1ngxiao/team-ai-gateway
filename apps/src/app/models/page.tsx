@@ -209,7 +209,7 @@ function routeSourceLabel(
   sourceId: string,
   t: (message: string) => string,
 ): string {
-  if (sourceKind === "account_pool") return `${t("账号池")}:${t("默认")}`;
+  if (sourceKind === "account_pool") return sourceId === "claude" ? t("Claude 订阅账号池") : t("OpenAI 账号池");
   return `${t("聚合 API")}:${sourceId}`;
 }
 

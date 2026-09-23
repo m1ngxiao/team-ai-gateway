@@ -1,6 +1,365 @@
 use super::*;
 use codexmanager_core::rpc::types::{ModelInfo, ModelServiceTier, ModelsResponse};
+use codexmanager_core::storage::{
+    now_ts, AggregateApi, ApiKey, ClaudeSubscriptionAccount, ManagedModelV2Upsert,
+    ModelRouteV2, UpstreamProvider,
+};
 use serde_json::Value;
+
+fn insert_catalog_aggregate_api(storage: &Storage, id: &str, provider: &str, status: &str) {
+    let now = now_ts();
+    storage
+        .insert_aggregate_api(&AggregateApi {
+            id: id.to_string(),
+            provider_type: provider.to_string(),
+            supplier_name: None,
+            sort: 0,
+            url: "https://api.example.test/v1".to_string(),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            user_agent: None,
+            status: status.to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+        })
+        .expect("insert aggregate API");
+}
+
+fn set_catalog_aggregate_route(
+    storage: &Storage,
+    slug: &str,
+    aggregate_id: &str,
+    model_enabled: bool,
+    route_enabled: bool,
+) {
+    let mut model = storage
+        .get_managed_model_v2(slug)
+        .expect("read model")
+        .expect("seeded model");
+    model.enabled = model_enabled;
+    model.supported_in_api = true;
+    model.visibility = "list".to_string();
+    model.provider = Some("openai".to_string());
+    model.routes = vec![ModelRouteV2 {
+        id: String::new(),
+        source_kind: "aggregate_api".to_string(),
+        source_id: aggregate_id.to_string(),
+        upstream_model: slug.to_string(),
+        enabled: route_enabled,
+        priority: 0,
+        weight: 1,
+    }];
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(slug.to_string()),
+            model,
+        })
+        .expect("save model route");
+}
+
+fn insert_catalog_key(storage: &Storage, id: &str, provider: UpstreamProvider) {
+    let aggregate_id = match provider {
+        UpstreamProvider::Claude => "agg-claude-pinned",
+        UpstreamProvider::Openai => "agg-codex",
+    };
+    insert_catalog_key_with_route(
+        storage,
+        id,
+        provider,
+        "aggregate_api_rotation",
+        "anthropic_native",
+        Some(aggregate_id),
+    );
+}
+
+fn insert_catalog_key_with_route(
+    storage: &Storage,
+    id: &str,
+    provider: UpstreamProvider,
+    rotation_strategy: &str,
+    protocol_type: &str,
+    aggregate_api_id: Option<&str>,
+) {
+    storage
+        .insert_api_key(&ApiKey {
+            id: id.to_string(),
+            name: None,
+            model_slug: None,
+            reasoning_effort: None,
+            service_tier: None,
+            rotation_strategy: rotation_strategy.to_string(),
+            upstream_provider: provider,
+            aggregate_api_id: aggregate_api_id.map(str::to_string),
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "claude_code".to_string(),
+            protocol_type: protocol_type.to_string(),
+            auth_scheme: "x_api_key".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: format!("hash-{id}"),
+            status: "active".to_string(),
+            created_at: now_ts(),
+            last_used_at: None,
+        })
+        .expect("insert platform key");
+}
+
+#[test]
+fn claude_subscription_models_require_active_claude_account_and_claude_pool_route() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let mut model = storage
+        .get_managed_model_v2("gpt-6-astra")
+        .expect("read model")
+        .expect("seeded model");
+    model.routes = vec![ModelRouteV2 {
+        id: String::new(),
+        source_kind: "account_pool".to_string(),
+        source_id: "claude".to_string(),
+        upstream_model: "claude-sonnet-5".to_string(),
+        enabled: true,
+        priority: 0,
+        weight: 1,
+    }];
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: Some(model.slug.clone()),
+            model,
+        })
+        .expect("save Claude account route");
+    let catalog = crate::models_v2::models_response_with_storage(&storage).expect("catalog");
+    let empty = filter_models_for_claude_accounts(&storage, catalog.clone()).expect("filter");
+    assert!(empty.models.is_empty());
+
+    let now = now_ts();
+    storage
+        .upsert_claude_subscription_account(&ClaudeSubscriptionAccount {
+            id: "claude-test".to_string(),
+            label: "test".to_string(),
+            email: None,
+            account_uuid: None,
+            organization_uuid: None,
+            subscription_type: Some("pro".to_string()),
+            status: "active".to_string(),
+            sort: 0,
+            access_token: "test-access".to_string(),
+            refresh_token: "test-refresh".to_string(),
+            scopes: "user:inference".to_string(),
+            expires_at: now + 3600,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("add Claude account");
+    let filtered = filter_models_for_claude_accounts(&storage, catalog).expect("filter");
+    let slugs = filtered
+        .models
+        .into_iter()
+        .map(|model| model.slug)
+        .collect::<HashSet<_>>();
+    assert_eq!(slugs, HashSet::from(["gpt-6-astra".to_string()]));
+    assert!(!slugs.contains("gpt-6-sol"));
+}
+
+#[test]
+fn claude_models_list_matches_active_claude_aggregate_routes_across_pool() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    insert_catalog_aggregate_api(&storage, "agg-claude-pinned", "claude", "active");
+    insert_catalog_aggregate_api(&storage, "agg-claude-other", "anthropic_native", "active");
+    insert_catalog_aggregate_api(&storage, "agg-claude-disabled", "claude", "disabled");
+    insert_catalog_aggregate_api(&storage, "agg-compatible", "compatible", "active");
+    insert_catalog_aggregate_api(&storage, "agg-codex", "codex", "active");
+    set_catalog_aggregate_route(&storage, "gpt-6-astra", "agg-claude-pinned", true, true);
+    set_catalog_aggregate_route(&storage, "gpt-5.6-sol", "agg-claude-other", true, true);
+    set_catalog_aggregate_route(&storage, "gpt-5.6-terra", "agg-claude-disabled", true, true);
+    set_catalog_aggregate_route(&storage, "gpt-5.6-luna", "agg-compatible", true, true);
+    set_catalog_aggregate_route(&storage, "gpt-5.4", "agg-claude-pinned", true, false);
+    set_catalog_aggregate_route(&storage, "gpt-5.4-mini", "agg-claude-pinned", false, true);
+    insert_catalog_key(&storage, "gk-claude-catalog", UpstreamProvider::Claude);
+    insert_catalog_key(&storage, "gk-openai-catalog", UpstreamProvider::Openai);
+
+    let (cached, policy, claude_key) =
+        read_models_response_for_key(&storage, "gk-claude-catalog").expect("read Claude catalog");
+    assert_eq!(claude_key.upstream_provider, UpstreamProvider::Claude);
+    assert_eq!(
+        policy,
+        crate::codex_model_catalog::GatewayCatalogPolicy::Managed
+    );
+    let (allowed, _) =
+        filter_models_for_catalog_policy(&storage, "gk-claude-catalog", cached, policy)
+            .expect("apply key permissions");
+    let filtered =
+        filter_models_for_claude_upstreams(&storage, allowed).expect("filter Claude routes");
+    let slugs = filtered
+        .models
+        .iter()
+        .map(|model| model.slug.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(slugs.len(), 2);
+    assert!(slugs.contains(&"gpt-6-astra"));
+    assert!(slugs.contains(&"gpt-5.6-sol")); // Not limited to the pinned aggregate API.
+    assert!(!slugs.contains(&"gpt-6-sol")); // Account-pool-only GPT model.
+
+    let (openai_models, _, openai_key) =
+        read_models_response_for_key(&storage, "gk-openai-catalog").expect("read OpenAI catalog");
+    assert_eq!(openai_key.upstream_provider, UpstreamProvider::Openai);
+    assert!(openai_models.models.iter().any(|model| model.slug == "gpt-6-sol"));
+}
+
+#[test]
+fn openai_managed_models_list_only_same_pool_or_hybrid_account_routes() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    insert_catalog_aggregate_api(&storage, "agg-claude-pinned", "claude", "active");
+    insert_catalog_aggregate_api(&storage, "agg-codex", "codex", "active");
+    insert_catalog_aggregate_api(&storage, "agg-compatible", "compatible", "active");
+    insert_catalog_aggregate_api(&storage, "agg-gemini", "gemini", "active");
+    insert_catalog_aggregate_api(&storage, "agg-codex-disabled", "codex", "disabled");
+    set_catalog_aggregate_route(&storage, "gpt-6-astra", "agg-claude-pinned", true, true);
+    set_catalog_aggregate_route(&storage, "gpt-5.6-sol", "agg-codex", true, true);
+    set_catalog_aggregate_route(&storage, "gpt-5.6-terra", "agg-compatible", true, true);
+    set_catalog_aggregate_route(&storage, "gpt-5.6-luna", "agg-gemini", true, true);
+    set_catalog_aggregate_route(&storage, "gpt-5.4", "agg-codex", true, false);
+    set_catalog_aggregate_route(&storage, "gpt-5.4-mini", "agg-codex-disabled", true, true);
+    insert_catalog_key_with_route(
+        &storage,
+        "gk-openai-aggregate",
+        UpstreamProvider::Openai,
+        "aggregate_api_rotation",
+        "openai_compat",
+        Some("agg-codex"),
+    );
+    insert_catalog_key_with_route(
+        &storage,
+        "gk-openai-hybrid",
+        UpstreamProvider::Openai,
+        "hybrid_rotation",
+        "openai_compat",
+        Some("agg-codex"),
+    );
+    let model = storage
+        .get_managed_model_v2("gpt-6-astra")
+        .expect("read mislabeled model")
+        .expect("model exists");
+    assert_eq!(model.provider.as_deref(), Some("openai"));
+
+    let listed = |key_id| {
+        let (cached, policy, key) =
+            read_models_response_for_key(&storage, key_id).expect("read managed catalog");
+        assert_eq!(policy, crate::codex_model_catalog::GatewayCatalogPolicy::Managed);
+        let (allowed, _) = filter_models_for_catalog_policy(&storage, key_id, cached, policy)
+            .expect("apply key permissions");
+        filter_models_for_openai_managed_upstreams(&storage, allowed, &key)
+            .expect("filter OpenAI routes")
+            .models
+            .into_iter()
+            .map(|model| model.slug)
+            .collect::<HashSet<_>>()
+    };
+    let aggregate = listed("gk-openai-aggregate");
+    assert!(aggregate.contains("gpt-5.6-sol"));
+    assert!(aggregate.contains("gpt-5.6-terra")); // Compatible is in the Codex pool.
+    assert!(!aggregate.contains("gpt-6-astra")); // Metadata alone cannot select Claude.
+    assert!(!aggregate.contains("gpt-6-sol")); // Account-pool route is not aggregate.
+    assert!(!aggregate.contains("gpt-5.6-luna")); // Gemini is a separate pool.
+    assert!(!aggregate.contains("gpt-5.4")); // Disabled route.
+    assert!(!aggregate.contains("gpt-5.4-mini")); // Disabled upstream.
+
+    let hybrid = listed("gk-openai-hybrid");
+    assert!(hybrid.contains("gpt-6-sol"));
+    assert!(hybrid.contains("gpt-5.6-sol"));
+    assert!(!hybrid.contains("gpt-6-astra"));
+
+    // The legacy API-key profile schema cannot persist gemini_native yet; test
+    // the protocol-aware route selection with a request-time Key value.
+    let (cached, policy, mut gemini_key) =
+        read_models_response_for_key(&storage, "gk-openai-aggregate").expect("read Gemini base key");
+    gemini_key.protocol_type = "gemini_native".to_string();
+    let (allowed, _) =
+        filter_models_for_catalog_policy(&storage, "gk-openai-aggregate", cached, policy)
+            .expect("apply key permissions");
+    let gemini = filter_models_for_openai_managed_upstreams(&storage, allowed, &gemini_key)
+        .expect("filter Gemini routes")
+        .models
+        .into_iter()
+        .map(|model| model.slug)
+        .collect::<HashSet<_>>();
+    assert!(gemini.contains("gpt-5.6-luna"));
+    assert!(!gemini.contains("gpt-5.6-sol"));
+    assert!(!gemini.contains("gpt-6-astra"));
+}
+
+#[test]
+fn managed_codex_catalog_only_contains_models_reachable_by_its_key() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    insert_catalog_aggregate_api(&storage, "agg-claude-pinned", "claude", "active");
+    insert_catalog_aggregate_api(&storage, "agg-codex", "codex", "active");
+    set_catalog_aggregate_route(&storage, "gpt-6-astra", "agg-claude-pinned", true, true);
+    set_catalog_aggregate_route(&storage, "gpt-5.6-sol", "agg-codex", true, true);
+    insert_catalog_key_with_route(
+        &storage,
+        "gk-openai-local-catalog",
+        UpstreamProvider::Openai,
+        "aggregate_api_rotation",
+        "openai_compat",
+        Some("agg-codex"),
+    );
+    insert_catalog_key_with_route(
+        &storage,
+        "gk-claude-local-catalog",
+        UpstreamProvider::Claude,
+        "aggregate_api_rotation",
+        "anthropic_native",
+        Some("agg-claude-pinned"),
+    );
+
+    for (key_id, expected_slug) in [
+        ("gk-openai-local-catalog", "gpt-5.6-sol"),
+        ("gk-claude-local-catalog", "gpt-6-astra"),
+    ] {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gateway-model-catalog-{}-{unique}.json",
+            std::process::id()
+        ));
+        let count = crate::codex_model_catalog::write_gateway_model_catalog(
+            &storage,
+            key_id,
+            &path,
+            crate::codex_model_catalog::GatewayCatalogPolicy::Managed,
+        )
+        .expect("write filtered Codex catalog");
+        let catalog: Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("read Codex catalog"),
+        )
+        .expect("parse Codex catalog");
+        std::fs::remove_file(&path).expect("remove test catalog");
+
+        assert_eq!(count, 1);
+        assert_eq!(catalog["models"].as_array().map(Vec::len), Some(1));
+        assert_eq!(catalog["models"][0]["slug"], expected_slug);
+    }
+}
 
 #[test]
 fn official_account_catalog_bypasses_manager_key_filters() {

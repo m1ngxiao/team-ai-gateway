@@ -1,6 +1,7 @@
 use codexmanager_core::rpc::types::JsonRpcRequest;
 use codexmanager_core::storage::{
-    now_ts, Account, Event, ProxyProfileCreateInput, RequestLog, RequestTokenStat, Storage, Token,
+    now_ts, Account, AggregateApi, Event, ManagedModelV2Upsert, ModelRouteV2,
+    ProxyProfileCreateInput, RequestLog, RequestTokenStat, Storage, Token,
     UsageSnapshotRecord,
 };
 use std::fs;
@@ -4024,6 +4025,392 @@ fn rpc_apikey_create_accepts_custom_key_and_rejects_duplicate() {
     assert!(message.contains("custom api key already exists"));
 }
 
+#[test]
+fn rpc_apikey_upstream_provider_isolates_claude_account_and_aggregate_routes() {
+    let ctx = RpcTestContext::new("rpc-apikey-upstream-provider");
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    storage.init().expect("init schema");
+    for (id, provider_type) in [
+        ("agg-claude", "claude"),
+        ("agg-claude-alt", "claude"),
+        ("agg-openai", "codex"),
+        ("agg-compatible", "compatible"),
+    ] {
+        let now = now_ts();
+        storage
+            .insert_aggregate_api(&AggregateApi {
+                id: id.to_string(),
+                provider_type: provider_type.to_string(),
+                supplier_name: None,
+                sort: 0,
+                url: "https://api.example.test/v1".to_string(),
+                auth_type: "apikey".to_string(),
+                auth_params_json: None,
+                action: None,
+                model_override: None,
+                user_agent: None,
+                status: if provider_type == "claude" {
+                    " active ".to_string()
+                } else {
+                    "active".to_string()
+                },
+                created_at: now,
+                updated_at: now,
+                last_test_at: None,
+                last_test_status: None,
+                last_test_error: None,
+                balance_query_enabled: false,
+                balance_query_template: None,
+                balance_query_base_url: None,
+                balance_query_user_id: None,
+                balance_query_config_json: None,
+                last_balance_at: None,
+                last_balance_status: None,
+                last_balance_error: None,
+                last_balance_json: None,
+            })
+            .expect("insert aggregate API");
+    }
+
+    let rpc = |method: &str, params: serde_json::Value| {
+        let server = codexmanager_service::start_one_shot_server().expect("start server");
+        let request = JsonRpcRequest {
+            id: 90.into(),
+            method: method.to_string(),
+            params: Some(params),
+            trace: None,
+        };
+        post_rpc(
+            &server.addr,
+            &serde_json::to_string(&request).expect("serialize RPC"),
+        )
+    };
+    let subscription_key = rpc(
+        "apikey/create",
+        serde_json::json!({
+            "name": "Claude subscription account pool",
+            "upstreamProvider": "claude",
+            "rotationStrategy": "account_rotation"
+        }),
+    );
+    let subscription_key_id = subscription_key["result"]["id"]
+        .as_str()
+        .expect("Claude subscription key id");
+    let subscription_key = storage
+        .find_api_key_by_id(subscription_key_id)
+        .expect("find Claude subscription key")
+        .expect("Claude subscription key exists");
+    assert_eq!(subscription_key.upstream_provider, codexmanager_core::storage::UpstreamProvider::Claude);
+    assert_eq!(subscription_key.rotation_strategy, "account_rotation");
+    assert_eq!(subscription_key.aggregate_api_id, None);
+
+    let wrong_provider = rpc(
+        "apikey/create",
+        serde_json::json!({
+            "name": "wrong-provider",
+            "upstreamProvider": "claude",
+            "rotationStrategy": "aggregate_api_rotation",
+            "aggregateApiId": "agg-openai"
+        }),
+    );
+    assert!(wrong_provider["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("Claude aggregateApiId")));
+
+    let invalid_protocol = rpc(
+        "apikey/create",
+        serde_json::json!({
+            "name": "Claude key with Gemini protocol",
+            "upstreamProvider": "claude",
+            "protocolType": "gemini_native",
+            "rotationStrategy": "aggregate_api_rotation",
+            "aggregateApiId": "agg-claude"
+        }),
+    );
+    assert!(invalid_protocol["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("does not support gemini_native protocol")));
+
+    let legacy_created = rpc(
+        "apikey/create",
+        serde_json::json!({
+            "name": "legacy Claude key",
+            "rotationStrategy": "aggregate_api_rotation",
+            "aggregateApiId": "agg-claude"
+        }),
+    );
+    let legacy_id = legacy_created["result"]["id"]
+        .as_str()
+        .expect("legacy client key id");
+    assert_eq!(
+        storage
+            .find_api_key_by_id(legacy_id)
+            .expect("find legacy key")
+            .expect("legacy key exists")
+            .upstream_provider,
+        codexmanager_core::storage::UpstreamProvider::Claude
+    );
+
+    let ambiguous_create = rpc(
+        "apikey/create",
+        serde_json::json!({
+            "name": "legacy unpinned aggregate",
+            "rotationStrategy": "aggregate_api_rotation"
+        }),
+    );
+    assert!(ambiguous_create["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("upstreamProvider is required")));
+    let ambiguous_compatible_create = rpc(
+        "apikey/create",
+        serde_json::json!({
+            "name": "legacy compatible aggregate",
+            "rotationStrategy": "aggregate_api_rotation",
+            "aggregateApiId": "agg-compatible"
+        }),
+    );
+    assert!(ambiguous_compatible_create["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("upstreamProvider is required")));
+
+    let missing_model_route = rpc(
+        "apikey/create",
+        serde_json::json!({
+            "name": "Claude key without model route",
+            "modelSlug": "gpt-5.4-mini",
+            "upstreamProvider": "claude",
+            "rotationStrategy": "aggregate_api_rotation",
+            "aggregateApiId": "agg-claude"
+        }),
+    );
+    assert!(missing_model_route["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("no active Claude aggregate API route")));
+
+    let mut model = storage
+        .get_managed_model_v2("gpt-5.4-mini")
+        .expect("get test model")
+        .expect("built-in test model");
+    model.routes.push(ModelRouteV2 {
+        id: String::new(),
+        source_kind: "aggregate_api".to_string(),
+        source_id: "agg-claude-alt".to_string(),
+        upstream_model: "gpt-5.4-mini".to_string(),
+        enabled: true,
+        priority: 10,
+        weight: 1,
+    });
+    storage
+        .upsert_managed_model_v2(&ManagedModelV2Upsert {
+            previous_slug: None,
+            model,
+        })
+        .expect("add enabled route to another Claude aggregate API");
+
+    let openai_with_claude_only_model = rpc(
+        "apikey/create",
+        serde_json::json!({
+            "name": "OpenAI key with Claude-only model",
+            "modelSlug": "gpt-5.4-mini",
+            "upstreamProvider": "openai",
+            "rotationStrategy": "aggregate_api_rotation",
+            "aggregateApiId": "agg-openai"
+        }),
+    );
+    assert!(openai_with_claude_only_model["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("OpenAI model has no active upstream route")));
+
+    let created = rpc(
+        "apikey/create",
+        serde_json::json!({
+            "name": "Claude key",
+            "modelSlug": "gpt-5.4-mini",
+            "upstreamProvider": "claude",
+            "rotationStrategy": "aggregate_api_rotation",
+            "aggregateApiId": "agg-claude"
+        }),
+    );
+    let key_id = created["result"]["id"]
+        .as_str()
+        .expect("created Claude key id")
+        .to_string();
+    let list = rpc("apikey/list", serde_json::json!({}));
+    let item = list["result"]["items"]
+        .as_array()
+        .expect("list items")
+        .iter()
+        .find(|item| item["id"] == key_id)
+        .expect("created key in list");
+    assert_eq!(item["upstreamProvider"], "claude");
+
+    rusqlite::Connection::open(ctx.db_path())
+        .expect("open review marker connection")
+        .execute(
+            "UPDATE api_keys SET status = 'disabled', requires_route_review = 1 WHERE id = ?1",
+            [&key_id],
+        )
+        .expect("mark migrated route for review");
+    let premature_enable = rpc("apikey/enable", serde_json::json!({"id": key_id}));
+    assert!(premature_enable["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("administrator upstream provider review")));
+    let unchanged_provider = rpc(
+        "apikey/updateModel",
+        serde_json::json!({"id": key_id, "name": "renamed", "upstreamProvider": "claude"}),
+    );
+    assert_eq!(unchanged_provider["result"]["ok"], true);
+    assert_eq!(
+        storage.api_key_requires_route_review(&key_id).expect("read review marker"),
+        Some(true)
+    );
+    let missing_confirmation_provider = rpc(
+        "apikey/updateModel",
+        serde_json::json!({"id": key_id, "confirmRouteReview": true}),
+    );
+    assert!(missing_confirmation_provider["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("explicit upstreamProvider")));
+    let confirmed = rpc(
+        "apikey/updateModel",
+        serde_json::json!({
+            "id": key_id,
+            "upstreamProvider": "claude",
+            "confirmRouteReview": true
+        }),
+    );
+    assert_eq!(confirmed["result"]["ok"], true);
+    assert_eq!(
+        storage.api_key_requires_route_review(&key_id).expect("read review marker"),
+        Some(false)
+    );
+    assert_eq!(rpc("apikey/enable", serde_json::json!({"id": key_id}))["result"]["ok"], true);
+
+    let invalid_model_update = rpc(
+        "apikey/updateModel",
+        serde_json::json!({"id": key_id, "modelSlug": "gpt-5.4"}),
+    );
+    assert!(invalid_model_update["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("no active Claude aggregate API route")));
+    assert_eq!(
+        storage
+            .find_api_key_by_id(&key_id)
+            .expect("read after rejected model update")
+            .expect("key exists")
+            .model_slug
+            .as_deref(),
+        Some("gpt-5.4-mini")
+    );
+
+    let invalid_protocol_update = rpc(
+        "apikey/updateModel",
+        serde_json::json!({"id": key_id, "protocolType": "gemini_native"}),
+    );
+    assert!(invalid_protocol_update["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("does not support gemini_native protocol")));
+    assert_eq!(
+        storage
+            .find_api_key_by_id(&key_id)
+            .expect("read after rejected protocol update")
+            .expect("key exists")
+            .protocol_type,
+        "openai_compat"
+    );
+
+    let unsafe_switch = rpc(
+        "apikey/updateModel",
+        serde_json::json!({"id": key_id, "upstreamProvider": "openai"}),
+    );
+    assert!(unsafe_switch["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("cannot pin a Claude aggregateApiId")));
+    assert_eq!(
+        storage
+            .find_api_key_by_id(&key_id)
+            .expect("read after rejected update")
+            .expect("key exists")
+            .upstream_provider,
+        codexmanager_core::storage::UpstreamProvider::Claude
+    );
+
+    storage
+        .update_api_key_rotation_config(
+            &key_id,
+            "hybrid_rotation",
+            Some("agg-claude"),
+            None,
+        )
+        .expect("seed legacy pinned hybrid route");
+    let unsafe_hybrid_switch = rpc(
+        "apikey/updateModel",
+        serde_json::json!({"id": key_id, "upstreamProvider": "openai"}),
+    );
+    assert!(unsafe_hybrid_switch["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("cannot pin a Claude aggregateApiId")));
+    storage
+        .update_api_key_rotation_config(
+            &key_id,
+            "aggregate_api_rotation",
+            Some("agg-claude"),
+            None,
+        )
+        .expect("restore aggregate-only route");
+
+    let invalid_header_switch = rpc(
+        "apikey/updateModel",
+        serde_json::json!({
+            "id": key_id,
+            "upstreamProvider": "openai",
+            "rotationStrategy": "account_rotation",
+            "staticHeadersJson": "{"
+        }),
+    );
+    assert!(invalid_header_switch["result"]["error"].is_string());
+    let after_invalid_header = storage
+        .find_api_key_by_id(&key_id)
+        .expect("read key after invalid header")
+        .expect("key exists");
+    assert_eq!(after_invalid_header.upstream_provider, codexmanager_core::storage::UpstreamProvider::Claude);
+    assert_eq!(after_invalid_header.rotation_strategy, "aggregate_api_rotation");
+
+    let switched = rpc(
+        "apikey/updateModel",
+        serde_json::json!({
+            "id": key_id,
+            "upstreamProvider": "openai",
+            "rotationStrategy": "account_rotation"
+        }),
+    );
+    assert_eq!(switched["result"]["ok"], true);
+    assert_eq!(
+        storage
+            .find_api_key_by_id(&key_id)
+            .expect("read switched key")
+            .expect("key exists")
+            .upstream_provider,
+        codexmanager_core::storage::UpstreamProvider::Openai
+    );
+    let invalid_openai_aggregate_switch = rpc(
+        "apikey/updateModel",
+        serde_json::json!({
+            "id": key_id,
+            "upstreamProvider": "openai",
+            "rotationStrategy": "aggregate_api_rotation",
+            "aggregateApiId": "agg-openai"
+        }),
+    );
+    assert!(invalid_openai_aggregate_switch["result"]["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("OpenAI model has no active upstream route")));
+    assert_eq!(
+        storage.find_api_key_by_id(&key_id).expect("read after rejected route").expect("key").rotation_strategy,
+        "account_rotation"
+    );
+}
+
 /// 函数 `rpc_apikey_update_model_updates_name_with_chinese`
 ///
 /// 作者: gaohongshun
@@ -4047,6 +4434,7 @@ fn rpc_apikey_update_model_updates_name_with_chinese() {
             model_slug: Some("gpt-5.4".to_string()),
             reasoning_effort: Some("medium".to_string()),
             service_tier: None,
+            upstream_provider: Default::default(),
             rotation_strategy: "account_rotation".to_string(),
             aggregate_api_id: None,
             account_plan_filter: None,

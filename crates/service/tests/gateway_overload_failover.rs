@@ -34,6 +34,7 @@ fn seed(storage: &Storage, tag: &str, accounts: usize) {
     storage.insert_api_key(&ApiKey {
         id: format!("key-{tag}"), name: Some(format!("synthetic-{tag}")),
         model_slug: Some(MODEL.into()), reasoning_effort: None, service_tier: None,
+        upstream_provider: Default::default(),
         rotation_strategy: "account_rotation".into(), aggregate_api_id: None,
         account_plan_filter: None, aggregate_api_url: None, client_type: "codex".into(),
         protocol_type: "openai_compat".into(), auth_scheme: "authorization_bearer".into(),

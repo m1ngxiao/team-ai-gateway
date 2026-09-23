@@ -15,6 +15,7 @@ const modulePaths = [
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "browser-direct.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "codex-profile.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "codex-skills.ts"),
+  path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "claude-subscription.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "gateway.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "login.ts"),
   path.join(appsRoot, "src", "lib", "api", "transport-web-commands", "misc.ts"),
@@ -31,6 +32,7 @@ function rewriteImports(outputText) {
     .replaceAll('./transport-web-commands/browser-direct', './transport-web-commands/browser-direct.js')
     .replaceAll('./transport-web-commands/codex-profile', './transport-web-commands/codex-profile.js')
     .replaceAll('./transport-web-commands/codex-skills', './transport-web-commands/codex-skills.js')
+    .replaceAll('./transport-web-commands/claude-subscription', './transport-web-commands/claude-subscription.js')
     .replaceAll('./transport-web-commands/gateway', './transport-web-commands/gateway.js')
     .replaceAll('./transport-web-commands/login', './transport-web-commands/login.js')
     .replaceAll('./transport-web-commands/misc', './transport-web-commands/misc.js')
@@ -185,6 +187,14 @@ test("createWebCommandMap 为账号预热命令提供 Web RPC 映射", () => {
   assert.deepEqual(warmup, {
     rpcMethod: "account/warmup",
   });
+});
+
+test("Claude 订阅账号命令映射到独立管理 RPC", () => {
+  assert.equal(commandMap.service_claude_account_list.rpcMethod, "claudeAccount/list");
+  assert.equal(commandMap.service_claude_account_login_start.rpcMethod, "claudeAccount/loginStart");
+  assert.equal(commandMap.service_claude_account_login_complete.rpcMethod, "claudeAccount/loginComplete");
+  assert.equal(commandMap.service_claude_account_update_status.rpcMethod, "claudeAccount/updateStatus");
+  assert.equal(commandMap.service_claude_account_delete.rpcMethod, "claudeAccount/delete");
 });
 
 test("createWebCommandMap 为批量账号排序提供 Web RPC 映射", () => {

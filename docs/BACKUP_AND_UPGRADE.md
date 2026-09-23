@@ -49,6 +49,10 @@ sudo python3 scripts/Inspect-CodexManagerDatabase.py \
 
 gateway 内主服务与 Web 共享单个镜像并由 launcher 管理。collector 和 dashboard 共用另一个镜像；其 snapshot schema 需要匹配。后续若发行说明要求分阶段更新，应依说明执行，不能假定任意版本互相兼容。
 
+新增的平台 Key `upstreamProvider` 字段默认是 `openai`。迁移时，旧 Key 若采用 `aggregate_api_rotation` 且固定了 Claude AggregateApi，会先标记为 `claude`，供管理员识别。旧版按请求路径选择候选池，而且显式固定的上游失败后可能继续尝试其他厂商；因此只要库中存在原生 Claude AggregateApi，所有聚合或混合轮转 Key 都会设为 disabled 并标记“需检查路由”。若没有原生 Claude，但同时存在 `compatible` 与 Codex 类上游，未固定活跃 Codex 类上游的聚合或混合 Key 也会标记，避免 `/v1/messages` 升级后尝试不同的候选。迁移保留 Key、密钥和其他配置，不会让上述请求静默转向另一厂商。账号轮转等未受影响的旧 Key 保持 `openai`。
+
+升级验收时在后台检查标记“需检查路由”的 Key，包括升级前已 disabled 的 Key。管理员需在编辑页主动重新选择上游池并保存，才能启用；仅修改名称或成员直接点“启用”不会清除标记。继续使用 Claude API Key 上游时，选择 `claude` + `aggregate_api_rotation`，绑定启用的 Claude AggregateApi，并确认模型有 Claude 聚合路由。新建 Claude 订阅账号池 Key 时选择 `claude` + `account_rotation`，在模型目录配置 `account_pool/claude` 路由，并单独授权 Claude 账号。原本同时依赖 OpenAI 账号和 Claude 聚合的混合 Key，需明确选择单一上游池，或拆成两个平台 Key 分别使用。迁移不会把既有 API 上游凭据转换为 Claude.ai 订阅账号授权。
+
 ## 从已有部署迁移
 
 先在目标服务器构建镜像、创建空数据目录并验证网络条件。源部署若使用旧路径 `deploy/linux/data/codexmanager`，迁入新路径 `deploy/data/gateway`；旧 `deploy/linux/private` 对应新 `deploy/private`。Docker 容器内数据库文件名仍是 `codexmanager.db`。

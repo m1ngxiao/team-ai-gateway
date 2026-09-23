@@ -40,6 +40,7 @@ use super::{
     ChatCompletionsFromResponsesSseReader, GeminiSseReader, ImagesFromResponsesSseReader,
     ImagesResponseFormat, OpenAIResponsesPassthroughSseReader, PassthroughSseCollector,
     PassthroughSseProtocol, PassthroughSseUsageReader, ResponsesFromAnthropicSseReader,
+    ResponsesFromAnthropicTerminal,
     SseKeepAliveFrame, UpstreamResponseBridgeResult, UpstreamResponseUsage,
 };
 
@@ -121,6 +122,34 @@ fn respond_usage_collector_stream(
         meta.identity_error_code,
         meta.content_type,
     )
+}
+
+fn respond_responses_from_anthropic_stream(
+    request: Request,
+    status: StatusCode,
+    headers: Vec<Header>,
+    response_body: Box<dyn std::io::Read + Send>,
+    usage_collector: Arc<Mutex<UpstreamResponseUsage>>,
+    terminal_collector: Arc<Mutex<ResponsesFromAnthropicTerminal>>,
+    meta: UpstreamDebugMetaRefs<'_>,
+) -> UpstreamResponseBridgeResult {
+    let delivery_error = respond_streaming_chunked(request, status, headers, response_body)
+        .err().map(|err| err.to_string());
+    let usage = usage_collector.lock().map(|guard| guard.clone()).unwrap_or_default();
+    let terminal = terminal_collector.lock().map(|guard| guard.clone()).unwrap_or_default();
+    let mut result = terminal_bridge_result_with_debug_meta(
+        usage,
+        delivery_error,
+        terminal.error.clone(),
+        meta.request_id,
+        meta.cf_ray,
+        meta.auth_error,
+        meta.identity_error_code,
+        meta.content_type,
+    );
+    result.stream_terminal_seen = terminal.saw_message_stop;
+    result.stream_terminal_error = terminal.error;
+    result
 }
 
 fn respond_passthrough_collector_stream(
@@ -378,19 +407,22 @@ pub(crate) fn respond_with_upstream(
             }
             ResponseAdapter::ResponsesFromAnthropicMessages => {
                 let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
+                let terminal_collector = Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
                 let response_body: Box<dyn std::io::Read + Send> =
                     Box::new(ResponsesFromAnthropicSseReader::new(
                         upstream,
                         Arc::clone(&usage_collector),
+                        Arc::clone(&terminal_collector),
                         fallback_model,
                         request_started_at,
                     ));
-                return Ok(respond_usage_collector_stream(
+                return Ok(respond_responses_from_anthropic_stream(
                     request,
                     status,
                     headers,
                     response_body,
                     usage_collector,
+                    terminal_collector,
                     UpstreamDebugMetaRefs {
                         request_id: &upstream_request_id,
                         cf_ray: &upstream_cf_ray,
@@ -1133,19 +1165,22 @@ pub(crate) fn respond_with_stream_upstream(
                     .read_all_bytes()
                     .map_err(|err| format!("read upstream body failed: {err}"))?;
                 let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
+                let terminal_collector = Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
                 let response_body: Box<dyn std::io::Read + Send> =
                     Box::new(ResponsesFromAnthropicSseReader::from_reader(
                         std::io::Cursor::new(upstream_body.to_vec()),
                         Arc::clone(&usage_collector),
+                        Arc::clone(&terminal_collector),
                         fallback_model,
                         request_started_at,
                     ));
-                return Ok(respond_usage_collector_stream(
+                return Ok(respond_responses_from_anthropic_stream(
                     request,
                     status,
                     headers,
                     response_body,
                     usage_collector,
+                    terminal_collector,
                     UpstreamDebugMetaRefs {
                         request_id: &upstream_request_id,
                         cf_ray: &upstream_cf_ray,

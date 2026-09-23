@@ -33,6 +33,7 @@ import {
   type StatusFilter,
 } from "@/app/accounts/accounts-page-helpers";
 import { AccountsPageView } from "@/app/accounts/accounts-page-view";
+import { ClaudeSubscriptionAccountsPanel } from "@/components/accounts/claude-subscription-accounts-panel";
 import { AggregateApiModelAssociationModal } from "@/components/modals/aggregate-api-model-association-modal";
 import { isBannedAccount, isLimitedAccount } from "@/lib/utils/usage";
 import { accountClient } from "@/lib/api/account-client";
@@ -994,6 +995,8 @@ const toggleCleanupStatus = (rawStatus: string) => {
 
   return (
     <>
+    <div className="space-y-6">
+    <ClaudeSubscriptionAccountsPanel serviceAddr={serviceAddr} enabled={isServiceReady && canTestAccounts} />
     <AccountsPageView
       accounts={accounts}
       planTypes={planTypes}
@@ -1129,6 +1132,7 @@ const toggleCleanupStatus = (rawStatus: string) => {
       toggleForceEnabled={handleToggleForceEnabled}
       toggleAccountStatus={toggleAccountStatus}
     />
+    </div>
       <AggregateApiModelAssociationModal
         open={isPageActive && Boolean(modelAssociationAccount)}
         onOpenChange={handleModelAssociationOpenChange}

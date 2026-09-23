@@ -280,6 +280,7 @@ fn seed_api_key_owner(storage: &Storage) {
             model_slug: Some("gpt-5".to_string()),
             reasoning_effort: None,
             service_tier: None,
+            upstream_provider: Default::default(),
             rotation_strategy: "account_rotation".to_string(),
             aggregate_api_id: None,
             account_plan_filter: None,

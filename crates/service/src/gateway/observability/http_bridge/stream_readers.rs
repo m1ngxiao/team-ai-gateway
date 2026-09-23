@@ -46,7 +46,7 @@ pub(crate) use gemini::GeminiSseReader;
 pub(crate) use images::ImagesFromResponsesSseReader;
 pub(crate) use openai_responses::OpenAIResponsesPassthroughSseReader;
 pub(crate) use passthrough::PassthroughSseUsageReader;
-pub(crate) use responses_from_anthropic::ResponsesFromAnthropicSseReader;
+pub(crate) use responses_from_anthropic::{ResponsesFromAnthropicSseReader, ResponsesFromAnthropicTerminal};
 
 #[cfg(test)]
 struct SseKeepaliveRuntimeGuard {

@@ -1,3 +1,5 @@
+export type ApiKeyUpstreamProvider = "openai" | "claude";
+
 export interface ApiKey {
   id: string;
   name: string;
@@ -6,6 +8,8 @@ export interface ApiKey {
   reasoningEffort: string;
   serviceTier: string;
   rotationStrategy: string;
+  upstreamProvider: ApiKeyUpstreamProvider;
+  requiresRouteReview: boolean;
   aggregateApiId: string | null;
   accountPlanFilter: string | null;
   accountGroupFilter: string | null;

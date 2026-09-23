@@ -1285,6 +1285,36 @@ test("模型目录支持中文展示并为多个模型批量分配路由", async
   }
 });
 
+test("Claude 账号池路由在单个与批量模型编辑中保留来源 ID", async ({ page }) => {
+  const state = await installMockRuntime(page);
+  await page.goto("/models/");
+
+  await page.getByRole("button", { name: "新增网关自定义模型" }).click();
+  const modelDialog = page.getByRole("dialog");
+  await modelDialog.getByLabel("模型标识（Slug）").fill("claude-sonnet-pool-test");
+  await modelDialog.getByLabel("显示名称").fill("Claude Sonnet Pool Test");
+  await modelDialog.getByRole("tab", { name: "路由" }).click();
+  await modelDialog.locator("#route-source-0").click();
+  await page.getByRole("option", { name: "Claude 订阅账号池" }).click();
+  await modelDialog.locator("#route-model-0").fill("claude-sonnet-pool-test");
+  await modelDialog.getByRole("button", { name: "保存模型" }).click();
+  await expect.poll(() => state.upserts.length).toBe(1);
+  expect((state.upserts[0].model as JsonObject).routes).toEqual(expect.arrayContaining([
+    expect.objectContaining({ sourceKind: "account_pool", sourceId: "claude" }),
+  ]));
+
+  await page.getByLabel("选择模型 gpt-5.6-sol").click();
+  await page.getByRole("button", { name: "批量分配路由 (1)" }).click();
+  const batchDialog = page.getByRole("dialog", { name: "批量分配模型路由" });
+  await batchDialog.locator("#batch-route-source-0").click();
+  await page.getByRole("option", { name: "Claude 订阅账号池" }).click();
+  await batchDialog.getByRole("button", { name: "应用到 1 个模型" }).click();
+  await expect.poll(() => state.upserts.length).toBe(2);
+  expect((state.upserts[1].model as JsonObject).routes).toEqual(expect.arrayContaining([
+    expect.objectContaining({ sourceKind: "account_pool", sourceId: "claude" }),
+  ]));
+});
+
 test("模型目录 V2 完成本地管理、原子保存和导入", async ({ page }) => {
   const state = await installMockRuntime(page);
 

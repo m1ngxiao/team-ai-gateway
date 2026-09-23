@@ -149,6 +149,7 @@ pub async fn service_apikey_create(
     upstream_base_url: Option<String>,
     static_headers_json: Option<String>,
     rotation_strategy: Option<String>,
+    upstream_provider: Option<String>,
     aggregate_api_id: Option<String>,
     account_plan_filter: Option<String>,
     account_group_filter: Option<String>,
@@ -164,6 +165,7 @@ pub async fn service_apikey_create(
       "upstreamBaseUrl": upstream_base_url,
       "staticHeadersJson": static_headers_json,
       "rotationStrategy": rotation_strategy,
+      "upstreamProvider": upstream_provider,
       "aggregateApiId": aggregate_api_id,
       "accountPlanFilter": account_plan_filter,
       "accountGroupFilter": account_group_filter,
@@ -203,6 +205,8 @@ struct ApiKeyUpdateRpcPayload {
     upstream_base_url: Option<String>,
     static_headers_json: Option<String>,
     rotation_strategy: Option<String>,
+    upstream_provider: Option<String>,
+    confirm_route_review: bool,
     aggregate_api_id: Option<String>,
     account_plan_filter: Option<String>,
     has_routing_config: bool,
@@ -258,6 +262,15 @@ impl ApiKeyUpdateRpcPayload {
                 "accountPlanFilter".to_string(),
                 serde_json::json!(self.account_plan_filter),
             );
+        }
+        if let Some(upstream_provider) = self.upstream_provider {
+            params.insert(
+                "upstreamProvider".to_string(),
+                serde_json::json!(upstream_provider),
+            );
+        }
+        if self.confirm_route_review {
+            params.insert("confirmRouteReview".to_string(), serde_json::json!(true));
         }
         if self.has_account_group_filter {
             params.insert(
@@ -334,6 +347,8 @@ pub async fn service_apikey_update_model(
     upstream_base_url: Option<String>,
     static_headers_json: Option<String>,
     rotation_strategy: Option<String>,
+    upstream_provider: Option<String>,
+    confirm_route_review: Option<bool>,
     aggregate_api_id: Option<String>,
     account_plan_filter: Option<String>,
     has_routing_config: Option<bool>,
@@ -373,6 +388,8 @@ pub async fn service_apikey_update_model(
         upstream_base_url,
         static_headers_json,
         rotation_strategy,
+        upstream_provider,
+        confirm_route_review: confirm_route_review == Some(true),
         aggregate_api_id,
         account_plan_filter,
         has_routing_config,
@@ -501,6 +518,22 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("team-a")
         );
+        assert!(group_only.get("upstreamProvider").is_none());
+
+        let provider_change = ApiKeyUpdateRpcPayload {
+            key_id: "key-1".to_string(),
+            upstream_provider: Some("claude".to_string()),
+            confirm_route_review: true,
+            ..Default::default()
+        }
+        .into_value();
+        assert_eq!(
+            provider_change
+                .get("upstreamProvider")
+                .and_then(serde_json::Value::as_str),
+            Some("claude")
+        );
+        assert_eq!(provider_change.get("confirmRouteReview").and_then(serde_json::Value::as_bool), Some(true));
 
         let explicit_clears = ApiKeyUpdateRpcPayload {
             key_id: "key-1".to_string(),

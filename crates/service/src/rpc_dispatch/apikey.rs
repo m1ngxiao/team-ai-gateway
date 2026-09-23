@@ -137,6 +137,11 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
             } else {
                 None
             };
+            let upstream_provider = if actor.is_admin() {
+                super::string_param(req, "upstreamProvider")
+            } else {
+                None
+            };
             let aggregate_api_id = if actor.is_admin() {
                 super::string_param(req, "aggregateApiId")
             } else {
@@ -163,6 +168,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 upstream_base_url,
                 static_headers_json,
                 rotation_strategy,
+                upstream_provider,
                 aggregate_api_id,
                 account_plan_filter,
                 account_group_filter,
@@ -325,6 +331,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
             let upstream_base_url = super::string_param(req, "upstreamBaseUrl");
             let static_headers_json = super::string_param(req, "staticHeadersJson");
             let rotation_strategy = super::string_param(req, "rotationStrategy");
+            let upstream_provider = super::string_param(req, "upstreamProvider");
             let aggregate_api_id = super::string_param(req, "aggregateApiId");
             let account_plan_filter = super::string_param(req, "accountPlanFilter");
             let account_group_filter = super::string_param(req, "accountGroupFilter");
@@ -341,6 +348,13 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                         || params.contains_key("aggregateApiId")
                         || params.contains_key("accountPlanFilter")
                 });
+            let update_upstream_provider = actor.is_admin()
+                && params.is_some_and(|params| params.contains_key("upstreamProvider"));
+            let confirm_route_review = actor.is_admin()
+                && params
+                    .and_then(|params| params.get("confirmRouteReview"))
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true);
             let update_account_group_filter = actor.is_admin()
                 && params.is_some_and(|params| params.contains_key("accountGroupFilter"));
             let quota_limit_tokens = super::i64_param(req, "quotaLimitTokens");
@@ -369,6 +383,11 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                         None
                     },
                     if actor.is_admin() {
+                        upstream_provider
+                    } else {
+                        None
+                    },
+                    if actor.is_admin() {
                         aggregate_api_id
                     } else {
                         None
@@ -385,6 +404,8 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                     },
                     update_model_config,
                     update_routing_config,
+                    update_upstream_provider,
+                    confirm_route_review,
                     update_account_group_filter,
                     has_quota_limit_tokens,
                     quota_limit_tokens,

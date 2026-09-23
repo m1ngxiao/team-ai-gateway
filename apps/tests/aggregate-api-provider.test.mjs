@@ -47,3 +47,30 @@ test("only compatible aggregate APIs require the incoming request path", () => {
   assert.equal(usesIncomingPath("codex"), false);
   assert.equal(usesIncomingPath("claude"), false);
 });
+
+test("Claude key upstreams accept active Claude aliases only", () => {
+  const eligible = providerModule.isActiveClaudeAggregateApi;
+
+  for (const provider of ["claude", "anthropic", "anthropic_native", "claude_code"]) {
+    assert.equal(eligible(provider, "active"), true, provider);
+  }
+  assert.equal(eligible(" Claude-Code ", " ACTIVE "), true);
+  assert.equal(eligible("codex", "active"), false);
+  assert.equal(eligible("compatible", "active"), false);
+  assert.equal(eligible("claude", "disabled"), false);
+  assert.equal(eligible("anthropic", "paused"), false);
+  assert.equal(eligible("claude", ""), false);
+});
+
+test("OpenAI key aggregate routes use active Codex or compatible providers and retain Gemini protocol", () => {
+  const eligible = providerModule.isActiveOpenAiAggregateApi;
+
+  assert.equal(eligible("codex", "active", "openai_compat"), true);
+  assert.equal(eligible("openai-compatible", " ACTIVE ", "openai_compat"), true);
+  assert.equal(eligible("compatible", "active", "openai_compat"), true);
+  assert.equal(eligible("claude", "active", "openai_compat"), false);
+  assert.equal(eligible("gemini_native", "active", "openai_compat"), false);
+  assert.equal(eligible("codex", "paused", "openai_compat"), false);
+  assert.equal(eligible("gemini_native", "active", "gemini_native"), true);
+  assert.equal(eligible("codex", "active", "gemini_native"), false);
+});

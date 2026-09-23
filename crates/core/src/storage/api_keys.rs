@@ -4,7 +4,7 @@ use super::api_key_quota_limits::delete_api_key_quota_limit_by_key_sql;
 use super::key_id_filters::{key_id_in_clause, normalize_key_ids, SQLITE_IN_CLAUSE_BATCH_SIZE};
 use super::{
     now_ts, ApiKey, ApiKeyCodexProfileCandidate, ApiKeyGatewayAuth, ApiKeyListSummary,
-    ApiKeyProfileConfig, ApiKeyQuotaSummary, ApiKeyStatus, Storage,
+    ApiKeyProfileConfig, ApiKeyQuotaSummary, ApiKeyStatus, Storage, UpstreamProvider,
 };
 
 const API_KEY_SELECT_SQL: &str = "SELECT
@@ -25,7 +25,8 @@ const API_KEY_SELECT_SQL: &str = "SELECT
     k.key_hash,
     k.status,
     k.created_at,
-    k.last_used_at
+    k.last_used_at,
+    k.upstream_provider
  FROM api_keys k
  LEFT JOIN api_key_profiles p ON p.key_id = k.id
  LEFT JOIN aggregate_apis a ON a.id = k.aggregate_api_id";
@@ -49,7 +50,9 @@ const API_KEY_SUMMARY_SELECT_SQL: &str = "SELECT
     k.status,
     q.quota_limit_tokens,
     k.created_at,
-    k.last_used_at
+    k.last_used_at,
+    k.upstream_provider,
+    k.requires_route_review
  FROM api_keys k
  LEFT JOIN api_key_profiles p ON p.key_id = k.id
  LEFT JOIN aggregate_apis a ON a.id = k.aggregate_api_id
@@ -95,7 +98,7 @@ impl Storage {
     /// 返回函数执行结果
     pub fn insert_api_key(&self, key: &ApiKey) -> Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO api_keys (id, name, model_slug, reasoning_effort, key_hash, status, created_at, last_used_at, rotation_strategy, aggregate_api_id, account_plan_filter, account_group_filter) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, (SELECT account_group_filter FROM api_keys WHERE id = ?1))",
+            "INSERT OR REPLACE INTO api_keys (id, name, model_slug, reasoning_effort, key_hash, status, created_at, last_used_at, rotation_strategy, aggregate_api_id, account_plan_filter, account_group_filter, upstream_provider) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, (SELECT account_group_filter FROM api_keys WHERE id = ?1), ?12)",
             (
                 &key.id,
                 &key.name,
@@ -108,6 +111,7 @@ impl Storage {
                 &key.rotation_strategy,
                 &key.aggregate_api_id,
                 &key.account_plan_filter,
+                key.upstream_provider.as_str(),
             ),
         )?;
         self.conn.execute(
@@ -403,6 +407,24 @@ impl Storage {
         Ok(())
     }
 
+    pub fn api_key_requires_route_review(&self, key_id: &str) -> Result<Option<bool>> {
+        self.conn
+            .query_row(
+                "SELECT requires_route_review FROM api_keys WHERE id = ?1",
+                [key_id],
+                |row| row.get::<_, i64>(0).map(|value| value != 0),
+            )
+            .optional()
+    }
+
+    pub fn clear_api_key_route_review(&self, key_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE api_keys SET requires_route_review = 0 WHERE id = ?1",
+            [key_id],
+        )?;
+        Ok(())
+    }
+
     /// 函数 `update_api_key_rotation_config`
     ///
     /// 作者: gaohongshun
@@ -432,6 +454,18 @@ impl Storage {
                 account_plan_filter,
                 key_id,
             ),
+        )?;
+        Ok(())
+    }
+
+    pub fn update_api_key_upstream_provider(
+        &self,
+        key_id: &str,
+        provider: UpstreamProvider,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE api_keys SET upstream_provider = ?1 WHERE id = ?2",
+            (provider.as_str(), key_id),
         )?;
         Ok(())
     }
@@ -761,6 +795,74 @@ impl Storage {
         Ok(())
     }
 
+    pub(super) fn ensure_api_key_upstream_provider_column(&self) -> Result<()> {
+        let column_already_exists = self.has_column("api_keys", "upstream_provider")?;
+        self.ensure_column(
+            "api_keys",
+            "upstream_provider",
+            "TEXT NOT NULL DEFAULT 'openai' CHECK (upstream_provider IN ('openai', 'claude'))",
+        )?;
+        self.ensure_column(
+            "api_keys",
+            "requires_route_review",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (requires_route_review IN (0, 1))",
+        )?;
+        if column_already_exists {
+            return Ok(());
+        }
+        self.conn.execute(
+            "UPDATE api_keys SET upstream_provider = 'claude'
+             WHERE upstream_provider = 'openai'
+               AND rotation_strategy = 'aggregate_api_rotation'
+               AND aggregate_api_id IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM aggregate_apis AS a
+                 WHERE a.id = api_keys.aggregate_api_id
+                   AND REPLACE(LOWER(TRIM(a.provider_type)), '-', '_') IN ('claude', 'anthropic', 'anthropic_native', 'claude_code')
+               )",
+            [],
+        )?;
+        self.conn.execute(
+            "UPDATE api_keys SET status = 'disabled', requires_route_review = 1
+             WHERE rotation_strategy IN (
+                 'aggregate_api_rotation',
+                 'hybrid_rotation',
+                 'hybrid_aggregate_first_rotation'
+               )
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM aggregate_apis AS a
+                   WHERE REPLACE(LOWER(TRIM(a.provider_type)), '-', '_')
+                     IN ('claude', 'anthropic', 'anthropic_native', 'claude_code')
+                 )
+                 OR (
+                   EXISTS (
+                     SELECT 1 FROM aggregate_apis AS a
+                     WHERE REPLACE(LOWER(TRIM(a.provider_type)), '-', '_') = 'compatible'
+                   )
+                   AND EXISTS (
+                     SELECT 1 FROM aggregate_apis AS a
+                     WHERE REPLACE(LOWER(TRIM(a.provider_type)), '-', '_')
+                       NOT IN ('claude', 'anthropic', 'anthropic_native', 'claude_code',
+                               'gemini', 'gemini_native', 'google', 'google_ai', 'google_gemini',
+                               'compatible')
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM aggregate_apis AS a
+                     WHERE a.id = TRIM(api_keys.aggregate_api_id)
+                       AND LOWER(TRIM(a.status)) = 'active'
+                       AND REPLACE(LOWER(TRIM(a.provider_type)), '-', '_')
+                         NOT IN ('claude', 'anthropic', 'anthropic_native', 'claude_code',
+                                 'gemini', 'gemini_native', 'google', 'google_ai', 'google_gemini',
+                                 'compatible')
+                   )
+                 )
+               )",
+            [],
+        )?;
+        Ok(())
+    }
+
     pub(super) fn ensure_api_key_account_group_filter_column(&self) -> Result<()> {
         self.ensure_column("api_keys", "account_group_filter", "TEXT")?;
         Ok(())
@@ -1084,6 +1186,7 @@ fn map_api_key_row(row: &Row<'_>) -> Result<ApiKey> {
         status: row.get(15)?,
         created_at: row.get(16)?,
         last_used_at: row.get(17)?,
+        upstream_provider: read_upstream_provider(row, 18)?,
     })
 }
 
@@ -1108,7 +1211,15 @@ fn map_api_key_summary_row(row: &Row<'_>) -> Result<ApiKeyListSummary> {
         quota_limit_tokens: row.get(16)?,
         created_at: row.get(17)?,
         last_used_at: row.get(18)?,
+        upstream_provider: read_upstream_provider(row, 19)?,
+        requires_route_review: row.get::<_, i64>(20)? != 0,
     })
+}
+
+fn read_upstream_provider(row: &Row<'_>, index: usize) -> Result<UpstreamProvider> {
+    let value: String = row.get(index)?;
+    UpstreamProvider::parse(&value)
+        .ok_or_else(|| rusqlite::Error::FromSql(format!("invalid upstream provider: {value}")))
 }
 
 fn map_api_key_quota_summary_row(row: &Row<'_>) -> Result<ApiKeyQuotaSummary> {

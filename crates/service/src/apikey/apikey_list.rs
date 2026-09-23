@@ -45,6 +45,8 @@ fn map_api_key_list_summary(key: ApiKeyListSummary) -> ApiKeySummary {
         reasoning_effort: key.reasoning_effort,
         service_tier: key.service_tier,
         rotation_strategy: key.rotation_strategy,
+        upstream_provider: key.upstream_provider,
+        requires_route_review: key.requires_route_review,
         aggregate_api_id: key.aggregate_api_id,
         account_plan_filter: key.account_plan_filter,
         account_group_filter: key.account_group_filter,

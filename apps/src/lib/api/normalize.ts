@@ -766,6 +766,12 @@ export function normalizeApiKey(item: unknown): ApiKey | null {
     reasoningEffort: asString(source.reasoningEffort ?? source.reasoning_effort),
     serviceTier: asString(source.serviceTier ?? source.service_tier),
     rotationStrategy: asString(source.rotationStrategy ?? source.rotation_strategy) || "account_rotation",
+    upstreamProvider:
+      asString(source.upstreamProvider ?? source.upstream_provider).toLowerCase() === "claude"
+        ? "claude"
+        : "openai",
+    requiresRouteReview: (source.requiresRouteReview ?? source.requires_route_review) === true ||
+      (source.requiresRouteReview ?? source.requires_route_review) === 1,
     aggregateApiId: asString(source.aggregateApiId ?? source.aggregate_api_id) || null,
     accountPlanFilter: asString(source.accountPlanFilter ?? source.account_plan_filter) || null,
     accountGroupFilter: asString(source.accountGroupFilter ?? source.account_group_filter) || null,

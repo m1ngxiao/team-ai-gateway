@@ -25,6 +25,7 @@ import {
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { accountClient } from "@/lib/api/account-client";
 import {
+  buildAggregateApiListQueryKey,
   buildAccountListQueryKey,
   buildManagedModelSelectorQueryKey,
 } from "@/lib/api/account-query-keys";
@@ -33,6 +34,10 @@ import {
   managedModelV2ToModelInfo,
 } from "@/lib/api/managed-models-v2";
 import { appClient } from "@/lib/api/app-client";
+import {
+  isActiveClaudeAggregateApi,
+  isActiveOpenAiAggregateApi,
+} from "@/lib/aggregate-api-provider";
 import { CODEX_PROFILE_CANDIDATES_QUERY_KEY } from "@/lib/api/codex-profile-client";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { useI18n } from "@/lib/i18n/provider";
@@ -51,7 +56,7 @@ import {
 import { toast } from "sonner";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { Key, Clipboard, ShieldCheck, Info } from "lucide-react";
-import type { ApiKey, ApiKeyOwner, AppUser } from "@/types";
+import type { ApiKey, ApiKeyOwner, ApiKeyUpstreamProvider, AppUser } from "@/types";
 
 const PROTOCOL_LABELS: Record<string, string> = {
   openai_compat: "通配兼容 (Codex / Claude Code / Gemini CLI)",
@@ -169,6 +174,8 @@ export function ApiKeyModal({
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [serviceTier, setServiceTier] = useState("");
   const [rotationStrategy, setRotationStrategy] = useState("account_rotation");
+  const [upstreamProvider, setUpstreamProvider] = useState<ApiKeyUpstreamProvider | "">("");
+  const [aggregateApiId, setAggregateApiId] = useState("");
   const [accountPlanFilter, setAccountPlanFilter] = useState("all");
   const [accountGroupFilter, setAccountGroupFilter] = useState("");
   const [quotaLimitValue, setQuotaLimitValue] = useState("");
@@ -182,10 +189,18 @@ export function ApiKeyModal({
   const queryClient = useQueryClient();
   const isServiceReady = canAccessManagementRpc && serviceStatus.connected;
   const memberOwnershipEnabled = isAdminMode && showMemberOwnership;
+  const claudeUsesAggregate = upstreamProvider === "claude" && rotationStrategy === "aggregate_api_rotation";
+  const claudeUsesSubscription = upstreamProvider === "claude" && rotationStrategy === "account_rotation";
+  const protocolLabel = claudeUsesSubscription
+    ? "Claude 订阅账号池（Messages / Responses）"
+    : claudeUsesAggregate
+      ? "Claude API 聚合（依上游能力）"
+      : PROTOCOL_LABELS[protocolType] || "通配兼容 (Codex / Claude Code / Gemini CLI)";
   const usesAccountPlanFilter =
-    rotationStrategy === "account_rotation" ||
-    rotationStrategy === "hybrid_rotation" ||
-    rotationStrategy === "hybrid_aggregate_first_rotation";
+    upstreamProvider !== "claude" &&
+    (rotationStrategy === "account_rotation" ||
+      rotationStrategy === "hybrid_rotation" ||
+      rotationStrategy === "hybrid_aggregate_first_rotation");
   const billableUsers = useMemo(
     () => appUsers.filter((user) => userCanOwnApiKey(user)),
     [appUsers],
@@ -207,6 +222,34 @@ export function ApiKeyModal({
     enabled: open && isServiceReady,
   });
 
+  const { data: aggregateApis = [] } = useQuery({
+    queryKey: buildAggregateApiListQueryKey(serviceStatus.addr),
+    queryFn: () => accountClient.listAggregateApis(serviceStatus.addr),
+    enabled: open && isAdminMode && isServiceReady,
+    retry: 1,
+  });
+
+  const claudeUpstreams = useMemo(
+    () => aggregateApis.filter((api) => isActiveClaudeAggregateApi(api.providerType, api.status)),
+    [aggregateApis],
+  );
+  const activeClaudeAggregateIds = useMemo(
+    () => new Set(claudeUpstreams.map((api) => api.id)),
+    [claudeUpstreams],
+  );
+
+  const activeOpenAiAggregateIds = useMemo(
+    () =>
+      new Set(
+        aggregateApis
+          .filter((api) =>
+            isActiveOpenAiAggregateApi(api.providerType, api.status, protocolType),
+          )
+          .map((api) => api.id),
+      ),
+    [aggregateApis, protocolType],
+  );
+
   const { data: accountList } = useQuery({
     queryKey: buildAccountListQueryKey(serviceStatus.addr),
     queryFn: () => accountClient.list(serviceStatus.addr),
@@ -227,13 +270,61 @@ export function ApiKeyModal({
     );
   }, [accountGroupFilter, accountList?.items]);
 
+  const memberClaudeModelIsReadOnly = !isAdminMode && upstreamProvider === "claude";
+  const providerModels = useMemo(
+    () =>
+      (models?.models || []).filter((model) => {
+        if (upstreamProvider === "claude") {
+          return (
+            isAdminMode &&
+            Boolean(
+              model.routes?.some(
+                (route) =>
+                  (claudeUsesAggregate
+                    ? route.sourceKind === "aggregate_api" && activeClaudeAggregateIds.has(route.sourceId)
+                    : route.sourceKind === "account_pool" && route.sourceId === "claude") &&
+                  route.enabled,
+              ),
+            )
+          );
+        }
+        if (upstreamProvider !== "openai") return false;
+        if (!isAdminMode) {
+          const provider = String(model.provider || "").trim().toLowerCase();
+          return provider !== "claude" && provider !== "anthropic";
+        }
+        const includeAccountPool = rotationStrategy !== "aggregate_api_rotation";
+        const includeAggregateApi = rotationStrategy !== "account_rotation";
+        return Boolean(
+          model.routes?.some(
+            (route) =>
+              route.enabled &&
+              ((includeAccountPool &&
+                route.sourceKind === "account_pool" &&
+                route.sourceId === "default") ||
+                (includeAggregateApi &&
+                  route.sourceKind === "aggregate_api" &&
+                  activeOpenAiAggregateIds.has(route.sourceId))),
+          ),
+        );
+      }),
+    [
+      activeOpenAiAggregateIds,
+      activeClaudeAggregateIds,
+      claudeUsesAggregate,
+      isAdminMode,
+      models?.models,
+      rotationStrategy,
+      upstreamProvider,
+    ],
+  );
   const selectedModelInfo = useMemo(
-    () => findBestMatchingModel(models?.models || [], modelSlug),
-    [modelSlug, models?.models],
+    () => findBestMatchingModel(providerModels, modelSlug),
+    [modelSlug, providerModels],
   );
 
   const visibleModels = useMemo(() => {
-    const catalog = models?.models || [];
+    const catalog = providerModels;
     const selectedSlug = String(modelSlug || "").trim();
     const baseModels = catalog.filter((model) => {
       if (model.supportedInApi && model.supportsTextGeneration !== false) {
@@ -252,7 +343,7 @@ export function ApiKeyModal({
       ];
     }
     return baseModels;
-  }, [modelSlug, models?.models, selectedModelInfo]);
+  }, [modelSlug, providerModels, selectedModelInfo]);
 
   const modelLabelMap = Object.fromEntries(
     visibleModels.map((model) => [model.slug, model.displayName || model.slug]),
@@ -274,6 +365,8 @@ export function ApiKeyModal({
       setReasoningEffort("");
       setServiceTier("");
       setRotationStrategy("account_rotation");
+      setUpstreamProvider(isAdminMode ? "" : "openai");
+      setAggregateApiId("");
       setAccountPlanFilter("all");
       setAccountGroupFilter("");
       setQuotaLimitValue("");
@@ -288,11 +381,13 @@ export function ApiKeyModal({
     }
 
     setName(apiKey.name || "");
-    setProtocolType("openai_compat");
+    setProtocolType(apiKey.protocol || "openai_compat");
     setModelSlug(apiKey.modelSlug || "");
     setReasoningEffort(apiKey.reasoningEffort || "");
     setServiceTier(normalizeEditableServiceTier(apiKey.serviceTier));
     setRotationStrategy(apiKey.rotationStrategy || "account_rotation");
+    setUpstreamProvider(isAdminMode && apiKey.requiresRouteReview ? "" : apiKey.upstreamProvider || "openai");
+    setAggregateApiId(apiKey.aggregateApiId || "");
     setAccountPlanFilter(apiKey.accountPlanFilter || "all");
     setAccountGroupFilter(apiKey.accountGroupFilter || "");
     const resolvedQuotaUnit = resolveQuotaLimitUnit(apiKey.quotaLimitTokens);
@@ -313,9 +408,25 @@ export function ApiKeyModal({
     apiKeyOwner,
     billableUsers,
     distributionEnabled,
+    isAdminMode,
     memberOwnershipEnabled,
     open,
   ]);
+
+  const handleUpstreamProviderChange = (value: string | null) => {
+    if (!isAdminMode || (value !== "openai" && value !== "claude")) return;
+    if (value === upstreamProvider) return;
+    setUpstreamProvider(value);
+    if (value === "claude") setProtocolType("openai_compat");
+    setAggregateApiId("");
+    setRotationStrategy("account_rotation");
+    setModelSlug("");
+    setReasoningEffort("");
+    setServiceTier("");
+    setAccountPlanFilter("all");
+    setAccountGroupFilter("");
+    setUpstreamBaseUrl("");
+  };
 
   const handleQuotaLimitUnitChange = (unit: QuotaLimitUnit) => {
     const currentTokens = parseQuotaLimitTokens(quotaLimitValue, quotaLimitUnit);
@@ -356,27 +467,63 @@ export function ApiKeyModal({
       if (memberOwnershipEnabled && distributionEnabled && !normalizedOwnerUserId) {
         throw new Error(t("请选择平台 Key 归属成员"));
       }
+      if (isAdminMode && !upstreamProvider) {
+        throw new Error(t("请选择上游池"));
+      }
+      if (
+        isAdminMode &&
+        upstreamProvider === "claude" &&
+        !["account_rotation", "aggregate_api_rotation"].includes(rotationStrategy)
+      ) {
+        throw new Error(t("Claude 上游仅支持账号轮转或聚合 API 轮转"));
+      }
+      if (
+        isAdminMode && claudeUsesAggregate &&
+        !claudeUpstreams.some((api) => api.id === aggregateApiId)
+      ) {
+        throw new Error(t("请选择可用的 Claude API 上游"));
+      }
+      if (
+        isAdminMode &&
+        upstreamProvider === "claude" &&
+        modelSlug &&
+        modelSlug !== "auto" &&
+        !findBestMatchingModel(providerModels, modelSlug)
+      ) {
+        throw new Error(t(claudeUsesAggregate ? "绑定模型没有可用的 Claude API 路由" : "绑定模型没有可用的 Claude 账号路由"));
+      }
       const params = {
         name: name || null,
-        modelSlug: !modelSlug || modelSlug === "auto" ? null : modelSlug,
-        reasoningEffort:
-          !reasoningEffort || reasoningEffort === "auto"
-            ? null
-            : reasoningEffort,
-        serviceTier:
-          !serviceTier || serviceTier === "auto" ? null : serviceTier,
+        ...(!memberClaudeModelIsReadOnly
+          ? {
+              modelSlug: !modelSlug || modelSlug === "auto" ? null : modelSlug,
+              reasoningEffort:
+                !reasoningEffort || reasoningEffort === "auto"
+                  ? null
+                  : reasoningEffort,
+              serviceTier:
+                !serviceTier || serviceTier === "auto" ? null : serviceTier,
+            }
+          : {}),
         protocolType,
         upstreamBaseUrl: upstreamBaseUrl || null,
         staticHeadersJson: null,
-        rotationStrategy: isAdminMode ? rotationStrategy : "account_rotation",
-        accountPlanFilter:
-          isAdminMode && usesAccountPlanFilter && accountPlanFilter !== "all"
-            ? accountPlanFilter
-            : null,
-        accountGroupFilter:
-          isAdminMode && usesAccountPlanFilter && accountGroupFilter.trim()
-            ? accountGroupFilter.trim()
-            : null,
+        ...(isAdminMode
+          ? {
+              rotationStrategy,
+              upstreamProvider: upstreamProvider as ApiKeyUpstreamProvider,
+              ...(apiKey?.requiresRouteReview ? { confirmRouteReview: true } : {}),
+              aggregateApiId: aggregateApiId || null,
+              accountPlanFilter:
+                usesAccountPlanFilter && accountPlanFilter !== "all"
+                  ? accountPlanFilter
+                  : null,
+              accountGroupFilter:
+                usesAccountPlanFilter && accountGroupFilter.trim()
+                  ? accountGroupFilter.trim()
+                  : null,
+            }
+          : {}),
         quotaLimitTokens: quotaLimitTokenPreview,
         customKey: !apiKey?.id && customKey.trim() ? customKey.trim() : null,
       };
@@ -474,6 +621,14 @@ export function ApiKeyModal({
               <AlertDescription>{unavailableMessage}</AlertDescription>
             </Alert>
           ) : null}
+          {isAdminMode && apiKey?.requiresRouteReview ? (
+            <Alert>
+              <Info />
+              <AlertDescription>
+                {t("此 Key 升级后需要重新选择上游池，保存后才能启用。")}
+              </AlertDescription>
+            </Alert>
+          ) : null}
           <div className="grid grid-cols-2 gap-4 items-start">
             <div className="grid gap-2 content-start">
               <Label htmlFor="name">{t("密钥名称 (可选)")}</Label>
@@ -485,6 +640,32 @@ export function ApiKeyModal({
                 onChange={(e) => setName(e.target.value)}
               />
             </div>
+            <div className="grid gap-2 content-start">
+              <Label htmlFor="api-key-upstream-provider">{t("上游池")}</Label>
+              <Select
+                value={upstreamProvider || null}
+                onValueChange={handleUpstreamProviderChange}
+                disabled={!isServiceReady || !isAdminMode}
+              >
+                <SelectTrigger id="api-key-upstream-provider" className="w-full">
+                  <SelectValue placeholder={t("请选择上游池")}>
+                    {(value) =>
+                      value === "claude"
+                        ? t("Claude 上游")
+                        : value === "openai"
+                          ? t("OpenAI 上游池")
+                          : t("请选择上游池")
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value="openai">{t("OpenAI 上游池")}</SelectItem>
+                    <SelectItem value="claude">{t("Claude 上游")}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
             {isAdminMode ? (
             <>
             <div className="grid gap-2 content-start">
@@ -494,8 +675,12 @@ export function ApiKeyModal({
                 onValueChange={(val) => {
                   if (!val) return;
                   setRotationStrategy(val);
+                  if (upstreamProvider === "claude") {
+                    setAggregateApiId("");
+                    setModelSlug("");
+                  }
                 }}
-                disabled={!isServiceReady}
+                disabled={!isServiceReady || !upstreamProvider}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue>
@@ -510,24 +695,60 @@ export function ApiKeyModal({
                   <SelectItem value="aggregate_api_rotation">
                     {t("聚合API轮转")}
                   </SelectItem>
+                  {upstreamProvider !== "claude" ? (
+                  <>
                   <SelectItem value="hybrid_rotation">
                     {t("混合轮转（账号优先）")}
                   </SelectItem>
                   <SelectItem value="hybrid_aggregate_first_rotation">
                     {t("混合轮转（聚合优先）")}
                   </SelectItem>
+                  </>
+                  ) : null}
                 </SelectGroup>
               </SelectContent>
             </Select>
             </div>
             <p className="col-span-2 -mt-1 text-[11px] text-muted-foreground">
-              {t(
+              {upstreamProvider === "claude"
+                ? (claudeUsesAggregate
+                  ? t("Claude API 轮转使用已启用的 Claude API 上游；与订阅账号池和 OpenAI 池隔离。")
+                  : t("Claude 平台 Key 只在已启用的 Claude 订阅账号间轮转，与 OpenAI 账号池隔离。"))
+                : t(
                 "账号轮转只走账号池；聚合API轮转只走聚合API；混合轮转（账号优先）先走账号池，账号耗尽后使用聚合API兜底；混合轮转（聚合优先）先走聚合API，聚合不可用时回落账号池。",
               )}
             </p>
             </>
             ) : null}
           </div>
+
+          {isAdminMode && claudeUsesAggregate ? (
+            <div className="grid gap-2">
+              <Label htmlFor="api-key-claude-upstream">{t("优先 Claude API 上游")}</Label>
+              <Select
+                value={aggregateApiId || null}
+                onValueChange={(value) => {
+                  setAggregateApiId(String(value || ""));
+                  setModelSlug("");
+                }}
+                disabled={!isServiceReady || claudeUpstreams.length === 0}
+              >
+                <SelectTrigger id="api-key-claude-upstream" className="w-full">
+                  <SelectValue placeholder={t("请选择可用的 Claude API 上游")}>
+                    {(value) => {
+                      const selected = claudeUpstreams.find((api) => api.id === value);
+                      return selected?.supplierName || selected?.id || t("请选择可用的 Claude API 上游");
+                    }}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start"><SelectGroup>
+                  {claudeUpstreams.map((api) => (
+                    <SelectItem key={api.id} value={api.id}>{api.supplierName || api.id}</SelectItem>
+                  ))}
+                </SelectGroup></SelectContent>
+              </Select>
+            </div>
+          ) : null}
 
           {!apiKey?.id ? (
             <div className="grid gap-2">
@@ -544,7 +765,7 @@ export function ApiKeyModal({
               />
               <p className="text-[11px] text-muted-foreground">
                 {t(
-                  "用于复用固定 OPENAI_API_KEY；填写后将按该值创建平台密钥，留空则继续随机生成。",
+                  "用于复用固定的客户端 Key；填写后将按该值创建平台密钥，留空则继续随机生成。",
                 )}
               </p>
             </div>
@@ -735,24 +956,23 @@ export function ApiKeyModal({
               >
                 <SelectTrigger className="w-full">
                   <SelectValue>
-                    {(value) =>
-                      t(
-                        PROTOCOL_LABELS[String(value || "")] ||
-                          "通配兼容 (Codex / Claude Code / Gemini CLI)",
-                      )
-                    }
+                    {() => t(protocolLabel)}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent align="start">
                     <SelectGroup>
                   <SelectItem value="openai_compat">
-                    {t("通配兼容 (Codex / Claude Code / Gemini CLI)")}
+                    {t(protocolLabel)}
                   </SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
               <p className="min-h-[32px] text-[11px] text-muted-foreground">
-                {t("默认按路径通配：")}<code>/v1/messages*</code> {t("走 Claude 语义，")}<code>/v1beta/models/*:generateContent</code> {t("这类路径走 Gemini 语义，其它标准路径走 Codex / OpenAI 语义。")}
+                {claudeUsesSubscription
+                  ? t("Claude 订阅池支持 POST /v1/messages、POST /v1/responses、本地估算的 POST /v1/messages/count_tokens 和 GET /v1/models；不支持 POST /v1/chat/completions。")
+                  : claudeUsesAggregate
+                    ? t("Claude API 聚合的可用接口取决于所选上游；请按实际模型路由和上游协议接入。")
+                    : <>{t("默认按路径通配：")}<code>/v1/messages*</code> {t("走 Claude 语义，")}<code>/v1beta/models/*:generateContent</code> {t("这类路径走 Gemini 语义，其它标准路径走 Codex / OpenAI 语义。")}</>}
               </p>
             </div>
             <div className="grid gap-2 content-start">
@@ -760,7 +980,7 @@ export function ApiKeyModal({
               <Select
                 value={modelSlug}
                 onValueChange={(val) => val && setModelSlug(val)}
-                disabled={!isServiceReady}
+                disabled={!isServiceReady || memberClaudeModelIsReadOnly}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder={t("跟随请求")}>
@@ -768,9 +988,12 @@ export function ApiKeyModal({
                       const nextValue = String(value || "").trim();
                       if (!nextValue || nextValue === "auto") return t("跟随请求");
                       const resolvedModel = findBestMatchingModel(
-                        models?.models || [],
+                        memberClaudeModelIsReadOnly ? models?.models || [] : providerModels,
                         nextValue,
-                      );
+                      ) ||
+                        (apiKey?.modelSlug === nextValue
+                          ? findBestMatchingModel(models?.models || [], nextValue)
+                          : null);
                       return resolvedModel?.displayName || modelLabelMap[nextValue] || nextValue;
                     }}
                   </SelectValue>
@@ -787,11 +1010,14 @@ export function ApiKeyModal({
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground">
-                {t("选择“跟随请求”时，会使用请求体里的实际模型；请求日志展示的是最终生效模型。")}
+                {memberClaudeModelIsReadOnly
+                  ? t("此 Claude Key 的绑定模型由管理员管理，当前只能查看。")
+                  : t("选择“跟随请求”时，会使用请求体里的实际模型；请求日志展示的是最终生效模型。")}
               </p>
             </div>
           </div>
 
+          {upstreamProvider !== "claude" ? (
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2 content-start">
               <Label>{t("推理等级 (可选)")}</Label>
@@ -855,6 +1081,7 @@ export function ApiKeyModal({
               </p>
             </div>
           </div>
+          ) : null}
 
           {generatedKey && (
             <div className="space-y-2 pt-4 border-t">

@@ -80,6 +80,8 @@ pub(crate) fn write_gateway_model_catalog(
         }
         GatewayCatalogPolicy::Managed => {
             let catalog = crate::models_v2::text_generation_models_response_with_storage(storage)?;
+            let catalog =
+                crate::gateway::filter_managed_models_for_gateway_key(storage, api_key_id, catalog)?;
             let models_count = catalog.models.len();
             (serialize_gateway_model_catalog(&catalog)?, models_count)
         }

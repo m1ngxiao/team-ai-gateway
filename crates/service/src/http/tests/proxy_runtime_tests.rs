@@ -542,6 +542,7 @@ fn insert_api_key_record(
             model_slug: Some("gpt-5.4-mini".to_string()),
             reasoning_effort: Some("high".to_string()),
             service_tier: Some("fast".to_string()),
+            upstream_provider: Default::default(),
             rotation_strategy: rotation_strategy.to_string(),
             aggregate_api_id: None,
             aggregate_api_url: None,

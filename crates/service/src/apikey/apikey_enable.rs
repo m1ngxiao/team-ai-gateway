@@ -17,6 +17,19 @@ pub(crate) fn enable_api_key(key_id: &str) -> Result<(), String> {
         return Err("missing id".to_string());
     }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    match storage
+        .api_key_requires_route_review(key_id)
+        .map_err(|err| err.to_string())?
+    {
+        Some(true) => {
+            return Err(
+                "api key requires administrator upstream provider review before enable"
+                    .to_string(),
+            );
+        }
+        None => return Err("api key not found".to_string()),
+        Some(false) => {}
+    }
     storage
         .update_api_key_status(key_id, "active")
         .map_err(|e| e.to_string())?;

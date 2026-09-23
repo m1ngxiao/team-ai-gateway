@@ -1,4 +1,5 @@
 use rusqlite::{Connection, Result};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::Path;
@@ -17,6 +18,7 @@ mod aggregate_apis_sql;
 mod api_key_quota_limits;
 mod api_keys;
 mod codex_skill_repositories;
+mod claude_subscription_accounts;
 mod conversation_bindings;
 mod events;
 mod key_id_filters;
@@ -47,6 +49,62 @@ pub use model_catalog_v2::{
     ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
 pub use proxy_profiles::derive_proxy_profile_url_metadata;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpstreamProvider {
+    #[default]
+    Openai,
+    Claude,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaudeSubscriptionAccount {
+    pub id: String,
+    pub label: String,
+    pub email: Option<String>,
+    pub account_uuid: Option<String>,
+    pub organization_uuid: Option<String>,
+    pub subscription_type: Option<String>,
+    pub status: String,
+    pub sort: i64,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub scopes: String,
+    pub expires_at: i64,
+    pub last_error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClaudeSubscriptionLoginSession {
+    pub id: String,
+    pub state: String,
+    pub code_verifier: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub account_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl UpstreamProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Claude => "claude",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "openai" => Some(Self::Openai),
+            "claude" => Some(Self::Claude),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Account {
@@ -1179,6 +1237,7 @@ pub struct ApiKey {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub rotation_strategy: String,
+    pub upstream_provider: UpstreamProvider,
     pub aggregate_api_id: Option<String>,
     pub account_plan_filter: Option<String>,
     pub aggregate_api_url: Option<String>,
@@ -1222,6 +1281,8 @@ pub struct ApiKeyListSummary {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub rotation_strategy: String,
+    pub upstream_provider: UpstreamProvider,
+    pub requires_route_review: bool,
     pub aggregate_api_id: Option<String>,
     pub account_plan_filter: Option<String>,
     pub account_group_filter: Option<String>,
@@ -2286,6 +2347,15 @@ impl Storage {
             |s| s.ensure_aggregate_apis_table(),
         )?;
         self.apply_model_catalog_gpt6_sol_migration()?;
+        self.apply_sql_or_compat_migration(
+            "135_api_keys_upstream_provider",
+            include_str!("../../migrations/135_api_keys_upstream_provider.sql"),
+            |s| s.ensure_api_key_upstream_provider_column(),
+        )?;
+        self.apply_sql_migration(
+            "136_claude_subscription_accounts",
+            include_str!("../../migrations/136_claude_subscription_accounts.sql"),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;

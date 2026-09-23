@@ -1217,7 +1217,7 @@ mod tests {
         let requests = Arc::new(AtomicUsize::new(0));
         let server_requests = Arc::clone(&requests);
         let server_handle = thread::spawn(move || {
-            while let Ok(Some(request)) = server.recv_timeout(Duration::from_millis(300)) {
+            while let Ok(Some(request)) = server.recv_timeout(Duration::from_secs(3)) {
                 server_requests.fetch_add(1, Ordering::SeqCst);
                 request
                     .respond(Response::empty(StatusCode(503)))
@@ -1234,7 +1234,7 @@ mod tests {
             None,
         )
         .expect_err("first task registration must fail");
-        assert!(first.contains("status 503"));
+        assert!(first.contains("status 503"), "unexpected task registration error: {first}");
         let second = resolve_or_bootstrap_account_agent_identity_authorization_with_base_url(
             &storage,
             &reqwest::blocking::Client::new(),

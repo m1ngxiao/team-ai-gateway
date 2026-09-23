@@ -19,6 +19,8 @@ export interface ModelServiceTier {
 
 export interface ModelInfo {
   slug: string;
+  provider?: string | null;
+  routes?: Array<{ sourceKind: string; sourceId: string; enabled: boolean }>;
   displayName: string;
   description: string | null;
   defaultReasoningLevel: string | null;

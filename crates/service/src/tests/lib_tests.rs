@@ -4,8 +4,8 @@ use codexmanager_core::rpc::types::{
     ModelGroupUsersSetParams,
 };
 use codexmanager_core::storage::{
-    Account, Event, ModelCatalogModelRecord, ModelGroup, PluginInstall, PluginRunLog, PluginTask,
-    RequestLog, RequestTokenStat, Token, UsageSnapshotRecord,
+    Account, AggregateApi, Event, ModelCatalogModelRecord, ModelGroup, PluginInstall,
+    PluginRunLog, PluginTask, RequestLog, RequestTokenStat, Token, UsageSnapshotRecord,
 };
 
 /// 函数 `response_result`
@@ -588,6 +588,7 @@ fn api_key_text_model_binding_rejects_image_model_without_partial_update() {
         None,
         None,
         None,
+        None,
     )
     .expect_err("image model must not be bound as a text primary model");
     assert!(create_error.contains("image-only model"));
@@ -595,6 +596,7 @@ fn api_key_text_model_binding_rejects_image_model_without_partial_update() {
     let created = apikey_create::create_api_key(
         Some("external key".to_string()),
         Some("external-model".to_string()),
+        None,
         None,
         None,
         None,
@@ -622,8 +624,11 @@ fn api_key_text_model_binding_rejects_image_model_without_partial_update() {
         None,
         None,
         None,
+        None,
         true,
         true,
+        false,
+        false,
         false,
         false,
         None,
@@ -688,6 +693,7 @@ fn create_owned_test_api_key(user_id: &str, name: &str, model: &str) -> String {
         None,
         None,
         None,
+        None,
     )
     .expect("create api key");
     set_api_key_owner(&created.id, "user", Some(user_id), None).expect("own api key");
@@ -707,6 +713,7 @@ fn api_key_account_group_filter_is_admin_controlled_and_normalized() {
         None,
         None,
         Some(crate::apikey_profile::ROTATION_HYBRID.to_string()),
+        None,
         None,
         Some("plus".to_string()),
         Some("  team-a  ".to_string()),
@@ -841,6 +848,7 @@ fn member_api_key_updates_preserve_admin_routing_fields() {
         None,
         Some(crate::apikey_profile::ROTATION_HYBRID.to_string()),
         None,
+        None,
         Some("plus".to_string()),
         Some("team-a".to_string()),
         None,
@@ -915,6 +923,115 @@ fn member_api_key_updates_preserve_admin_routing_fields() {
             .expect("read member-created group"),
         None
     );
+
+    rusqlite::Connection::open(&db_path)
+        .expect("open route-review database")
+        .execute(
+            "UPDATE api_keys SET status = 'disabled', requires_route_review = 1 WHERE id = ?1",
+            [&created.id],
+        )
+        .expect("mark member key for route review");
+    let member_confirm = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/updateModel",
+            serde_json::json!({
+                "id": &created.id,
+                "name": "member renamed again",
+                "upstreamProvider": "claude",
+                "confirmRouteReview": true
+            }),
+        ),
+        RpcActor::from_parts(Some(ROLE_MEMBER), Some(&member.id)),
+    ));
+    assert!(member_confirm.result.get("error").is_none(), "{:?}", member_confirm.result);
+    assert_eq!(
+        storage
+            .api_key_requires_route_review(&created.id)
+            .expect("read route-review marker"),
+        Some(true)
+    );
+    let member_enable = response_result(handle_request_with_actor(
+        rpc_request("apikey/enable", serde_json::json!({"id": &created.id})),
+        RpcActor::from_parts(Some(ROLE_MEMBER), Some(&member.id)),
+    ));
+    assert!(rpc_error(&member_enable).contains("administrator upstream provider review"));
+
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn member_cannot_set_gemini_protocol_on_claude_key() {
+    let _guard = test_env_guard();
+    let db_path = setup_dashboard_test_db("codexmanager-member-claude-protocol");
+    let member = create_test_member("member-claude-protocol", None);
+    let storage = storage_helpers::open_storage().expect("open storage");
+    let now = codexmanager_core::storage::now_ts();
+    storage
+        .insert_aggregate_api(&AggregateApi {
+            id: "member-claude-api".to_string(),
+            provider_type: "claude".to_string(),
+            supplier_name: None,
+            sort: 0,
+            url: "https://api.example.test/v1".to_string(),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            user_agent: None,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+        })
+        .expect("insert Claude aggregate API");
+    let created = apikey_create::create_api_key(
+        Some("member Claude key".to_string()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(crate::apikey_profile::ROTATION_AGGREGATE_API.to_string()),
+        Some("claude".to_string()),
+        Some("member-claude-api".to_string()),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("create Claude key");
+    set_api_key_owner(&created.id, "user", Some(&member.id), None).expect("own Claude key");
+
+    let rejected = response_result(handle_request_with_actor(
+        rpc_request(
+            "apikey/updateModel",
+            serde_json::json!({
+                "id": &created.id,
+                "name": "should not persist",
+                "protocolType": "gemini_native"
+            }),
+        ),
+        RpcActor::from_parts(Some(ROLE_MEMBER), Some(&member.id)),
+    ));
+    assert!(rpc_error(&rejected).contains("does not support gemini_native protocol"));
+    let unchanged = storage
+        .find_api_key_by_id(&created.id)
+        .expect("read key")
+        .expect("Claude key exists");
+    assert_eq!(unchanged.name.as_deref(), Some("member Claude key"));
+    assert_eq!(unchanged.protocol_type, "openai_compat");
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -1841,11 +1958,13 @@ fn member_dashboard_filters_to_current_user_keys() {
         None,
         None,
         None,
+        None,
     )
     .expect("create key one");
     let key_two = apikey_create::create_api_key(
         Some("member two key".to_string()),
         Some("gpt-5-mini".to_string()),
+        None,
         None,
         None,
         None,

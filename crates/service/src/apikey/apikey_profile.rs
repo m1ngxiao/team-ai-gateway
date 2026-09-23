@@ -1,3 +1,6 @@
+use codexmanager_core::storage::{Storage, UpstreamProvider};
+use std::collections::HashSet;
+
 pub(crate) const CLIENT_CODEX: &str = "codex";
 pub(crate) const PROTOCOL_OPENAI_COMPAT: &str = "openai_compat";
 pub(crate) const PROTOCOL_ANTHROPIC_NATIVE: &str = "anthropic_native";
@@ -185,6 +188,245 @@ pub(crate) fn normalize_rotation_strategy(value: Option<String>) -> Result<Strin
         },
         None => Ok(ROTATION_ACCOUNT.to_string()),
     }
+}
+
+pub(crate) fn normalize_upstream_provider(value: &str) -> Result<UpstreamProvider, String> {
+    UpstreamProvider::parse(value)
+        .ok_or_else(|| format!("unsupported upstreamProvider: {}", value.trim()))
+}
+
+fn aggregate_api_is_claude(storage: &Storage, aggregate_api_id: &str) -> Result<bool, String> {
+    let api = storage
+        .find_aggregate_api_by_id(aggregate_api_id)
+        .map_err(|err| format!("read aggregate api provider failed: {err}"))?;
+    Ok(api.is_some_and(|api| is_claude_provider_type(&api.provider_type)))
+}
+
+fn is_claude_provider_type(provider_type: &str) -> bool {
+    let normalized = provider_type.trim().to_ascii_lowercase().replace('-', "_");
+    matches!(
+        normalized.as_str(),
+        "claude" | "anthropic" | "anthropic_native" | "claude_code"
+    )
+}
+
+fn is_codex_provider_type(provider_type: &str) -> bool {
+    let normalized = provider_type.trim().to_ascii_lowercase().replace('-', "_");
+    !matches!(
+        normalized.as_str(),
+        "claude"
+            | "anthropic"
+            | "anthropic_native"
+            | "claude_code"
+            | "gemini"
+            | "gemini_native"
+            | "google"
+            | "google_ai"
+            | "google_gemini"
+            | "compatible"
+    )
+}
+
+/// Legacy clients that explicitly pin a Claude aggregate upstream retain their
+/// existing provider when the new field is omitted.
+pub(crate) fn infer_upstream_provider(
+    storage: &Storage,
+    rotation_strategy: &str,
+    aggregate_api_id: Option<&str>,
+) -> Result<UpstreamProvider, String> {
+    let pinned = aggregate_api_id.map(str::trim).filter(|id| !id.is_empty());
+    if rotation_strategy == ROTATION_AGGREGATE_API {
+        if let Some(id) = pinned {
+            if aggregate_api_is_claude(storage, id)? {
+                return Ok(UpstreamProvider::Claude);
+            }
+        }
+    }
+    if matches!(
+        rotation_strategy,
+        ROTATION_AGGREGATE_API | ROTATION_HYBRID | ROTATION_HYBRID_AGGREGATE_FIRST
+    ) {
+        let ambiguous_pin = match pinned {
+            None => true,
+            Some(id) => storage
+                .find_aggregate_api_by_id(id)
+                .map_err(|err| format!("read aggregate API provider failed: {err}"))?
+                .is_none_or(|api| api.provider_type.trim().eq_ignore_ascii_case("compatible")),
+        };
+        if ambiguous_pin {
+            let aggregate_apis = storage
+                .list_aggregate_apis()
+                .map_err(|err| format!("list aggregate API providers failed: {err}"))?;
+            let has_claude = aggregate_apis
+                .iter()
+                .any(|api| is_claude_provider_type(&api.provider_type));
+            let has_compatible = aggregate_apis
+                .iter()
+                .any(|api| api.provider_type.trim().eq_ignore_ascii_case("compatible"));
+            let has_codex = aggregate_apis
+                .iter()
+                .any(|api| is_codex_provider_type(&api.provider_type));
+            if has_claude || (has_compatible && has_codex) {
+                return Err(
+                    "upstreamProvider is required for an ambiguous unpinned or compatible aggregate route"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok(UpstreamProvider::Openai)
+}
+
+pub(crate) fn validate_upstream_provider_route(
+    storage: &Storage,
+    provider: UpstreamProvider,
+    rotation_strategy: &str,
+    aggregate_api_id: Option<&str>,
+) -> Result<(), String> {
+    if provider != UpstreamProvider::Claude {
+        if let Some(aggregate_api_id) =
+            aggregate_api_id.map(str::trim).filter(|id| !id.is_empty())
+        {
+            if aggregate_api_is_claude(storage, aggregate_api_id)? {
+                return Err("OpenAI upstream cannot pin a Claude aggregateApiId".to_string());
+            }
+        }
+        return Ok(());
+    }
+    if rotation_strategy == ROTATION_ACCOUNT {
+        if aggregate_api_id.is_some_and(|id| !id.trim().is_empty()) {
+            return Err("Claude subscription account rotation cannot pin an aggregateApiId".to_string());
+        }
+        return Ok(());
+    }
+    if rotation_strategy != ROTATION_AGGREGATE_API {
+        return Err("Claude upstream requires account_rotation or aggregate_api_rotation".to_string());
+    }
+    let aggregate_api_id = aggregate_api_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "Claude upstream requires a Claude aggregateApiId".to_string())?;
+    let api = storage
+        .find_aggregate_api_by_id(aggregate_api_id)
+        .map_err(|err| format!("read aggregate api provider failed: {err}"))?
+        .ok_or_else(|| "Claude aggregateApiId not found".to_string())?;
+    if !api.status.trim().eq_ignore_ascii_case("active")
+        || !is_claude_provider_type(&api.provider_type)
+    {
+        return Err("Claude upstream requires an active Claude aggregateApiId".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_claude_model_route(
+    storage: &Storage,
+    provider: UpstreamProvider,
+    rotation_strategy: &str,
+    model_slug: Option<&str>,
+) -> Result<(), String> {
+    if provider != UpstreamProvider::Claude {
+        return Ok(());
+    }
+    let Some(model_slug) = model_slug.map(str::trim).filter(|slug| !slug.is_empty()) else {
+        return Ok(());
+    };
+    let catalog_slug = crate::models_v2::policy_catalog_slug(model_slug);
+    let model = storage
+        .get_enabled_model_v2(catalog_slug)
+        .map_err(|err| format!("read Claude model routes failed: {err}"))?;
+    if rotation_strategy == ROTATION_ACCOUNT {
+        if model.is_some_and(|model| {
+            model.routes.iter().any(|route| {
+                route.enabled
+                    && route.source_kind == "account_pool"
+                    && route.source_id == "claude"
+            })
+        }) {
+            return Ok(());
+        }
+        return Err(format!(
+            "Claude model has no enabled Claude subscription account route: {model_slug}"
+        ));
+    }
+    if let Some(model) = model {
+        for route in model
+            .routes
+            .iter()
+            .filter(|route| route.enabled && route.source_kind == "aggregate_api")
+        {
+            let api = storage
+                .find_aggregate_api_by_id(&route.source_id)
+                .map_err(|err| format!("read Claude model source failed: {err}"))?;
+            if api.is_some_and(|api| {
+                api.status.trim().eq_ignore_ascii_case("active")
+                    && is_claude_provider_type(&api.provider_type)
+            }) {
+                return Ok(());
+            }
+        }
+    }
+    Err(format!(
+        "Claude model has no active Claude aggregate API route: {model_slug}"
+    ))
+}
+
+pub(crate) fn validate_openai_model_route(
+    storage: &Storage,
+    provider: UpstreamProvider,
+    rotation_strategy: &str,
+    protocol_type: &str,
+    model_slug: Option<&str>,
+) -> Result<(), String> {
+    if provider != UpstreamProvider::Openai || rotation_strategy == ROTATION_ACCOUNT {
+        return Ok(());
+    }
+    let Some(model_slug) = model_slug.map(str::trim).filter(|slug| !slug.is_empty()) else {
+        return Ok(());
+    };
+    let catalog_slug = crate::models_v2::policy_catalog_slug(model_slug);
+    let Some(model) = storage
+        .get_enabled_model_v2(catalog_slug)
+        .map_err(|err| format!("read OpenAI model routes failed: {err}"))?
+    else {
+        // Keep legacy external model bindings; the gateway performs its own
+        // catalog validation when an actual request selects the model.
+        return Ok(());
+    };
+    let aggregate_provider = if protocol_type == PROTOCOL_GEMINI_NATIVE {
+        crate::aggregate_api::AGGREGATE_API_PROVIDER_GEMINI
+    } else {
+        crate::aggregate_api::AGGREGATE_API_PROVIDER_CODEX
+    };
+    let active_ids = storage
+        .list_active_aggregate_apis_by_provider_type(aggregate_provider)
+        .map_err(|err| format!("list OpenAI aggregate routes failed: {err}"))?
+        .into_iter()
+        .map(|api| api.id)
+        .collect::<HashSet<_>>();
+    let include_account_pool = matches!(
+        rotation_strategy,
+        ROTATION_HYBRID | ROTATION_HYBRID_AGGREGATE_FIRST
+    );
+    if model.routes.iter().any(|route| {
+        route.enabled
+            && ((route.source_kind == "aggregate_api" && active_ids.contains(&route.source_id))
+                || (include_account_pool
+                    && route.source_kind == "account_pool"
+                    && route.source_id == "default"))
+    }) {
+        return Ok(());
+    }
+    Err(format!("OpenAI model has no active upstream route: {model_slug}"))
+}
+
+pub(crate) fn validate_claude_protocol(
+    provider: UpstreamProvider,
+    protocol_type: &str,
+) -> Result<(), String> {
+    if provider == UpstreamProvider::Claude && protocol_type == PROTOCOL_GEMINI_NATIVE {
+        return Err("Claude upstream does not support gemini_native protocol".to_string());
+    }
+    Ok(())
 }
 
 /// 函数 `normalize_upstream_base_url`

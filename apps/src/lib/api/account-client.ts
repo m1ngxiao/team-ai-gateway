@@ -1051,6 +1051,7 @@ export const accountClient = {
         upstreamBaseUrl: params.upstreamBaseUrl || null,
         staticHeadersJson: params.staticHeadersJson || null,
         rotationStrategy: params.rotationStrategy || null,
+        upstreamProvider: params.upstreamProvider || null,
         aggregateApiId: params.aggregateApiId || null,
         accountPlanFilter: params.accountPlanFilter || null,
         accountGroupFilter: params.accountGroupFilter || null,

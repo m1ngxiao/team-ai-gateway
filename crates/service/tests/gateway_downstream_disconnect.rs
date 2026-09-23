@@ -43,6 +43,7 @@ fn seed(storage: &Storage, tag: &str) {
         let hash = hash_platform_key_for_test(secret);
         storage.insert_api_key(&ApiKey {
             id: id.clone(), name: Some(id.clone()), model_slug: Some(MODEL.into()),
+            upstream_provider: Default::default(),
             reasoning_effort: None, service_tier: None, rotation_strategy: "account_rotation".into(),
             aggregate_api_id: None, account_plan_filter: None, aggregate_api_url: None,
             client_type: "codex".into(), protocol_type: "openai_compat".into(),

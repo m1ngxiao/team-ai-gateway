@@ -134,7 +134,7 @@ pub(super) fn respond_with_upstream(
 pub(super) use stream_readers::{
     ChatCompletionsFromResponsesSseReader, ImagesFromResponsesSseReader,
     OpenAIResponsesPassthroughSseReader, PassthroughSseCollector, PassthroughSseUsageReader,
-    ResponsesFromAnthropicSseReader, SseKeepAliveFrame,
+    ResponsesFromAnthropicSseReader, ResponsesFromAnthropicTerminal, SseKeepAliveFrame,
 };
 
 pub(super) use stream_readers::{AnthropicSseReader, GeminiSseReader};

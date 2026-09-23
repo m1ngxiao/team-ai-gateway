@@ -3,6 +3,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::storage::UpstreamProvider;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RequestId {
@@ -327,6 +329,10 @@ pub struct ApiKeySummary {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub rotation_strategy: String,
+    #[serde(default)]
+    pub upstream_provider: UpstreamProvider,
+    #[serde(default)]
+    pub requires_route_review: bool,
     pub aggregate_api_id: Option<String>,
     pub account_plan_filter: Option<String>,
     pub account_group_filter: Option<String>,

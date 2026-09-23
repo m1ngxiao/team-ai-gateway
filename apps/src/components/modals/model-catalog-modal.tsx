@@ -388,8 +388,7 @@ export function ModelCatalogModal({
         throw new Error("缺失价格的模型不能保留在计费权限组中");
       }
       const routes: ModelRouteV2[] = draft.routes.map((route) => {
-        const sourceId =
-          route.sourceKind === "account_pool" ? "default" : route.sourceId.trim();
+        const sourceId = route.sourceId.trim();
         if (!sourceId || !route.upstreamModel.trim()) {
           throw new Error("每条路由都必须填写来源和上游模型");
         }
@@ -799,7 +798,17 @@ export function ModelCatalogModal({
                           <Label className="leading-5" htmlFor={`route-source-${index}`}>
                             {t("来源")}
                           </Label>
-                          {route.sourceKind === "aggregate_api" && aggregateApis.length > 0 ? (
+                          {route.sourceKind === "account_pool" ? (
+                            <Select value={route.sourceId} onValueChange={(value) => updateRoute(index, "sourceId", value || "default")}>
+                              <SelectTrigger id={`route-source-${index}`} className="w-full min-w-0" aria-label={t("来源")}>
+                                <SelectValue>{(value) => value === "claude" ? t("Claude 订阅账号池") : t("OpenAI 账号池")}</SelectValue>
+                              </SelectTrigger>
+                              <SelectContent><SelectGroup>
+                                <SelectItem value="default">{t("OpenAI 账号池")}</SelectItem>
+                                <SelectItem value="claude">{t("Claude 订阅账号池")}</SelectItem>
+                              </SelectGroup></SelectContent>
+                            </Select>
+                          ) : route.sourceKind === "aggregate_api" && aggregateApis.length > 0 ? (
                             <Select
                               value={route.sourceId}
                               onValueChange={(value) =>
@@ -832,12 +841,7 @@ export function ModelCatalogModal({
                           ) : (
                             <Input
                               id={`route-source-${index}`}
-                              value={
-                                route.sourceKind === "account_pool"
-                                  ? t("默认账号池")
-                                  : route.sourceId
-                              }
-                              disabled={route.sourceKind === "account_pool"}
+                              value={route.sourceId}
                               onChange={(event) =>
                                 updateRoute(index, "sourceId", event.target.value)
                               }

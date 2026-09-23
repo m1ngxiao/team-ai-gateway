@@ -73,6 +73,9 @@ async function mockApiKeyRpc(
   page: import("@playwright/test").Page,
   options: {
     apiKeys?: unknown[];
+    aggregateApis?: unknown[];
+    modelRoutes?: Record<string, unknown[]>;
+    stripModelRoutes?: boolean;
     onMethod?: (method: string, payload: Record<string, unknown>) => unknown | undefined;
   } = {},
 ) {
@@ -175,9 +178,12 @@ async function mockApiKeyRpc(
       });
       return;
     }
+    if (method === "aggregateApi/list") {
+      await ok({ items: options.aggregateApis ?? [] });
+      return;
+    }
     if (method === "apikey/managedModelListV2") {
-      await ok({
-        items: [
+      const items = [
           {
             id: "builtin:gpt-5.3-codex",
             slug: "gpt-5.3-codex",
@@ -209,7 +215,103 @@ async function mockApiKeyRpc(
               outputMicrousdPer1m: 10000000,
             },
             priceTiers: [],
-            routes: [],
+            routes: [{
+              id: "gpt-account-route",
+              sourceKind: "account_pool",
+              sourceId: "default",
+              upstreamModel: "gpt-5.3-codex",
+              enabled: true,
+              priority: 0,
+              weight: 1,
+            }],
+            permissionGroupIds: [],
+            createdAt: 1770000000,
+            updatedAt: 1770000000,
+          },
+          {
+            id: "custom:claude-sonnet-test",
+            slug: "claude-sonnet-test",
+            displayName: "Claude Sonnet Test",
+            description: "Test-only Claude text model.",
+            provider: "anthropic",
+            family: "claude",
+            category: "text",
+            tags: ["text"],
+            origin: "custom",
+            enabled: true,
+            supportedInApi: true,
+            visibility: "list",
+            sortOrder: 2,
+            contextWindow: 200000,
+            maxContextWindow: 200000,
+            defaultReasoningEffort: null,
+            capabilities: { inputModalities: ["text"] },
+            instructionsMode: "passthrough",
+            instructionsText: null,
+            fastPolicy: "passthrough",
+            builtinRevision: null,
+            userEdited: false,
+            price: {
+              priceStatus: "missing",
+              priceSource: null,
+              inputMicrousdPer1m: null,
+              cachedInputMicrousdPer1m: null,
+              outputMicrousdPer1m: null,
+            },
+            priceTiers: [],
+            routes: [{
+              id: "claude-route-1",
+              sourceKind: "aggregate_api",
+              sourceId: "claude-upstream-1",
+              upstreamModel: "claude-sonnet-test",
+              enabled: true,
+              priority: 0,
+              weight: 1,
+            }],
+            permissionGroupIds: [],
+            createdAt: 1770000000,
+            updatedAt: 1770000000,
+          },
+          {
+            id: "custom:claude-other-test",
+            slug: "claude-other-test",
+            displayName: "Claude Other Test",
+            description: "Test-only model on another Claude upstream.",
+            provider: "openai",
+            family: "claude",
+            category: "text",
+            tags: ["text"],
+            origin: "custom",
+            enabled: true,
+            supportedInApi: true,
+            visibility: "list",
+            sortOrder: 3,
+            contextWindow: 200000,
+            maxContextWindow: 200000,
+            defaultReasoningEffort: null,
+            capabilities: { inputModalities: ["text"] },
+            instructionsMode: "passthrough",
+            instructionsText: null,
+            fastPolicy: "passthrough",
+            builtinRevision: null,
+            userEdited: false,
+            price: {
+              priceStatus: "missing",
+              priceSource: null,
+              inputMicrousdPer1m: null,
+              cachedInputMicrousdPer1m: null,
+              outputMicrousdPer1m: null,
+            },
+            priceTiers: [],
+            routes: [{
+              id: "claude-route-other",
+              sourceKind: "aggregate_api",
+              sourceId: "claude-upstream-other",
+              upstreamModel: "claude-other-test",
+              enabled: true,
+              priority: 0,
+              weight: 1,
+            }],
             permissionGroupIds: [],
             createdAt: 1770000000,
             updatedAt: 1770000000,
@@ -262,13 +364,20 @@ async function mockApiKeyRpc(
             createdAt: 1770000000,
             updatedAt: 1770000000,
           },
-        ],
+        ];
+      await ok({
+        items: items.map((model) => ({
+          ...model,
+          routes: options.stripModelRoutes
+            ? []
+            : options.modelRoutes?.[model.slug] ?? model.routes,
+        })),
         stats: {
-          total: 2,
-          enabled: 2,
+          total: 4,
+          enabled: 4,
           builtin: 2,
-          custom: 0,
-          priceMissing: 0,
+          custom: 2,
+          priceMissing: 2,
           missingRoute: 2,
         },
       });
@@ -311,6 +420,7 @@ test("api key modal reuses prefix model metadata for long model slugs", async ({
   await expect(
     page.getByRole("option", { name: /GPT-5\.3 Codex/ }).first(),
   ).toBeVisible();
+  await expect(page.getByRole("option", { name: "Claude Other Test" })).toHaveCount(0);
 });
 
 test("api key modal hides image-only models when creating a key", async ({ page }) => {
@@ -321,6 +431,8 @@ test("api key modal hides image-only models when creating a key", async ({ page 
   await page.getByRole("button", { name: "创建密钥" }).click();
 
   const dialog = page.getByRole("dialog");
+  await dialog.locator("#api-key-upstream-provider").click();
+  await page.getByRole("option", { name: "OpenAI 上游池" }).click();
   const modelSelect = dialog
     .getByText("绑定模型 (可选)", { exact: true })
     .locator("..")
@@ -369,7 +481,7 @@ test("api key modal can migrate an existing image-only binding to a text model",
     .getByRole("combobox");
   await expect(modelSelect).toContainText("GPT Image 2");
   await modelSelect.click();
-  await expect(page.getByRole("option", { name: "GPT Image 2" })).toBeVisible();
+  await expect(page.getByRole("option", { name: "GPT Image 2" })).toHaveCount(0);
   await page.getByRole("option", { name: "GPT-5.3 Codex" }).click();
   await expect(modelSelect).toContainText("GPT-5.3 Codex");
 
@@ -451,6 +563,8 @@ test("api key modal can select hybrid rotation on create", async ({ page }) => {
 
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "创建平台密钥" })).toBeVisible();
+  await dialog.locator("#api-key-upstream-provider").click();
+  await page.getByRole("option", { name: "OpenAI 上游池" }).click();
   await expect(dialog.getByLabel("自定义 API Key (可选)")).toBeVisible();
   await dialog.getByLabel("自定义 API Key (可选)").fill("sk-cm-custom-fixed");
   await dialog.getByText("账号轮转", { exact: true }).click();
@@ -463,5 +577,295 @@ test("api key modal can select hybrid rotation on create", async ({ page }) => {
   await expect(dialog).not.toBeVisible();
   const params = createPayloads[0]?.params as Record<string, unknown>;
   expect(params.rotationStrategy).toBe("hybrid_rotation");
+  expect(params.upstreamProvider).toBe("openai");
   expect(params.customKey).toBe("sk-cm-custom-fixed");
+});
+
+test("admin OpenAI key model choices follow active account and aggregate routes", async ({ page }) => {
+  await mockRuntime(page);
+  await mockApiKeyRpc(page, {
+    apiKeys: [{
+      id: "openai-aggregate-key",
+      name: "OpenAI aggregate key",
+      upstream_provider: "openai",
+      rotation_strategy: "aggregate_api_rotation",
+      status: "enabled",
+    }],
+    aggregateApis: [
+      { id: "compatible-upstream", provider_type: "compatible", status: "active" },
+      { id: "disabled-codex", provider_type: "codex", status: "disabled" },
+      { id: "claude-upstream-other", provider_type: "claude", status: "active" },
+    ],
+    modelRoutes: {
+      "claude-sonnet-test": [{
+        sourceKind: "aggregate_api",
+        sourceId: "compatible-upstream",
+        enabled: true,
+      }],
+      "claude-other-test": [
+        { sourceKind: "aggregate_api", sourceId: "claude-upstream-other", enabled: true },
+        { sourceKind: "aggregate_api", sourceId: "disabled-codex", enabled: true },
+      ],
+    },
+  });
+
+  await page.goto("/apikeys/");
+  await page.locator("tr", { hasText: "OpenAI aggregate key" }).getByTitle("编辑配置").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("通配兼容 (Codex / Claude Code / Gemini CLI)")).toBeVisible();
+  const modelSelect = dialog
+    .getByText("绑定模型 (可选)", { exact: true })
+    .locator("..")
+    .getByRole("combobox");
+  await modelSelect.click();
+  await expect(page.getByRole("option", { name: "Claude Sonnet Test" })).toBeVisible();
+  await expect(page.getByRole("option", { name: "GPT-5.3 Codex" })).toHaveCount(0);
+  await expect(page.getByRole("option", { name: "Claude Other Test" })).toHaveCount(0);
+});
+
+test("Claude platform key selects the isolated subscription pool and its model routes", async ({ page }) => {
+  const createPayloads: Record<string, unknown>[] = [];
+  await mockRuntime(page);
+  await mockApiKeyRpc(page, {
+    apiKeys: [],
+    modelRoutes: {
+      "claude-sonnet-test": [{ sourceKind: "aggregate_api", sourceId: "claude-api-key", enabled: true }],
+      "claude-other-test": [{ sourceKind: "account_pool", sourceId: "claude", enabled: true }],
+    },
+    onMethod: (method, payload) => {
+      if (method === "apikey/create") {
+        createPayloads.push(payload);
+        return { id: "key-claude", key: "cm-claude-test-key" };
+      }
+      return undefined;
+    },
+  });
+
+  await page.goto("/apikeys/");
+  await page.getByRole("button", { name: "创建密钥" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "完成" }).click();
+  await expect(page.getByText("操作失败: 请选择上游池")).toBeVisible();
+  expect(createPayloads).toHaveLength(0);
+
+  await dialog.locator("#api-key-upstream-provider").click();
+  await page.getByRole("option", { name: "Claude 上游" }).click();
+  await expect(dialog.getByText("账号轮转", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("Claude 订阅账号池（Messages / Responses）")).toBeVisible();
+  await expect(dialog.getByText("Claude 订阅池支持 POST /v1/messages、POST /v1/responses、本地估算的 POST /v1/messages/count_tokens 和 GET /v1/models；不支持 POST /v1/chat/completions。")).toBeVisible();
+  await expect(dialog.getByText("通配兼容 (Codex / Claude Code / Gemini CLI)")).toHaveCount(0);
+  await expect(dialog.getByText("账号计划筛选", { exact: true })).toHaveCount(0);
+
+  const modelSelect = dialog
+    .getByText("绑定模型 (可选)", { exact: true })
+    .locator("..")
+    .getByRole("combobox");
+  await modelSelect.click();
+  await expect(page.getByRole("option", { name: "GPT-5.3 Codex" })).toHaveCount(0);
+  await expect(page.getByRole("option", { name: "Claude Sonnet Test" })).toHaveCount(0);
+  await expect(page.getByRole("option", { name: "Claude Other Test" })).toBeVisible();
+  await page.getByRole("option", { name: "Claude Other Test" }).click();
+
+  await dialog.getByRole("button", { name: "完成" }).click();
+  await expect.poll(() => createPayloads.length).toBe(1);
+  const params = createPayloads[0]?.params as Record<string, unknown>;
+  expect(params.upstreamProvider).toBe("claude");
+  expect(params.rotationStrategy).toBe("account_rotation");
+  expect(params.aggregateApiId).toBeNull();
+  expect(params.modelSlug).toBe("claude-other-test");
+});
+
+test("a migrated key requires an active administrator pool choice before route review clears", async ({ page }) => {
+  const updatePayloads: Record<string, unknown>[] = [];
+  await mockRuntime(page);
+  await mockApiKeyRpc(page, {
+    apiKeys: [{
+      id: "key-needs-route-review",
+      name: "Legacy ambiguous key",
+      upstream_provider: "openai",
+      requires_route_review: true,
+      rotation_strategy: "aggregate_api_rotation",
+      status: "disabled",
+    }],
+    onMethod: (method, payload) => {
+      if (method === "apikey/updateModel") {
+        updatePayloads.push(payload);
+        return { ok: true };
+      }
+      return undefined;
+    },
+  });
+  await page.goto("/apikeys/");
+  const row = page.locator("tr", { hasText: "Legacy ambiguous key" });
+  await expect(row.getByText("需检查路由")).toBeVisible();
+  await expect(row.getByRole("switch")).toBeDisabled();
+  await row.getByTitle("编辑配置").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("此 Key 升级后需要重新选择上游池，保存后才能启用。"))
+    .toBeVisible();
+  await dialog.getByRole("button", { name: "完成" }).click();
+  await expect(page.getByText("操作失败: 请选择上游池")).toBeVisible();
+  expect(updatePayloads).toHaveLength(0);
+  await dialog.locator("#api-key-upstream-provider").click();
+  await page.getByRole("option", { name: "OpenAI 上游池" }).click();
+  await dialog.getByRole("button", { name: "完成" }).click();
+  await expect.poll(() => updatePayloads.length).toBe(1);
+  const params = updatePayloads[0]?.params as Record<string, unknown>;
+  expect(params.upstreamProvider).toBe("openai");
+  expect(params.confirmRouteReview).toBe(true);
+  expect(params.rotationStrategy).toBe("account_rotation");
+});
+
+test("editing a legacy OpenAI key clears cross-provider route settings before selecting Claude", async ({ page }) => {
+  const updatePayloads: Record<string, unknown>[] = [];
+  await mockRuntime(page);
+  await mockApiKeyRpc(page, {
+    apiKeys: [{
+      id: "legacy-key",
+      name: "Legacy key",
+      model_slug: "gpt-5.3-codex",
+      rotation_strategy: "hybrid_rotation",
+      account_group_filter: "team-a",
+      status: "enabled",
+    }],
+    aggregateApis: [{
+      id: "claude-upstream-1",
+      provider_type: "claude",
+      supplier_name: "Claude Console",
+      status: "active",
+    }],
+    onMethod: (method, payload) => {
+      if (method === "apikey/updateModel") {
+        updatePayloads.push(payload);
+        return { ok: true };
+      }
+      return undefined;
+    },
+  });
+
+  await page.goto("/apikeys/");
+  const row = page.locator("tr", { hasText: "Legacy key" });
+  await expect(row.getByText("OpenAI 上游池", { exact: true })).toBeVisible();
+  await row.getByTitle("编辑配置").click();
+  const dialog = page.getByRole("dialog");
+  await dialog.locator("#api-key-upstream-provider").click();
+  await page.getByRole("option", { name: "Claude 上游" }).click();
+  await expect(dialog.getByText("账号分组筛选", { exact: true })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "完成" }).click();
+
+  await expect.poll(() => updatePayloads.length).toBe(1);
+  const params = updatePayloads[0]?.params as Record<string, unknown>;
+  expect(params.upstreamProvider).toBe("claude");
+  expect(params.rotationStrategy).toBe("account_rotation");
+  expect(params.aggregateApiId).toBeNull();
+  expect(params.modelSlug).toBeNull();
+  expect(params.accountGroupFilter).toBeNull();
+});
+
+test("editing an existing Claude API key preserves its aggregate route", async ({ page }) => {
+  const updatePayloads: Record<string, unknown>[] = [];
+  await mockRuntime(page);
+  await mockApiKeyRpc(page, {
+    apiKeys: [{
+      id: "legacy-claude-api-key",
+      name: "Legacy Claude API",
+      model_slug: "claude-sonnet-test",
+      upstream_provider: "claude",
+      rotation_strategy: "aggregate_api_rotation",
+      aggregate_api_id: "claude-upstream-1",
+      status: "enabled",
+    }],
+    aggregateApis: [{
+      id: "claude-upstream-1",
+      provider_type: "claude",
+      supplier_name: "Claude Console",
+      status: "active",
+    }],
+    onMethod: (method, payload) => {
+      if (method === "apikey/updateModel") {
+        updatePayloads.push(payload);
+        return { ok: true };
+      }
+      return undefined;
+    },
+  });
+
+  await page.goto("/apikeys/");
+  const row = page.locator("tr", { hasText: "Legacy Claude API" });
+  await expect(row.getByText("Claude API 池", { exact: true })).toBeVisible();
+  await row.getByTitle("编辑配置").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Claude API 聚合（依上游能力）")).toBeVisible();
+  await expect(dialog.getByText("Claude API 聚合的可用接口取决于所选上游；请按实际模型路由和上游协议接入。")).toBeVisible();
+  await expect(dialog.locator("#api-key-claude-upstream")).toContainText("Claude Console");
+  await dialog.getByLabel("密钥名称 (可选)").fill("Legacy Claude API renamed");
+  await dialog.getByRole("button", { name: "完成" }).click();
+
+  await expect.poll(() => updatePayloads.length).toBe(1);
+  const params = updatePayloads[0]?.params as Record<string, unknown>;
+  expect(params.upstreamProvider).toBe("claude");
+  expect(params.rotationStrategy).toBe("aggregate_api_rotation");
+  expect(params.aggregateApiId).toBe("claude-upstream-1");
+  expect(params.modelSlug).toBe("claude-sonnet-test");
+});
+
+test("a member can see a Claude key's pool but cannot change its provider route", async ({ page }) => {
+  const updatePayloads: Record<string, unknown>[] = [];
+  const requestedMethods: string[] = [];
+  await mockRuntime(page);
+  await mockApiKeyRpc(page, {
+    apiKeys: [{
+      id: "member-claude-key",
+      name: "Member Claude key",
+      model_slug: "claude-sonnet-test",
+      upstream_provider: "claude",
+      aggregate_api_id: "claude-upstream-1",
+      rotation_strategy: "aggregate_api_rotation",
+      status: "enabled",
+    }],
+    stripModelRoutes: true,
+    onMethod: (method, payload) => {
+      requestedMethods.push(method);
+      if (method === "accountManager/session/current") {
+        return {
+          mode: "accounts",
+          currentUser: { id: "member-1", username: "member", role: "member" },
+          role: "member",
+          permissions: ["apikey:self", "models:read"],
+          distributionEnabled: false,
+        };
+      }
+      if (method === "apikey/updateModel") {
+        updatePayloads.push(payload);
+        return { ok: true };
+      }
+      return undefined;
+    },
+  });
+
+  await page.goto("/apikeys/");
+  const row = page.locator("tr", { hasText: "Member Claude key" });
+  await expect(row.getByText("Claude API 池", { exact: true })).toBeVisible();
+  await row.getByTitle("编辑配置").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.locator("#api-key-upstream-provider")).toBeDisabled();
+  await expect(dialog.getByText("Claude 上游", { exact: true })).toBeVisible();
+  const modelSelect = dialog
+    .getByText("绑定模型 (可选)", { exact: true })
+    .locator("..")
+    .getByRole("combobox");
+  await expect(modelSelect).toBeDisabled();
+  await expect(modelSelect).toContainText("Claude Sonnet Test");
+  await dialog.getByLabel("密钥名称 (可选)").fill("Member renamed Claude key");
+  await dialog.getByRole("button", { name: "完成" }).click();
+
+  await expect.poll(() => updatePayloads.length).toBe(1);
+  const params = updatePayloads[0]?.params as Record<string, unknown>;
+  expect(params).not.toHaveProperty("upstreamProvider");
+  expect(params).not.toHaveProperty("aggregateApiId");
+  expect(params).not.toHaveProperty("rotationStrategy");
+  expect(params).not.toHaveProperty("hasModelConfig");
+  expect(params).not.toHaveProperty("modelSlug");
+  expect(params.name).toBe("Member renamed Claude key");
+  expect(requestedMethods).not.toContain("aggregateApi/list");
 });

@@ -139,8 +139,7 @@ export function BatchModelRoutesModal({
       }
 
       const normalizedRoutes = routes.map((route) => {
-        const sourceId =
-          route.sourceKind === "account_pool" ? "default" : route.sourceId.trim();
+        const sourceId = route.sourceId.trim();
         const priority = integer(route.priority);
         const weight = integer(route.weight, 1);
         if (!sourceId) throw new Error(t("请选择聚合 API"));
@@ -316,7 +315,17 @@ export function BatchModelRoutesModal({
                       <Label className="leading-5" htmlFor={`batch-route-source-${index}`}>
                         {t("来源")}
                       </Label>
-                      {route.sourceKind === "aggregate_api" && aggregateApis.length > 0 ? (
+                      {route.sourceKind === "account_pool" ? (
+                        <Select value={route.sourceId} onValueChange={(value) => updateRoute(index, "sourceId", value || "default")}>
+                          <SelectTrigger id={`batch-route-source-${index}`} className="w-full min-w-0" aria-label={t("来源")}>
+                            <SelectValue>{(value) => value === "claude" ? t("Claude 订阅账号池") : t("OpenAI 账号池")}</SelectValue>
+                          </SelectTrigger>
+                          <SelectContent><SelectGroup>
+                            <SelectItem value="default">{t("OpenAI 账号池")}</SelectItem>
+                            <SelectItem value="claude">{t("Claude 订阅账号池")}</SelectItem>
+                          </SelectGroup></SelectContent>
+                        </Select>
+                      ) : route.sourceKind === "aggregate_api" && aggregateApis.length > 0 ? (
                         <Select
                           value={route.sourceId}
                           onValueChange={(value) =>
@@ -351,12 +360,7 @@ export function BatchModelRoutesModal({
                       ) : (
                         <Input
                           id={`batch-route-source-${index}`}
-                          value={
-                            route.sourceKind === "account_pool"
-                              ? t("默认账号池")
-                              : route.sourceId
-                          }
-                          disabled={route.sourceKind === "account_pool"}
+                          value={route.sourceId}
                           placeholder={t("聚合 API ID")}
                           onChange={(event) =>
                             updateRoute(index, "sourceId", event.target.value)

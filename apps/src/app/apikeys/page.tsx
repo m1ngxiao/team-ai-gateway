@@ -653,11 +653,12 @@ export default function ApiKeysPage() {
 
       <WorkPanel>
         <CardContent className="p-0">
-          <Table className="min-w-[1160px]">
+          <Table className="min-w-[1240px]">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("密钥 / ID")}</TableHead>
                 <TableHead>{t("名称")}</TableHead>
+                <TableHead>{t("上游池")}</TableHead>
                 {showMemberOwnership ? <TableHead>{t("归属成员")}</TableHead> : null}
                 <TableHead>{t("协议")}</TableHead>
                 <TableHead>{t("轮转策略")}</TableHead>
@@ -676,6 +677,7 @@ export default function ApiKeysPage() {
                     <TableRow key={index}>
                       <TableCell><Skeleton className="h-4 w-32" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-20" /></TableCell>
                       {showMemberOwnership ? (
                         <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                       ) : null}
@@ -692,7 +694,7 @@ export default function ApiKeysPage() {
                 ))
               ) : apiKeys.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={showMemberOwnership ? 10 : 9} className="h-48 text-center">
+                  <TableCell colSpan={showMemberOwnership ? 11 : 10} className="h-48 text-center">
                     <div className="flex w-[calc(100dvw-6rem)] flex-col items-center justify-center gap-2 text-muted-foreground sm:w-auto">
                       <Plus className="h-8 w-8 opacity-20" />
                       <p>{t("创建密钥")}</p>
@@ -768,6 +770,20 @@ export default function ApiKeysPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-sm font-semibold">{key.name || t("未命名")}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col items-start gap-1">
+                          <Badge variant="outline" className="whitespace-nowrap text-[10px] font-medium">
+                            {key.upstreamProvider === "claude"
+                              ? t(key.rotationStrategy === "aggregate_api_rotation" ? "Claude API 池" : "Claude 订阅账号池")
+                              : t("OpenAI 上游池")}
+                          </Badge>
+                          {key.requiresRouteReview ? (
+                            <Badge variant="destructive" className="whitespace-nowrap text-[10px] font-medium">
+                              {t("需检查路由")}
+                            </Badge>
+                          ) : null}
+                        </div>
+                      </TableCell>
                       {showMemberOwnership ? (
                       <TableCell>
                         <Badge
@@ -884,7 +900,7 @@ export default function ApiKeysPage() {
                         <div className="flex items-center gap-2">
                           <Switch
                             checked={isEnabled}
-                            disabled={!isServiceReady || isToggling}
+                            disabled={!isServiceReady || isToggling || key.requiresRouteReview}
                             onCheckedChange={(enabled) =>
                               toggleApiKeyStatus({ id: key.id, enabled })
                             }

@@ -43,6 +43,7 @@ fn metadata_only_upstream_frame_records_first_response_before_keepalive() {
     let mut reader = ResponsesFromAnthropicSseReader::from_reader(
         PausingReader::new(upstream),
         Arc::clone(&usage_collector),
+        Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default())),
         Some("fallback-model"),
         Instant::now(),
     );
@@ -76,9 +77,11 @@ fn anthropic_text_sse_maps_to_responses_sse() {
         "data: {\"type\":\"message_stop\"}\n\n",
     );
     let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
+    let terminal = Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
     let mut reader = ResponsesFromAnthropicSseReader::from_reader(
         Cursor::new(upstream.as_bytes().to_vec()),
         Arc::clone(&usage_collector),
+        Arc::clone(&terminal),
         Some("fallback-model"),
         Instant::now(),
     );
@@ -95,6 +98,9 @@ fn anthropic_text_sse_maps_to_responses_sse() {
     assert_eq!(usage.input_tokens, Some(3));
     assert_eq!(usage.output_tokens, Some(2));
     assert_eq!(usage.output_text.as_deref(), Some("hello"));
+    let terminal = terminal.lock().expect("terminal lock");
+    assert!(terminal.saw_message_stop);
+    assert!(terminal.error.is_none());
 }
 
 #[test]
@@ -113,6 +119,7 @@ fn anthropic_to_responses_reader_accepts_openai_usage_fields() {
     let mut reader = ResponsesFromAnthropicSseReader::from_reader(
         Cursor::new(upstream.as_bytes().to_vec()),
         Arc::clone(&usage_collector),
+        Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default())),
         Some("fallback-model"),
         Instant::now(),
     );
@@ -151,6 +158,7 @@ fn anthropic_tool_use_sse_is_in_completed_responses_output() {
     let mut reader = ResponsesFromAnthropicSseReader::from_reader(
         Cursor::new(upstream.as_bytes().to_vec()),
         usage_collector,
+        Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default())),
         Some("fallback-model"),
         Instant::now(),
     );
@@ -164,4 +172,101 @@ fn anthropic_tool_use_sse_is_in_completed_responses_output() {
     assert!(out.contains("\"output\":["));
     assert!(out.contains("\"id\":\"toolu_1\""));
     assert!(out.contains("\"arguments\":\"{\\\"path\\\":\\\"/tmp/a\\\"}\""));
+}
+
+#[test]
+fn tool_before_text_keeps_distinct_output_indices_and_order() {
+    let upstream = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_order\",\"model\":\"claude-test\"}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_first\",\"name\":\"lookup\",\"input\":{\"q\":\"test\"}}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\"}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\"}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let mut reader = ResponsesFromAnthropicSseReader::from_reader(
+        Cursor::new(upstream.as_bytes().to_vec()),
+        Arc::new(Mutex::new(UpstreamResponseUsage::default())),
+        Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default())),
+        Some("claude-test"), Instant::now(),
+    );
+    let mut output = String::new();
+    reader.read_to_string(&mut output).expect("read mapped stream");
+    let events = output.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|data| serde_json::from_str::<Value>(data).expect("event JSON"))
+        .collect::<Vec<_>>();
+    let added = events.iter()
+        .filter(|event| event["type"] == "response.output_item.added")
+        .collect::<Vec<_>>();
+    assert_eq!(added.len(), 2);
+    assert_eq!(added[0]["output_index"], 0);
+    assert_eq!(added[0]["item"]["type"], "function_call");
+    assert_eq!(added[1]["output_index"], 1);
+    assert_eq!(added[1]["item"]["type"], "message");
+    let text_delta = events.iter()
+        .find(|event| event["type"] == "response.output_text.delta")
+        .expect("text delta");
+    assert_eq!(text_delta["output_index"], 1);
+    let completed = events.iter()
+        .find(|event| event["type"] == "response.completed")
+        .expect("completed event");
+    assert_eq!(completed["response"]["output"][0]["type"], "function_call");
+    assert_eq!(completed["response"]["output"][1]["type"], "message");
+}
+
+#[test]
+fn interrupted_anthropic_stream_emits_failed_without_completed() {
+    let upstream = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_partial\",\"model\":\"claude-test\",\"usage\":{\"input_tokens\":1}}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+    );
+    let usage = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
+    let terminal = Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
+    let mut reader = ResponsesFromAnthropicSseReader::from_reader(
+        Cursor::new(upstream.as_bytes().to_vec()), usage, Arc::clone(&terminal),
+        Some("claude-test"), Instant::now(),
+    );
+    let mut output = String::new();
+    reader.read_to_string(&mut output).expect("read failed conversion");
+    assert!(output.contains("event: response.output_text.delta"));
+    assert!(output.contains("event: response.failed"));
+    assert!(!output.contains("event: response.completed"));
+    let terminal = terminal.lock().expect("terminal lock");
+    assert!(!terminal.saw_message_stop);
+    assert!(terminal.error.as_deref().is_some_and(|error| error.contains("before message_stop")));
+}
+
+#[test]
+fn anthropic_error_event_emits_failed_and_ignores_later_stop() {
+    let upstream = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_error\",\"model\":\"claude-test\"}}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"at capacity\"}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let terminal = Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
+    let mut reader = ResponsesFromAnthropicSseReader::from_reader(
+        Cursor::new(upstream.as_bytes().to_vec()),
+        Arc::new(Mutex::new(UpstreamResponseUsage::default())),
+        Arc::clone(&terminal), Some("claude-test"), Instant::now(),
+    );
+    let mut output = String::new();
+    reader.read_to_string(&mut output).expect("read error conversion");
+    assert!(output.contains("event: response.failed"));
+    assert!(output.contains("at capacity"));
+    assert!(!output.contains("event: response.completed"));
+    assert_eq!(terminal.lock().expect("terminal lock").error.as_deref(), Some("at capacity"));
 }

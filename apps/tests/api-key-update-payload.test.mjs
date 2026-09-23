@@ -116,3 +116,25 @@ test("API key quota payload keeps the existing three-state presence contract", (
   assert.equal(cleared.hasQuotaLimitTokens, true);
   assert.equal(cleared.quotaLimitTokens, null);
 });
+
+test("API key provider changes are explicit and preserve the selected upstream binding", () => {
+  const omitted = payloadModule.buildApiKeyUpdateInvokePayload("key-1", {
+    name: "Renamed key",
+  });
+  assert.equal("upstreamProvider" in omitted, false);
+  assert.equal("confirmRouteReview" in omitted, false);
+
+  const claude = payloadModule.buildApiKeyUpdateInvokePayload("key-1", {
+    upstreamProvider: "claude",
+    rotationStrategy: "aggregate_api_rotation",
+    aggregateApiId: "claude-upstream-1",
+    accountPlanFilter: null,
+    confirmRouteReview: true,
+  });
+  assert.equal(claude.upstreamProvider, "claude");
+  assert.equal(claude.rotationStrategy, "aggregate_api_rotation");
+  assert.equal(claude.aggregateApiId, "claude-upstream-1");
+  assert.equal(claude.hasRoutingConfig, true);
+  assert.equal(claude.accountPlanFilter, null);
+  assert.equal(claude.confirmRouteReview, true);
+});

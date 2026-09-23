@@ -794,7 +794,7 @@ fn responses_reasoning_budget_stays_below_max_tokens() {
 }
 
 #[test]
-fn responses_request_drops_images_for_deepseek_anthropic_bridge() {
+fn responses_request_rejects_images_in_anthropic_bridge() {
     let body = json!({
         "model": "gpt-5.3",
         "input": [{
@@ -807,18 +807,54 @@ fn responses_request_drops_images_for_deepseek_anthropic_bridge() {
         }]
     });
 
-    let adapted = adapt_openai_responses_to_anthropic_messages(
+    let error = adapt_openai_responses_to_anthropic_messages(
         serde_json::to_vec(&body).expect("body").as_slice(),
         Some("deepseek-v4-pro"),
     )
-    .expect("adapt responses request");
-    let payload: Value = serde_json::from_slice(&adapted).expect("parse adapted body");
+    .expect_err("image content must not be dropped");
+    assert!(error.contains("unsupported responses content part type: input_image"));
+}
 
-    assert_eq!(
-        payload["messages"][0]["content"].as_array().unwrap().len(),
-        1
-    );
-    assert_eq!(payload["messages"][0]["content"][0]["type"], "text");
+#[test]
+fn responses_request_rejects_unknown_content_in_anthropic_bridge() {
+    let body = json!({
+        "model": "claude-test",
+        "input": [{"type":"message","role":"user","content":[{"type":"input_audio","audio":"data:audio/wav;base64,AA=="}]}]
+    });
+    let error = adapt_openai_responses_to_anthropic_messages(
+        serde_json::to_vec(&body).expect("body").as_slice(), None,
+    ).expect_err("unknown content must not be dropped");
+    assert!(error.contains("unsupported responses content part type: input_audio"));
+}
+
+#[test]
+fn responses_request_rejects_unsupported_tool_in_anthropic_bridge() {
+    let body = json!({
+        "model": "claude-test",
+        "input": "run code",
+        "tools": [{"type":"code_interpreter","container":{"type":"auto"}}]
+    });
+    let error = adapt_openai_responses_to_anthropic_messages(
+        serde_json::to_vec(&body).expect("body").as_slice(), None,
+    ).expect_err("unsupported tool must not be dropped");
+    assert!(error.contains("unsupported responses tool type: code_interpreter"));
+}
+
+#[test]
+fn responses_request_rejects_malformed_tools_in_anthropic_bridge() {
+    let cases = [
+        (json!(null), "responses tool entry must be an object"),
+        (json!({"name":"lookup"}), "responses tool type is required"),
+        (json!({"type":"function"}), "responses function tool name is required"),
+        (json!({"type":"function","name":"lookup","parameters":"invalid"}), "parameters must be an object"),
+    ];
+    for (tool, expected_error) in cases {
+        let body = json!({"model":"claude-test","input":"find this","tools":[tool]});
+        let error = adapt_openai_responses_to_anthropic_messages(
+            serde_json::to_vec(&body).expect("body").as_slice(), None,
+        ).expect_err("malformed tool must not be dropped");
+        assert!(error.contains(expected_error), "unexpected error: {error}");
+    }
 }
 
 #[test]

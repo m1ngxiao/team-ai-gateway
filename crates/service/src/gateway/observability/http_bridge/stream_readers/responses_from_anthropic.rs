@@ -11,9 +11,16 @@ pub(crate) struct ResponsesFromAnthropicSseReader {
     out_cursor: Cursor<Vec<u8>>,
     state: ResponsesFromAnthropicState,
     usage_collector: Arc<Mutex<UpstreamResponseUsage>>,
+    terminal_collector: Arc<Mutex<ResponsesFromAnthropicTerminal>>,
     request_started_at: Instant,
     last_upstream_activity: Instant,
     saw_upstream_frame: bool,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ResponsesFromAnthropicTerminal {
+    pub saw_message_stop: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Default)]
@@ -24,6 +31,7 @@ struct ResponsesFromAnthropicState {
     text_item_started: bool,
     text_part_started: bool,
     text_finished: bool,
+    text_output_index: usize,
     completed: bool,
     output_text: String,
     input_tokens: i64,
@@ -34,7 +42,7 @@ struct ResponsesFromAnthropicState {
     reasoning_output_tokens: i64,
     stop_reason: String,
     current_tool: Option<PendingToolUse>,
-    completed_tools: Vec<Value>,
+    output_items: Vec<Value>,
 }
 
 #[derive(Default)]
@@ -48,6 +56,7 @@ impl ResponsesFromAnthropicSseReader {
     pub(crate) fn from_reader<R>(
         upstream: R,
         usage_collector: Arc<Mutex<UpstreamResponseUsage>>,
+        terminal_collector: Arc<Mutex<ResponsesFromAnthropicTerminal>>,
         fallback_model: Option<&str>,
         request_started_at: Instant,
     ) -> Self
@@ -67,6 +76,7 @@ impl ResponsesFromAnthropicSseReader {
             out_cursor: Cursor::new(Vec::new()),
             state,
             usage_collector,
+            terminal_collector,
             request_started_at,
             last_upstream_activity: Instant::now(),
             saw_upstream_frame: false,
@@ -76,18 +86,23 @@ impl ResponsesFromAnthropicSseReader {
     pub(crate) fn new(
         upstream: reqwest::blocking::Response,
         usage_collector: Arc<Mutex<UpstreamResponseUsage>>,
+        terminal_collector: Arc<Mutex<ResponsesFromAnthropicTerminal>>,
         fallback_model: Option<&str>,
         request_started_at: Instant,
     ) -> Self {
         Self::from_reader(
             upstream,
             usage_collector,
+            terminal_collector,
             fallback_model,
             request_started_at,
         )
     }
 
     fn next_chunk(&mut self) -> std::io::Result<Vec<u8>> {
+        if self.state.completed {
+            return Ok(Vec::new());
+        }
         loop {
             match self
                 .upstream
@@ -106,10 +121,8 @@ impl ResponsesFromAnthropicSseReader {
                         return Ok(mapped);
                     }
                 }
-                Ok(UpstreamSseFramePumpItem::Eof)
-                | Ok(UpstreamSseFramePumpItem::Error(_))
-                | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    let finished = self.finish_stream();
+                Ok(UpstreamSseFramePumpItem::Eof) => {
+                    let finished = self.fail_stream("Claude upstream stream ended before message_stop");
                     if !finished.is_empty() {
                         mark_first_response_ms_on_usage(
                             &self.usage_collector,
@@ -118,9 +131,15 @@ impl ResponsesFromAnthropicSseReader {
                     }
                     return Ok(finished);
                 }
+                Ok(UpstreamSseFramePumpItem::Error(error)) => {
+                    return Ok(self.fail_stream(&format!("Claude upstream stream read failed: {error}")));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Ok(self.fail_stream("Claude upstream stream disconnected before message_stop"));
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if stream_idle_timed_out(self.last_upstream_activity) {
-                        let finished = self.finish_stream();
+                        let finished = self.fail_stream("Claude upstream stream timed out before message_stop");
                         if !finished.is_empty() {
                             mark_first_response_ms_on_usage(
                                 &self.usage_collector,
@@ -153,7 +172,7 @@ impl ResponsesFromAnthropicSseReader {
         }
         let data = data_lines.join("\n");
         if data.trim() == "[DONE]" {
-            return self.finish_stream();
+            return self.fail_stream("Claude upstream ended without message_stop");
         }
         let value = match serde_json::from_str::<Value>(&data) {
             Ok(value) => value,
@@ -202,6 +221,14 @@ impl ResponsesFromAnthropicSseReader {
             }
             "message_stop" => {
                 out.push_str(String::from_utf8_lossy(&self.finish_stream()).as_ref());
+            }
+            "error" => {
+                let message = value.get("error")
+                    .and_then(|error| error.get("message"))
+                    .or_else(|| value.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Claude upstream reported a stream error");
+                out.push_str(String::from_utf8_lossy(&self.fail_stream(message)).as_ref());
             }
             _ => {}
         }
@@ -325,7 +352,7 @@ impl ResponsesFromAnthropicSseReader {
                         "type": "response.output_text.delta",
                         "delta": fragment,
                         "item_id": self.text_item_id(),
-                        "output_index": 0,
+                        "output_index": self.state.text_output_index,
                         "content_index": 0,
                     }),
                 );
@@ -369,12 +396,14 @@ impl ResponsesFromAnthropicSseReader {
         self.ensure_response_started(out);
         if !self.state.text_item_started {
             self.state.text_item_started = true;
+            self.state.text_output_index = self.state.output_items.len();
+            self.state.output_items.push(Value::Null);
             append_sse_event(
                 out,
                 "response.output_item.added",
                 &json!({
                     "type": "response.output_item.added",
-                    "output_index": 0,
+                    "output_index": self.state.text_output_index,
                     "item": {
                         "id": self.text_item_id(),
                         "type": "message",
@@ -393,7 +422,7 @@ impl ResponsesFromAnthropicSseReader {
                 &json!({
                     "type": "response.content_part.added",
                     "item_id": self.text_item_id(),
-                    "output_index": 0,
+                    "output_index": self.state.text_output_index,
                     "content_index": 0,
                     "part": { "type": "output_text", "text": "" },
                 }),
@@ -413,7 +442,7 @@ impl ResponsesFromAnthropicSseReader {
                 "type": "response.output_text.done",
                 "text": self.state.output_text,
                 "item_id": self.text_item_id(),
-                "output_index": 0,
+                "output_index": self.state.text_output_index,
                 "content_index": 0,
             }),
         );
@@ -423,7 +452,7 @@ impl ResponsesFromAnthropicSseReader {
             &json!({
                 "type": "response.content_part.done",
                 "item_id": self.text_item_id(),
-                "output_index": 0,
+                "output_index": self.state.text_output_index,
                 "content_index": 0,
                 "part": { "type": "output_text", "text": self.state.output_text },
             }),
@@ -433,7 +462,7 @@ impl ResponsesFromAnthropicSseReader {
             "response.output_item.done",
             &json!({
                 "type": "response.output_item.done",
-                "output_index": 0,
+                "output_index": self.state.text_output_index,
                 "item": {
                     "id": self.text_item_id(),
                     "type": "message",
@@ -443,6 +472,14 @@ impl ResponsesFromAnthropicSseReader {
                 }
             }),
         );
+        let text_item = json!({
+            "id": self.text_item_id(),
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": self.state.output_text }],
+        });
+        self.state.output_items[self.state.text_output_index] = text_item;
     }
 
     fn finish_tool_block(&mut self, out: &mut String) {
@@ -450,7 +487,7 @@ impl ResponsesFromAnthropicSseReader {
             return;
         };
         self.state.stop_reason = "tool_use".to_string();
-        let output_index = self.completed_output_len();
+        let output_index = self.state.output_items.len();
         let item = json!({
             "id": tool.id,
             "type": "function_call",
@@ -477,7 +514,7 @@ impl ResponsesFromAnthropicSseReader {
                 "item": item.clone(),
             }),
         );
-        self.state.completed_tools.push(item);
+        self.state.output_items.push(item);
     }
 
     fn finish_stream(&mut self) -> Vec<u8> {
@@ -490,6 +527,9 @@ impl ResponsesFromAnthropicSseReader {
         self.finish_tool_block(&mut out);
         self.state.completed = true;
         self.publish_usage();
+        if let Ok(mut terminal) = self.terminal_collector.lock() {
+            terminal.saw_message_stop = true;
+        }
         append_sse_event(
             &mut out,
             "response.completed",
@@ -498,6 +538,26 @@ impl ResponsesFromAnthropicSseReader {
                 "response": self.response_payload("completed"),
             }),
         );
+        out.into_bytes()
+    }
+
+    fn fail_stream(&mut self, message: &str) -> Vec<u8> {
+        if self.state.completed {
+            return Vec::new();
+        }
+        let mut out = String::new();
+        self.ensure_response_started(&mut out);
+        self.state.completed = true;
+        self.publish_usage();
+        if let Ok(mut terminal) = self.terminal_collector.lock() {
+            terminal.error = Some(message.to_string());
+        }
+        let mut response = self.response_payload("failed");
+        response["error"] = json!({"code":"upstream_error","message":message});
+        append_sse_event(&mut out, "response.failed", &json!({
+            "type":"response.failed",
+            "response":response,
+        }));
         out.into_bytes()
     }
 
@@ -528,22 +588,7 @@ impl ResponsesFromAnthropicSseReader {
     }
 
     fn completed_output(&self) -> Value {
-        let mut output = Vec::new();
-        if !self.state.output_text.is_empty() {
-            output.push(json!({
-                "id": self.text_item_id(),
-                "type": "message",
-                "status": "completed",
-                "role": "assistant",
-                "content": [{ "type": "output_text", "text": self.state.output_text }],
-            }));
-        }
-        output.extend(self.state.completed_tools.iter().cloned());
-        Value::Array(output)
-    }
-
-    fn completed_output_len(&self) -> usize {
-        usize::from(!self.state.output_text.is_empty()) + self.state.completed_tools.len()
+        Value::Array(self.state.output_items.clone())
     }
 
     fn usage_payload(&self) -> Value {

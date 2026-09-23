@@ -1,6 +1,6 @@
 use crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE;
 use crate::gateway::request_log::RequestLogUsage;
-use codexmanager_core::storage::ManagedModelV2;
+use codexmanager_core::storage::{ManagedModelV2, UpstreamProvider};
 use std::time::Instant;
 use tiny_http::Request;
 
@@ -191,6 +191,12 @@ fn has_enabled_default_account_pool_route(model: &ManagedModelV2) -> bool {
     })
 }
 
+fn has_enabled_claude_account_pool_route(model: &ManagedModelV2) -> bool {
+    model.routes.iter().any(|route| {
+        route.enabled && route.source_kind == "account_pool" && route.source_id == "claude"
+    })
+}
+
 fn has_enabled_aggregate_api_route(model: &ManagedModelV2) -> bool {
     model
         .routes
@@ -198,11 +204,22 @@ fn has_enabled_aggregate_api_route(model: &ManagedModelV2) -> bool {
         .any(|route| route.enabled && route.source_kind == "aggregate_api")
 }
 
+#[cfg(test)]
 fn validate_model_route(
     storage: &codexmanager_core::storage::Storage,
     key_id: &str,
     model: Option<&str>,
     execution_plan: super::executor::GatewayUpstreamExecutionPlan,
+) -> Result<Option<ManagedModelV2>, (u16, String)> {
+    validate_model_route_for_provider(storage, key_id, model, execution_plan, UpstreamProvider::Openai)
+}
+
+fn validate_model_route_for_provider(
+    storage: &codexmanager_core::storage::Storage,
+    key_id: &str,
+    model: Option<&str>,
+    execution_plan: super::executor::GatewayUpstreamExecutionPlan,
+    upstream_provider: UpstreamProvider,
 ) -> Result<Option<ManagedModelV2>, (u16, String)> {
     let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -238,9 +255,10 @@ fn validate_model_route(
         return Err((403, err));
     }
     let route_enabled = match execution_plan.route_kind {
-        GatewayUpstreamRouteKind::AccountRotation => {
-            has_enabled_default_account_pool_route(&managed_model)
-        }
+        GatewayUpstreamRouteKind::AccountRotation => match upstream_provider {
+            UpstreamProvider::Openai => has_enabled_default_account_pool_route(&managed_model),
+            UpstreamProvider::Claude => has_enabled_claude_account_pool_route(&managed_model),
+        },
         GatewayUpstreamRouteKind::AggregateApi => has_enabled_aggregate_api_route(&managed_model),
         GatewayUpstreamRouteKind::HybridAccountFirst => {
             has_enabled_default_account_pool_route(&managed_model)
@@ -337,15 +355,31 @@ fn respond_model_route_error(
 fn resolve_aggregate_candidates_for_route(
     storage: &codexmanager_core::storage::Storage,
     protocol_type: &str,
+    upstream_provider: UpstreamProvider,
     aggregate_api_id: Option<&str>,
     model_for_log: Option<&str>,
 ) -> Result<Vec<codexmanager_core::storage::AggregateApi>, String> {
+    let aggregate_provider = match upstream_provider {
+        UpstreamProvider::Claude => {
+            if protocol_type == crate::apikey_profile::PROTOCOL_GEMINI_NATIVE {
+                return Err("Claude upstream does not support Gemini protocol".to_string());
+            }
+            crate::aggregate_api::AGGREGATE_API_PROVIDER_CLAUDE
+        }
+        UpstreamProvider::Openai => {
+            if protocol_type == crate::apikey_profile::PROTOCOL_GEMINI_NATIVE {
+                crate::aggregate_api::AGGREGATE_API_PROVIDER_GEMINI
+            } else {
+                crate::aggregate_api::AGGREGATE_API_PROVIDER_CODEX
+            }
+        }
+    };
     let explicit_candidate =
-        resolve_active_explicit_aggregate_candidate(storage, aggregate_api_id)?;
+        resolve_active_explicit_aggregate_candidate(storage, aggregate_api_id, aggregate_provider)?;
     let mut candidates =
         match super::protocol::aggregate_api::resolve_aggregate_api_rotation_candidates(
             storage,
-            protocol_type,
+            aggregate_provider,
             aggregate_api_id,
         ) {
             Ok(candidates) => candidates,
@@ -362,6 +396,7 @@ fn resolve_aggregate_candidates_for_route(
 fn resolve_active_explicit_aggregate_candidate(
     storage: &codexmanager_core::storage::Storage,
     aggregate_api_id: Option<&str>,
+    aggregate_provider: &str,
 ) -> Result<Option<codexmanager_core::storage::AggregateApi>, String> {
     let Some(api_id) = aggregate_api_id
         .map(str::trim)
@@ -373,7 +408,19 @@ fn resolve_active_explicit_aggregate_candidate(
     let candidate = storage
         .find_aggregate_api_by_id(api_id)
         .map_err(|err| format!("find explicit aggregate api failed: {err}"))?;
-    Ok(candidate.filter(|api| api.status.trim().eq_ignore_ascii_case("active")))
+    let candidate = candidate.filter(|api| api.status.trim().eq_ignore_ascii_case("active"));
+    if let Some(candidate) = candidate.as_ref() {
+        let candidate_provider =
+            super::protocol::aggregate_api::normalize_provider_type_value(&candidate.provider_type);
+        let compatible_openai = aggregate_provider == crate::aggregate_api::AGGREGATE_API_PROVIDER_CODEX
+            && candidate_provider == crate::aggregate_api::AGGREGATE_API_PROVIDER_COMPATIBLE;
+        if candidate_provider != aggregate_provider && !compatible_openai {
+            return Err(format!(
+                "aggregate api provider mismatch: expected {aggregate_provider}, got {candidate_provider}"
+            ));
+        }
+    }
+    Ok(candidate)
 }
 
 fn apply_aggregate_model_filter(
@@ -654,6 +701,7 @@ fn proxy_with_aggregate_candidates(
 fn resolve_hybrid_aggregate_candidates_for_prepare(
     storage: &codexmanager_core::storage::Storage,
     protocol_type: &str,
+    upstream_provider: UpstreamProvider,
     aggregate_api_id: Option<&str>,
     key_id: &str,
     model_for_log: Option<&str>,
@@ -662,6 +710,7 @@ fn resolve_hybrid_aggregate_candidates_for_prepare(
     let candidates = resolve_aggregate_candidates_for_route(
         storage,
         protocol_type,
+        upstream_provider,
         aggregate_api_id,
         model_for_log,
     )?;
@@ -683,13 +732,20 @@ fn take_or_resolve_aggregate_candidates(
     prepared: &mut Option<Result<Vec<codexmanager_core::storage::AggregateApi>, String>>,
     storage: &codexmanager_core::storage::Storage,
     protocol_type: &str,
+    upstream_provider: UpstreamProvider,
     aggregate_api_id: Option<&str>,
     model_for_log: Option<&str>,
 ) -> Result<Vec<codexmanager_core::storage::AggregateApi>, String> {
     if let Some(result) = prepared.take() {
         return result;
     }
-    resolve_aggregate_candidates_for_route(storage, protocol_type, aggregate_api_id, model_for_log)
+    resolve_aggregate_candidates_for_route(
+        storage,
+        protocol_type,
+        upstream_provider,
+        aggregate_api_id,
+        model_for_log,
+    )
 }
 
 /// 函数 `proxy_validated_request`
@@ -721,6 +777,7 @@ pub(in super::super) fn proxy_validated_request(
         has_prompt_cache_key,
         request_shape,
         protocol_type,
+        upstream_provider,
         rotation_strategy,
         aggregate_api_id,
         account_group_filter,
@@ -791,11 +848,44 @@ pub(in super::super) fn proxy_validated_request(
         route_kind_label(execution_plan.route_kind),
     );
 
-    let configured_model = match validate_model_route(
+    // A Claude Key may use the isolated subscription pool or the existing API pool.
+    if upstream_provider == UpstreamProvider::Claude
+        && !matches!(
+            execution_plan.route_kind,
+            GatewayUpstreamRouteKind::AggregateApi | GatewayUpstreamRouteKind::AccountRotation
+        )
+    {
+        return respond_model_route_error(
+            request,
+            &storage,
+            trace_id.as_str(),
+            key_id.as_str(),
+            original_path.as_str(),
+            path.as_str(),
+            request_method.as_str(),
+            response_adapter,
+            service_tier_for_log.as_deref(),
+            effective_service_tier_for_log.as_deref(),
+            service_tier_source_for_log.as_deref(),
+            gateway_mode_for_log.as_deref(),
+            client_model_for_log.as_deref(),
+            model_for_log.as_deref(),
+            model_source_for_log.as_deref(),
+            client_reasoning_for_log.as_deref(),
+            reasoning_for_log.as_deref(),
+            reasoning_source_for_log.as_deref(),
+            started_at,
+            503,
+            "Claude subscription keys require account rotation; hybrid routes are unavailable".to_string(),
+        );
+    }
+
+    let configured_model = match validate_model_route_for_provider(
         &storage,
         key_id.as_str(),
         model_for_log.as_deref(),
         execution_plan,
+        upstream_provider,
     ) {
         Ok(configured_model) => configured_model,
         Err((status_code, message)) => {
@@ -825,6 +915,38 @@ pub(in super::super) fn proxy_validated_request(
         }
     };
 
+    if upstream_provider == UpstreamProvider::Claude
+        && execution_plan.route_kind == GatewayUpstreamRouteKind::AccountRotation
+    {
+        return super::claude_subscription::proxy_claude_subscription_request(
+            super::claude_subscription::ClaudeSubscriptionProxyRequest {
+                request: Some(request),
+                storage: &storage,
+                trace_id: trace_id.as_str(),
+                key_id: key_id.as_str(),
+                original_path: original_path.as_str(),
+                path: passthrough_path.as_str(),
+                request_method: request_method.as_str(),
+                method: &method,
+                body: &passthrough_body,
+                client_is_stream,
+                configured_model: configured_model.as_ref(),
+                client_model_for_log: client_model_for_log.as_deref(),
+                model_for_log: model_for_log.as_deref(),
+                model_source_for_log: model_source_for_log.as_deref(),
+                client_reasoning_for_log: client_reasoning_for_log.as_deref(),
+                reasoning_for_log: reasoning_for_log.as_deref(),
+                reasoning_source_for_log: reasoning_source_for_log.as_deref(),
+                service_tier_for_log: service_tier_for_log.as_deref(),
+                effective_service_tier_for_log: effective_service_tier_for_log.as_deref(),
+                service_tier_source_for_log: service_tier_source_for_log.as_deref(),
+                gateway_mode_for_log: gateway_mode_for_log.as_deref(),
+                started_at,
+                request_deadline,
+            },
+        );
+    }
+
     // 聚合优先混合轮转：聚合路径失败且请求未被消费时，需要把请求交还给账号路径继续，
     // 因此这里使用可变绑定。
     let mut request = request;
@@ -846,6 +968,7 @@ pub(in super::super) fn proxy_validated_request(
         match resolve_aggregate_candidates_for_route(
             &storage,
             protocol_type.as_str(),
+            upstream_provider,
             aggregate_api_id.as_deref(),
             model_for_log.as_deref(),
         ) {
@@ -955,6 +1078,7 @@ pub(in super::super) fn proxy_validated_request(
                 &mut prepared_hybrid_aggregate_candidates,
                 &storage,
                 protocol_type.as_str(),
+                upstream_provider,
                 aggregate_api_id.as_deref(),
                 model_for_log.as_deref(),
             ) {
@@ -1044,6 +1168,7 @@ pub(in super::super) fn proxy_validated_request(
             Some(resolve_hybrid_aggregate_candidates_for_prepare(
                 &storage,
                 protocol_type.as_str(),
+                upstream_provider,
                 aggregate_api_id.as_deref(),
                 key_id.as_str(),
                 model_for_log.as_deref(),
@@ -1160,6 +1285,7 @@ pub(in super::super) fn proxy_validated_request(
             &mut prepared_hybrid_aggregate_candidates,
             &storage,
             protocol_type.as_str(),
+            upstream_provider,
             aggregate_api_id.as_deref(),
             model_for_log.as_deref(),
         ) {

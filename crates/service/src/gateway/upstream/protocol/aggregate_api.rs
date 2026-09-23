@@ -723,7 +723,7 @@ fn prepare_aggregate_candidate_client(candidate: &AggregateApi, trace_id: &str, 
 ///
 /// # 返回
 /// 返回函数执行结果
-fn normalize_provider_type_value(value: &str) -> String {
+pub(in super::super) fn normalize_provider_type_value(value: &str) -> String {
     let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
     match normalized.as_str() {
         "claude" | "anthropic" | "anthropic_native" | "claude_code" => {
@@ -982,46 +982,33 @@ fn build_anthropic_bridge_aggregate_api_request(
     Ok(request)
 }
 
-/// 函数 `resolve_aggregate_api_rotation_candidates`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - crate: 参数 crate
-///
-/// # 返回
-/// 返回函数执行结果
+/// Resolve candidates using the platform Key's selected upstream provider.
+/// The storage query includes generic `compatible` APIs for legacy Claude
+/// routing; exclude those so a Claude Key cannot escape its selected pool.
 pub(crate) fn resolve_aggregate_api_rotation_candidates(
     storage: &Storage,
-    protocol_type: &str,
+    provider_type: &str,
     aggregate_api_id: Option<&str>,
 ) -> Result<Vec<AggregateApi>, String> {
-    let provider_type = match protocol_type {
-        "anthropic_native" => AGGREGATE_API_PROVIDER_CLAUDE,
-        "gemini_native" => AGGREGATE_API_PROVIDER_GEMINI,
-        _ => AGGREGATE_API_PROVIDER_CODEX,
-    };
-
     let mut candidates = storage
         .list_active_aggregate_apis_by_provider_type(provider_type)
         .map_err(|err| err.to_string())?
         .into_iter()
+        .filter(|candidate| {
+            provider_type != AGGREGATE_API_PROVIDER_CLAUDE
+                || normalize_provider_type_value(&candidate.provider_type)
+                    == AGGREGATE_API_PROVIDER_CLAUDE
+        })
         .collect::<Vec<_>>();
     candidates = normalize_candidate_order(candidates);
-
     if let Some(api_id) = aggregate_api_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         promote_preferred_aggregate_candidate(&mut candidates, api_id);
     }
-
     if candidates.is_empty() {
-        Err(format!(
-            "aggregate api not found for provider {provider_type}"
-        ))
+        Err(format!("aggregate api not found for provider {provider_type}"))
     } else {
         Ok(candidates)
     }

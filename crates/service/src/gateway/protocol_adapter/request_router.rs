@@ -442,7 +442,8 @@ fn responses_input_to_anthropic_messages(
         Some(item @ Value::Object(_)) => {
             responses_input_item_to_anthropic(item, system_parts, messages)?;
         }
-        Some(_) | None => {}
+        Some(Value::Null) | None => {}
+        Some(_) => return Err("responses input must be text or an array of supported items".to_string()),
     }
     Ok(())
 }
@@ -452,9 +453,8 @@ fn responses_input_item_to_anthropic(
     system_parts: &mut Vec<String>,
     messages: &mut Vec<Value>,
 ) -> Result<(), String> {
-    let Some(obj) = item.as_object() else {
-        return Ok(());
-    };
+    let obj = item.as_object()
+        .ok_or_else(|| "unsupported responses input item: expected an object".to_string())?;
     match obj.get("type").and_then(Value::as_str).unwrap_or("message") {
         "message" => {
             let role = obj
@@ -463,7 +463,13 @@ fn responses_input_item_to_anthropic(
                 .map(str::trim)
                 .unwrap_or("user");
             let content = responses_message_content_to_anthropic(obj.get("content"))?;
+            if !matches!(role, "developer" | "system" | "assistant" | "user") {
+                return Err(format!("unsupported responses message role: {role}"));
+            }
             if matches!(role, "developer" | "system") {
+                if content.iter().any(|part| part.get("type").and_then(Value::as_str) != Some("text")) {
+                    return Err("unsupported non-text system content in responses request".to_string());
+                }
                 let text = anthropic_content_to_text(&content);
                 if !text.trim().is_empty() {
                     system_parts.push(text);
@@ -522,7 +528,7 @@ fn responses_input_item_to_anthropic(
                 })],
             ));
         }
-        _ => {}
+        kind => return Err(format!("unsupported responses input item type: {kind}")),
     }
     Ok(())
 }
@@ -533,32 +539,30 @@ fn responses_message_content_to_anthropic(content: Option<&Value>) -> Result<Vec
         Some(Value::Array(parts)) => {
             let mut out = Vec::new();
             for part in parts {
-                if let Some(mapped) = responses_content_part_to_anthropic(part)? {
-                    out.push(mapped);
-                }
+                out.push(responses_content_part_to_anthropic(part)?);
             }
             Ok(out)
         }
-        Some(part @ Value::Object(_)) => Ok(responses_content_part_to_anthropic(part)?
-            .map(|part| vec![part])
-            .unwrap_or_default()),
-        Some(other) => Ok(vec![anthropic_text_block(other.to_string().as_str())]),
+        Some(part @ Value::Object(_)) => Ok(vec![responses_content_part_to_anthropic(part)?]),
+        Some(_) => Err("unsupported responses message content value".to_string()),
         None => Ok(Vec::new()),
     }
 }
 
-fn responses_content_part_to_anthropic(part: &Value) -> Result<Option<Value>, String> {
+fn responses_content_part_to_anthropic(part: &Value) -> Result<Value, String> {
     let Some(obj) = part.as_object() else {
-        return Ok(part.as_str().map(anthropic_text_block));
+        return part.as_str()
+            .map(anthropic_text_block)
+            .ok_or_else(|| "unsupported responses content part: expected text or object".to_string());
     };
     let kind = obj.get("type").and_then(Value::as_str).unwrap_or("text");
     match kind {
-        "input_text" | "output_text" | "text" => Ok(obj
+        "input_text" | "output_text" | "text" => obj
             .get("text")
             .and_then(Value::as_str)
-            .map(anthropic_text_block)),
-        "input_image" | "image" => Ok(None),
-        _ => Ok(None),
+            .map(anthropic_text_block)
+            .ok_or_else(|| format!("responses {kind} content part is missing text")),
+        kind => Err(format!("unsupported responses content part type: {kind}")),
     }
 }
 
@@ -602,31 +606,31 @@ fn responses_tools_to_anthropic(tools: Option<&Value>) -> Result<Option<Value>, 
         .ok_or_else(|| "responses tools must be an array".to_string())?;
     let mut out = Vec::new();
     for item in items {
-        let Some(tool) = item.as_object() else {
-            continue;
-        };
-        if tool
+        let tool = item
+            .as_object()
+            .ok_or_else(|| "responses tool entry must be an object".to_string())?;
+        let kind = tool
             .get("type")
             .and_then(Value::as_str)
-            .is_some_and(|kind| kind == "web_search")
-        {
+            .ok_or_else(|| "responses tool type is required".to_string())?;
+        if kind == "web_search" {
             out.push(json!({ "type": "web_search_20250305" }));
             continue;
         }
-        if tool
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|kind| kind != "function")
-        {
-            continue;
+        if kind != "function" {
+            return Err(format!("unsupported responses tool type: {kind}"));
         }
-        let Some(name) = tool
+        let name = tool
             .get("name")
             .and_then(Value::as_str)
             .and_then(normalize_text)
-        else {
-            continue;
-        };
+            .ok_or_else(|| "responses function tool name is required".to_string())?;
+        if tool.get("description").is_some_and(|value| !value.is_string()) {
+            return Err(format!("responses function tool {name} description must be text"));
+        }
+        if tool.get("parameters").is_some_and(|value| !value.is_object()) {
+            return Err(format!("responses function tool {name} parameters must be an object"));
+        }
         let mut mapped = Map::new();
         mapped.insert("name".to_string(), Value::String(name));
         if let Some(description) = tool

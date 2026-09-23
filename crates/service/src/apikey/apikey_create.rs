@@ -3,8 +3,11 @@ use codexmanager_core::storage::{now_ts, ApiKey, Storage};
 
 use crate::apikey::service_tier::normalize_service_tier_owned;
 use crate::apikey_profile::{
-    normalize_protocol_type, normalize_rotation_strategy, normalize_static_headers_json,
-    normalize_upstream_base_url, profile_from_protocol,
+    infer_upstream_provider, normalize_protocol_type, normalize_rotation_strategy,
+    normalize_static_headers_json, normalize_upstream_base_url, normalize_upstream_provider,
+    profile_from_protocol, validate_claude_model_route, validate_claude_protocol,
+    validate_openai_model_route,
+    validate_upstream_provider_route,
 };
 use crate::reasoning_effort::normalize_reasoning_effort_owned;
 use crate::storage_helpers::{
@@ -84,6 +87,7 @@ pub(crate) fn create_api_key(
     upstream_base_url: Option<String>,
     static_headers_json: Option<String>,
     rotation_strategy: Option<String>,
+    upstream_provider: Option<String>,
     aggregate_api_id: Option<String>,
     account_plan_filter: Option<String>,
     account_group_filter: Option<String>,
@@ -110,6 +114,36 @@ pub(crate) fn create_api_key(
     } else {
         None
     };
+    let upstream_provider = match upstream_provider {
+        Some(value) => normalize_upstream_provider(&value)?,
+        None => infer_upstream_provider(&storage, &rotation_strategy, aggregate_api_id.as_deref())?,
+    };
+    validate_upstream_provider_route(
+        &storage,
+        upstream_provider,
+        &rotation_strategy,
+        aggregate_api_id.as_deref(),
+    )?;
+    validate_claude_protocol(upstream_provider, &protocol_type)?;
+    if upstream_provider == codexmanager_core::storage::UpstreamProvider::Claude
+        && (account_plan_filter.as_deref().is_some_and(|value| !value.trim().is_empty())
+            || account_group_filter.as_deref().is_some_and(|value| !value.trim().is_empty()))
+    {
+        return Err("Claude subscription account pool does not support OpenAI plan or group filters".to_string());
+    }
+    validate_claude_model_route(
+        &storage,
+        upstream_provider,
+        &rotation_strategy,
+        model_slug.as_deref(),
+    )?;
+    validate_openai_model_route(
+        &storage,
+        upstream_provider,
+        &rotation_strategy,
+        &protocol_type,
+        model_slug.as_deref(),
+    )?;
     let account_plan_filter = if rotation_strategy == crate::apikey_profile::ROTATION_ACCOUNT
         || rotation_strategy == crate::apikey_profile::ROTATION_HYBRID
         || rotation_strategy == crate::apikey_profile::ROTATION_HYBRID_AGGREGATE_FIRST
@@ -133,6 +167,7 @@ pub(crate) fn create_api_key(
         reasoning_effort: normalize_reasoning_effort_owned(reasoning_effort),
         service_tier: normalize_service_tier_owned(service_tier)?,
         rotation_strategy,
+        upstream_provider,
         aggregate_api_id,
         account_plan_filter,
         aggregate_api_url: None,

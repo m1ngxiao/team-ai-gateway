@@ -296,7 +296,7 @@ fn gemini_native_candidates_resolve_to_gemini_provider_only() {
             .expect("insert aggregate api");
     }
 
-    let candidates = resolve_aggregate_api_rotation_candidates(&storage, "gemini_native", None)
+    let candidates = resolve_aggregate_api_rotation_candidates(&storage, "gemini", None)
         .expect("resolve gemini candidates");
     let candidate_ids = candidates
         .iter()
@@ -306,7 +306,7 @@ fn gemini_native_candidates_resolve_to_gemini_provider_only() {
 }
 
 #[test]
-fn compatible_candidate_resolves_for_codex_and_anthropic_without_protocol_bridge() {
+fn compatible_candidate_does_not_enter_claude_key_pool() {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     let now = now_ts();
@@ -320,18 +320,17 @@ fn compatible_candidate_resolves_for_codex_and_anthropic_without_protocol_bridge
         .insert_aggregate_api(&compatible)
         .expect("insert compatible aggregate api");
 
-    for protocol_type in ["openai", "anthropic_native"] {
-        let candidates = resolve_aggregate_api_rotation_candidates(&storage, protocol_type, None)
-            .expect("resolve compatible candidate");
-        assert_eq!(
-            candidates
-                .iter()
-                .map(|candidate| candidate.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["agg-compatible"]
-        );
-    }
-    assert!(resolve_aggregate_api_rotation_candidates(&storage, "gemini_native", None).is_err());
+    let candidates = resolve_aggregate_api_rotation_candidates(&storage, "codex", None)
+        .expect("resolve compatible candidate for OpenAI pool");
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["agg-compatible"]
+    );
+    assert!(resolve_aggregate_api_rotation_candidates(&storage, "claude", None).is_err());
+    assert!(resolve_aggregate_api_rotation_candidates(&storage, "gemini", None).is_err());
     assert!(!should_bridge_responses_to_anthropic(
         &compatible,
         "/v1/responses"
@@ -380,7 +379,7 @@ fn explicit_aggregate_api_id_promotes_matching_active_provider_candidate_only() 
     }
 
     let candidates =
-        resolve_aggregate_api_rotation_candidates(&storage, "openai", Some("agg-preferred"))
+        resolve_aggregate_api_rotation_candidates(&storage, "codex", Some("agg-preferred"))
             .expect("resolve codex candidates");
     let candidate_ids = candidates
         .iter()
@@ -389,13 +388,18 @@ fn explicit_aggregate_api_id_promotes_matching_active_provider_candidate_only() 
     assert_eq!(candidate_ids, vec!["agg-preferred", "agg-first"]);
 
     let candidates =
-        resolve_aggregate_api_rotation_candidates(&storage, "openai", Some("agg-claude"))
+        resolve_aggregate_api_rotation_candidates(&storage, "codex", Some("agg-claude"))
             .expect("resolve codex candidates with mismatched preferred");
     let candidate_ids = candidates
         .iter()
         .map(|item| item.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(candidate_ids, vec!["agg-first", "agg-preferred"]);
+
+    let candidates = resolve_aggregate_api_rotation_candidates(&storage, "claude", None)
+        .expect("resolve native Claude candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, "agg-claude");
 }
 
 /// 函数 `final_error_promotes_success_status_to_bad_gateway`

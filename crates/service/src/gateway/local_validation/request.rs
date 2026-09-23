@@ -1,11 +1,11 @@
 use crate::apikey_profile::{
     is_gemini_generate_content_request_path, resolve_gateway_protocol_type,
-    PROTOCOL_ANTHROPIC_NATIVE, PROTOCOL_GEMINI_NATIVE, ROTATION_AGGREGATE_API,
+    PROTOCOL_ANTHROPIC_NATIVE, PROTOCOL_GEMINI_NATIVE, ROTATION_ACCOUNT, ROTATION_AGGREGATE_API,
 };
 use crate::gateway::request_helpers::ParsedRequestMetadata;
 use base64::Engine;
 use bytes::Bytes;
-use codexmanager_core::storage::{ApiKey, ConversationBinding};
+use codexmanager_core::storage::{ApiKey, ConversationBinding, UpstreamProvider};
 use reqwest::Method;
 use serde_json::Value;
 use tiny_http::Request;
@@ -2066,6 +2066,7 @@ pub(super) fn build_local_validation_result(
             has_prompt_cache_key,
             request_shape,
             protocol_type: effective_protocol_type.to_string(),
+            upstream_provider: api_key.upstream_provider,
             rotation_strategy: ROTATION_AGGREGATE_API.to_string(),
             aggregate_api_id: api_key.aggregate_api_id,
             account_group_filter: account_group_filter.clone(),
@@ -2458,13 +2459,21 @@ pub(super) fn build_local_validation_result(
             api_key.service_tier.as_deref(),
         )
     };
-    let is_stream = resolve_client_is_stream(
-        effective_protocol_type,
-        logical_path.as_str(),
-        client_request_meta.is_stream,
-        client_request_meta.stream_specified,
-        native_codex_client,
-    );
+    let is_stream = if api_key.upstream_provider == UpstreamProvider::Claude
+        && api_key.rotation_strategy == ROTATION_ACCOUNT
+    {
+        // Claude subscription Responses follows the client's stream flag; the generic
+        // Codex compatibility rewrite may force the upstream body to stream=true.
+        client_request_meta.is_stream
+    } else {
+        resolve_client_is_stream(
+            effective_protocol_type,
+            logical_path.as_str(),
+            client_request_meta.is_stream,
+            client_request_meta.stream_specified,
+            native_codex_client,
+        )
+    };
     let has_prompt_cache_key = request_meta.has_prompt_cache_key;
     let request_shape = client_request_meta.request_shape;
 
@@ -2483,6 +2492,7 @@ pub(super) fn build_local_validation_result(
         has_prompt_cache_key,
         request_shape,
         protocol_type: effective_protocol_type.to_string(),
+        upstream_provider: api_key.upstream_provider,
         response_adapter,
         gemini_stream_output_mode,
         tool_name_restore_map,

@@ -1,4 +1,6 @@
 use codexmanager_core::rpc::types::{ModelInfo, ModelsResponse};
+use codexmanager_core::storage::{ApiKey, Storage, UpstreamProvider};
+use std::collections::HashSet;
 
 #[derive(serde::Serialize)]
 struct CompatibleModelsResponse<'a> {
@@ -68,7 +70,7 @@ fn filter_models_for_key(
 }
 
 fn filter_models_for_catalog_policy(
-    storage: &codexmanager_core::storage::Storage,
+    storage: &Storage,
     key_id: &str,
     models: ModelsResponse,
     policy: crate::codex_model_catalog::GatewayCatalogPolicy,
@@ -77,6 +79,155 @@ fn filter_models_for_catalog_policy(
         crate::codex_model_catalog::GatewayCatalogPolicy::OfficialAccountPool => Ok((models, true)),
         crate::codex_model_catalog::GatewayCatalogPolicy::Managed => {
             filter_models_for_key(storage, key_id, models)
+        }
+    }
+}
+
+fn filter_models_for_claude_upstreams(
+    storage: &Storage,
+    mut models: ModelsResponse,
+) -> Result<ModelsResponse, String> {
+    // The Claude route resolver uses active Claude aggregate candidates across
+    // the pool. A pinned aggregateApiId only changes their ordering.
+    let active_claude_ids = storage
+        .list_active_aggregate_apis_by_provider_type(
+            crate::aggregate_api::AGGREGATE_API_PROVIDER_CLAUDE,
+        )
+        .map_err(|err| format!("list active Claude aggregate APIs failed: {err}"))?
+        .into_iter()
+        .filter(|api| {
+            matches!(
+                api.provider_type
+                    .trim()
+                    .to_ascii_lowercase()
+                    .replace('-', "_")
+                    .as_str(),
+                "claude" | "anthropic" | "anthropic_native" | "claude_code"
+            )
+        })
+        .map(|api| api.id)
+        .collect::<HashSet<_>>();
+
+    let available_slugs = storage
+        .list_api_models_v2()
+        .map_err(|err| format!("list Claude model routes failed: {err}"))?
+        .into_iter()
+        .filter(|model| {
+            model.routes.iter().any(|route| {
+                route.enabled
+                    && route.source_kind == "aggregate_api"
+                    && active_claude_ids.contains(&route.source_id)
+            })
+        })
+        .map(|model| model.slug)
+        .collect::<HashSet<_>>();
+    models
+        .models
+        .retain(|model| available_slugs.contains(model.slug.as_str()));
+    models.extra.remove("etag");
+    Ok(models)
+}
+
+fn filter_models_for_claude_accounts(
+    storage: &Storage,
+    mut models: ModelsResponse,
+) -> Result<ModelsResponse, String> {
+    if storage
+        .list_active_claude_subscription_accounts()
+        .map_err(|err| format!("list active Claude subscription accounts failed: {err}"))?
+        .is_empty()
+    {
+        models.models.clear();
+        models.extra.remove("etag");
+        return Ok(models);
+    }
+    let available_slugs = storage
+        .list_api_models_v2()
+        .map_err(|err| format!("list Claude subscription model routes failed: {err}"))?
+        .into_iter()
+        .filter(|model| {
+            model.routes.iter().any(|route| {
+                route.enabled
+                    && route.source_kind == "account_pool"
+                    && route.source_id == "claude"
+            })
+        })
+        .map(|model| model.slug)
+        .collect::<HashSet<_>>();
+    models
+        .models
+        .retain(|model| available_slugs.contains(model.slug.as_str()));
+    models.extra.remove("etag");
+    Ok(models)
+}
+
+fn filter_models_for_openai_managed_upstreams(
+    storage: &Storage,
+    mut models: ModelsResponse,
+    key: &ApiKey,
+) -> Result<ModelsResponse, String> {
+    // The runtime selects the aggregate provider from the request protocol.
+    // For a Key's model catalog, use its configured protocol to avoid listing
+    // Claude-only routes or models from an unrelated aggregate provider.
+    let aggregate_provider = if key.protocol_type == crate::apikey_profile::PROTOCOL_GEMINI_NATIVE {
+        crate::aggregate_api::AGGREGATE_API_PROVIDER_GEMINI
+    } else {
+        crate::aggregate_api::AGGREGATE_API_PROVIDER_CODEX
+    };
+    let active_aggregate_ids = storage
+        .list_active_aggregate_apis_by_provider_type(aggregate_provider)
+        .map_err(|err| format!("list active aggregate APIs failed: {err}"))?
+        .into_iter()
+        .map(|api| api.id)
+        .collect::<HashSet<_>>();
+    let include_account_pool = matches!(
+        key.rotation_strategy.as_str(),
+        crate::apikey_profile::ROTATION_HYBRID
+            | crate::apikey_profile::ROTATION_HYBRID_AGGREGATE_FIRST
+    );
+    let available_slugs = storage
+        .list_api_models_v2()
+        .map_err(|err| format!("list OpenAI model routes failed: {err}"))?
+        .into_iter()
+        .filter(|model| {
+            model.routes.iter().any(|route| {
+                route.enabled
+                    && ((route.source_kind == "aggregate_api"
+                        && active_aggregate_ids.contains(&route.source_id))
+                        || (include_account_pool
+                            && route.source_kind == "account_pool"
+                            && route.source_id == "default"))
+            })
+        })
+        .map(|model| model.slug)
+        .collect::<HashSet<_>>();
+    models
+        .models
+        .retain(|model| available_slugs.contains(model.slug.as_str()));
+    models.extra.remove("etag");
+    Ok(models)
+}
+
+pub(crate) fn filter_managed_models_for_gateway_key(
+    storage: &Storage,
+    key_id: &str,
+    models: ModelsResponse,
+) -> Result<ModelsResponse, String> {
+    let key = storage
+        .find_api_key_by_id(key_id)
+        .map_err(|err| format!("read api key upstream provider failed: {err}"))?
+        .ok_or_else(|| "api key not found".to_string())?;
+    let (models, _) = filter_models_for_key(storage, key_id, models)?;
+    match key.upstream_provider {
+        UpstreamProvider::Claude => {
+            if key.rotation_strategy == crate::apikey_profile::ROTATION_ACCOUNT {
+                filter_models_for_claude_accounts(storage, models)
+            } else {
+                filter_models_for_claude_upstreams(storage, models)
+            }
+        }
+        UpstreamProvider::Openai => {
+            filter_models_for_openai_managed_upstreams(storage, models, &key)
         }
     }
 }
@@ -101,17 +252,31 @@ fn models_etag_header(models: &ModelsResponse) -> Result<Option<tiny_http::Heade
 ///
 /// # 返回
 /// 返回函数执行结果
-fn read_cached_models_response(
-    storage: &codexmanager_core::storage::Storage,
+fn read_models_response_for_key(
+    storage: &Storage,
     key_id: &str,
 ) -> Result<
     (
         ModelsResponse,
         crate::codex_model_catalog::GatewayCatalogPolicy,
+        ApiKey,
     ),
     String,
 > {
-    crate::codex_model_catalog::models_response_for_gateway_key(storage, key_id)
+    let key = storage
+        .find_api_key_by_id(key_id)
+        .map_err(|err| format!("read api key upstream provider failed: {err}"))?
+        .ok_or_else(|| "api key not found".to_string())?;
+    if key.upstream_provider == UpstreamProvider::Claude {
+        return Ok((
+            crate::models_v2::models_response_with_storage(storage)?,
+            crate::codex_model_catalog::GatewayCatalogPolicy::Managed,
+            key,
+        ));
+    }
+    let (models, policy) =
+        crate::codex_model_catalog::models_response_for_gateway_key(storage, key_id)?;
+    Ok((models, policy, key))
 }
 
 /// 函数 `maybe_respond_local_models`
@@ -155,7 +320,7 @@ pub(super) fn maybe_respond_local_models(
         reasoning_for_log,
         storage,
     };
-    let (cached, catalog_policy) = match read_cached_models_response(storage, key_id) {
+    let (cached, catalog_policy, key) = match read_models_response_for_key(storage, key_id) {
         Ok(result) => result,
         Err(err) => {
             let message = crate::gateway::bilingual_error(
@@ -169,6 +334,19 @@ pub(super) fn maybe_respond_local_models(
 
     let (output_models, include_implicit_models) =
         filter_models_for_catalog_policy(storage, key_id, cached, catalog_policy)?;
+    let output_models = match (key.upstream_provider, catalog_policy) {
+        (UpstreamProvider::Claude, _) => {
+            if key.rotation_strategy == crate::apikey_profile::ROTATION_ACCOUNT {
+                filter_models_for_claude_accounts(storage, output_models)?
+            } else {
+                filter_models_for_claude_upstreams(storage, output_models)?
+            }
+        }
+        (UpstreamProvider::Openai, crate::codex_model_catalog::GatewayCatalogPolicy::Managed) => {
+            filter_models_for_openai_managed_upstreams(storage, output_models, &key)?
+        }
+        _ => output_models,
+    };
     let output = if include_implicit_models {
         serialize_models_response(&output_models)
     } else {

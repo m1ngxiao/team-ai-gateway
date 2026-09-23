@@ -3,6 +3,31 @@
 import type { MessageCatalog } from "../types";
 
 export const EN_ACCOUNTS_MESSAGES: MessageCatalog = {
+  "Claude 订阅账号池": "Claude subscription account pool",
+  "Claude.ai Pro、Max、Team 账号独立轮转。平台 Key 选择 Claude 池后只使用这里启用的账号。":
+    "Claude.ai Pro, Max, and Team accounts rotate independently. A Claude platform key uses only enabled accounts here.",
+  "添加 Claude 账号": "Add Claude account",
+  "刷新 Claude 账号": "Refresh Claude accounts",
+  "正在加载账号...": "Loading accounts...",
+  "Claude 账号加载失败，请刷新重试": "Could not load Claude accounts. Refresh to retry.",
+  "尚无 Claude 订阅账号，点击“添加 Claude 账号”开始登录。": "No Claude subscription accounts yet. Choose Add Claude account to sign in.",
+  "轮转中": "Rotating",
+  "需要重新登录": "Sign-in required",
+  "已停用": "Disabled",
+  "启用 Claude 账号": "Enable Claude account",
+  "重新登录": "Sign in again",
+  "删除 Claude 账号": "Delete Claude account",
+  "登录 Claude 订阅账号": "Sign in to Claude subscription account",
+  "使用要加入账号池的 Claude.ai 账号完成网页登录，然后复制网页显示的完整一次性授权码。":
+    "Sign in with the Claude.ai account to add, then copy the full one-time authorization code shown in the browser.",
+  "打开 Claude 授权页面": "Open Claude authorization page",
+  "一次性授权码": "One-time authorization code",
+  "完成登录": "Complete sign-in",
+  "请粘贴网页显示的完整授权码（包含 # 后的校验码）": "Paste the full authorization code, including the value after #.",
+  "Claude 账号已添加，启用后进入 Claude 独立账号池": "Claude account added. Enable it to join the independent Claude pool.",
+  "Claude 账号已加入轮转": "Claude account joined rotation",
+  "Claude 账号已停用": "Claude account disabled",
+  "Claude 账号已删除": "Claude account deleted",
   "边缘中继": "Edge relay",
   "代理设置": "Proxy settings",
   "分": "min",

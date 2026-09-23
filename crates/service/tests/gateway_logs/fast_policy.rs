@@ -79,6 +79,7 @@ fn gateway_applies_model_fast_policy_to_forwarded_requests() {
             model_slug: None,
             reasoning_effort: None,
             service_tier: Some("fast".to_string()),
+            upstream_provider: Default::default(),
             rotation_strategy: "account_rotation".to_string(),
             aggregate_api_id: None,
             account_plan_filter: None,

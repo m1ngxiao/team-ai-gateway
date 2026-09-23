@@ -11,6 +11,7 @@ use crate::gateway::upstream::executor::{
 };
 use codexmanager_core::storage::{
     now_ts, Account, AggregateApi, ManagedModelV2, ManagedModelV2Upsert, ModelRouteV2, Storage,
+    UpstreamProvider,
 };
 use std::time::{Duration, Instant};
 
@@ -217,7 +218,13 @@ fn aggregate_candidate_filter_keeps_model_override_candidate_for_client_model() 
     );
 
     let candidates =
-        resolve_aggregate_candidates_for_route(&storage, "openai_responses", None, Some("gpt-5.4"))
+        resolve_aggregate_candidates_for_route(
+            &storage,
+            "openai_responses",
+            UpstreamProvider::Openai,
+            None,
+            Some("gpt-5.4"),
+        )
             .expect("resolve aggregate candidates");
 
     assert_eq!(candidates.len(), 1);
@@ -549,6 +556,7 @@ fn aggregate_route_model_filter_uses_v2_routes() {
     let candidates = resolve_aggregate_candidates_for_route(
         &storage,
         "openai_responses",
+        UpstreamProvider::Openai,
         None,
         Some("vendor-batched"),
     )
@@ -575,6 +583,7 @@ fn reserve_alias_aggregate_filter_uses_luna_catalog_routes() {
     let candidates = resolve_aggregate_candidates_for_route(
         &storage,
         "openai_responses",
+        UpstreamProvider::Openai,
         None,
         Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG),
     )
@@ -601,6 +610,7 @@ fn reserve_alias_aggregate_filter_keeps_explicit_non_luna_override() {
     let candidates = resolve_aggregate_candidates_for_route(
         &storage,
         "openai_responses",
+        UpstreamProvider::Openai,
         None,
         Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG),
     )
@@ -615,11 +625,12 @@ fn reserve_alias_aggregate_filter_keeps_explicit_non_luna_override() {
 }
 
 #[test]
-fn explicit_aggregate_route_candidate_precedes_provider_candidates() {
+fn aggregate_route_isolated_by_platform_key_provider() {
     let storage = Storage::open_in_memory().expect("open storage");
     storage.init().expect("init storage");
     insert_test_aggregate_api_with_provider(&storage, "agg-codex-explicit", "codex");
     insert_test_aggregate_api_with_provider(&storage, "agg-claude-explicit", "claude");
+    insert_test_aggregate_api_with_provider(&storage, "agg-compatible", "compatible");
     add_model_route_v2(
         &storage,
         "vendor-cross-provider",
@@ -634,46 +645,71 @@ fn explicit_aggregate_route_candidate_precedes_provider_candidates() {
         "agg-claude-explicit",
         "vendor-claude",
     );
+    add_model_route_v2(
+        &storage,
+        "vendor-cross-provider",
+        "aggregate_api",
+        "agg-compatible",
+        "vendor-compatible",
+    );
 
     let openai_candidates = resolve_aggregate_candidates_for_route(
         &storage,
-        "openai_responses",
-        Some("agg-claude-explicit"),
+        "anthropic_native",
+        UpstreamProvider::Openai,
+        Some("agg-codex-explicit"),
         Some("vendor-cross-provider"),
     )
-    .expect("resolve openai candidates with explicit claude aggregate");
+    .expect("resolve OpenAI candidates independent of client protocol");
     let openai_candidate_ids = openai_candidates
         .iter()
         .map(|candidate| candidate.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(
         openai_candidate_ids,
-        vec!["agg-claude-explicit", "agg-codex-explicit"]
+        vec!["agg-codex-explicit", "agg-compatible"]
     );
     assert_eq!(
         openai_candidates[0].model_override.as_deref(),
-        Some("vendor-claude")
+        Some("vendor-codex")
     );
 
-    let anthropic_candidates = resolve_aggregate_candidates_for_route(
+    let claude_candidates = resolve_aggregate_candidates_for_route(
         &storage,
-        "anthropic_native",
-        Some("agg-codex-explicit"),
+        "openai_responses",
+        UpstreamProvider::Claude,
+        Some("agg-claude-explicit"),
         Some("vendor-cross-provider"),
     )
-    .expect("resolve anthropic candidates with explicit codex aggregate");
-    let anthropic_candidate_ids = anthropic_candidates
+    .expect("resolve Claude candidates independent of client protocol");
+    let claude_candidate_ids = claude_candidates
         .iter()
         .map(|candidate| candidate.id.as_str())
         .collect::<Vec<_>>();
+    assert_eq!(claude_candidate_ids, vec!["agg-claude-explicit"]);
     assert_eq!(
-        anthropic_candidate_ids,
-        vec!["agg-codex-explicit", "agg-claude-explicit"]
+        claude_candidates[0].model_override.as_deref(),
+        Some("vendor-claude")
     );
-    assert_eq!(
-        anthropic_candidates[0].model_override.as_deref(),
-        Some("vendor-codex")
-    );
+
+    assert!(resolve_aggregate_candidates_for_route(
+        &storage,
+        "openai_responses",
+        UpstreamProvider::Openai,
+        Some("agg-claude-explicit"),
+        Some("vendor-cross-provider"),
+    )
+    .unwrap_err()
+    .contains("provider mismatch"));
+    assert!(resolve_aggregate_candidates_for_route(
+        &storage,
+        "anthropic_native",
+        UpstreamProvider::Claude,
+        Some("agg-codex-explicit"),
+        Some("vendor-cross-provider"),
+    )
+    .unwrap_err()
+    .contains("provider mismatch"));
 }
 
 #[test]

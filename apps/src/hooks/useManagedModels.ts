@@ -385,8 +385,7 @@ export function useManagedModels() {
       );
       const templates = input.routes.map((route) => ({
         ...route,
-        sourceId:
-          route.sourceKind === "account_pool" ? "default" : route.sourceId.trim(),
+        sourceId: route.sourceId.trim(),
       }));
       if (normalizedSlugs.length === 0 || templates.length === 0) {
         throw new Error(t("请选择模型并至少配置一条路由"));

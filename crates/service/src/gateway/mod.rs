@@ -163,6 +163,7 @@ mod incoming_headers;
 mod local_count_tokens;
 #[path = "request/local_models.rs"]
 mod local_models;
+pub(crate) use local_models::filter_managed_models_for_gateway_key;
 #[path = "request/local_response.rs"]
 mod local_response;
 mod local_validation;

@@ -1,4 +1,7 @@
-use super::{api_key_summaries_for_ids_chunk_sql, api_keys_for_ids_chunk_sql, ApiKey, Storage};
+use super::{
+    api_key_summaries_for_ids_chunk_sql, api_keys_for_ids_chunk_sql, ApiKey, Storage,
+    UpstreamProvider,
+};
 use crate::storage::ApiKeyOwner;
 
 /// 函数 `make_test_api_key`
@@ -19,6 +22,7 @@ fn make_test_api_key(index: usize) -> ApiKey {
         model_slug: Some("gpt-5".to_string()),
         reasoning_effort: Some("medium".to_string()),
         service_tier: Some("priority".to_string()),
+        upstream_provider: Default::default(),
         rotation_strategy: "account_rotation".to_string(),
         aggregate_api_id: None,
         account_plan_filter: None,
@@ -33,6 +37,373 @@ fn make_test_api_key(index: usize) -> ApiKey {
         created_at: index as i64,
         last_used_at: Some(index as i64),
     }
+}
+
+#[test]
+fn api_key_upstream_provider_roundtrips_and_rejects_unknown_values() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    storage.init().expect("migration is idempotent");
+    let migration_count: i64 = storage
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = '135_api_keys_upstream_provider'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("migration marker");
+    assert_eq!(migration_count, 1);
+
+    let mut key = make_test_api_key(7);
+    key.upstream_provider = UpstreamProvider::Claude;
+    storage.insert_api_key(&key).expect("insert Claude key");
+    assert_eq!(
+        storage
+            .find_api_key_by_id(&key.id)
+            .expect("find")
+            .expect("key")
+            .upstream_provider,
+        UpstreamProvider::Claude
+    );
+    assert_eq!(
+        storage.list_api_key_summaries().expect("list")[0].upstream_provider,
+        UpstreamProvider::Claude
+    );
+
+    storage
+        .update_api_key_upstream_provider(&key.id, UpstreamProvider::Openai)
+        .expect("switch provider");
+    assert_eq!(
+        storage
+            .find_api_key_by_id(&key.id)
+            .expect("find")
+            .expect("key")
+            .upstream_provider,
+        UpstreamProvider::Openai
+    );
+    assert!(storage
+        .conn
+        .execute(
+            "UPDATE api_keys SET upstream_provider = 'unknown' WHERE id = ?1",
+            [&key.id],
+        )
+        .is_err());
+}
+
+#[test]
+fn upstream_provider_migration_classifies_only_pinned_claude_aggregate_keys() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage
+        .conn
+        .execute_batch(
+            "CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                rotation_strategy TEXT,
+                aggregate_api_id TEXT,
+                status TEXT NOT NULL
+             );
+             CREATE TABLE api_key_profiles (key_id TEXT PRIMARY KEY, protocol_type TEXT NOT NULL);
+             CREATE TABLE aggregate_apis (id TEXT PRIMARY KEY, provider_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active');
+             INSERT INTO aggregate_apis (id, provider_type) VALUES
+               ('claude-api', 'claude'),
+               ('claude-alias-api', 'claude-code'),
+               ('compatible-api', 'compatible'),
+               ('openai-api', 'codex');
+             INSERT INTO api_keys VALUES
+               ('claude-pinned', 'aggregate_api_rotation', 'claude-api', 'active'),
+               ('claude-alias-pinned', 'aggregate_api_rotation', 'claude-alias-api', 'active'),
+               ('openai-pinned', 'aggregate_api_rotation', 'openai-api', 'active'),
+               ('claude-unpinned', 'aggregate_api_rotation', NULL, 'active'),
+               ('anthropic-hybrid-unpinned', 'hybrid_rotation', NULL, 'active'),
+               ('anthropic-aggregate-first-unpinned', 'hybrid_aggregate_first_rotation', NULL, 'active'),
+               ('anthropic-blank-pin', 'aggregate_api_rotation', '  ', 'active'),
+               ('openai-unpinned', 'aggregate_api_rotation', NULL, 'active'),
+               ('compatible-pinned', 'aggregate_api_rotation', 'compatible-api', 'active'),
+               ('anthropic-account-unpinned', 'account_rotation', NULL, 'active'),
+               ('anthropic-already-disabled', 'aggregate_api_rotation', NULL, 'disabled'),
+               ('hybrid-claude', 'hybrid_rotation', 'claude-api', 'active'),
+               ('aggregate-first-claude', 'hybrid_aggregate_first_rotation', 'claude-alias-api', 'active'),
+               ('hybrid-codex', 'hybrid_rotation', 'openai-api', 'active'),
+               ('stale-pin', 'aggregate_api_rotation', 'deleted-api', 'active'),
+               ('account-claude', 'account_rotation', 'claude-api', 'active');
+             INSERT INTO api_key_profiles VALUES
+               ('claude-unpinned', 'anthropic_native'),
+               ('anthropic-hybrid-unpinned', 'anthropic_native'),
+               ('anthropic-aggregate-first-unpinned', 'anthropic_native'),
+               ('anthropic-blank-pin', 'anthropic_native'),
+               ('openai-unpinned', 'openai_compat'),
+               ('anthropic-account-unpinned', 'anthropic_native'),
+               ('anthropic-already-disabled', 'anthropic_native'),
+               ('compatible-pinned', 'openai_compat'),
+               ('hybrid-claude', 'openai_compat'),
+               ('aggregate-first-claude', 'anthropic_native'),
+               ('hybrid-codex', 'anthropic_native');",
+        )
+        .expect("seed legacy schema");
+    storage
+        .conn
+        .execute_batch(include_str!("../../../migrations/135_api_keys_upstream_provider.sql"))
+        .expect("upgrade legacy schema");
+    for (id, expected_provider, expected_status) in [
+        ("claude-pinned", "claude", "disabled"),
+        ("claude-alias-pinned", "claude", "disabled"),
+        ("openai-pinned", "openai", "disabled"),
+        ("claude-unpinned", "openai", "disabled"),
+        ("anthropic-hybrid-unpinned", "openai", "disabled"),
+        ("anthropic-aggregate-first-unpinned", "openai", "disabled"),
+        ("anthropic-blank-pin", "openai", "disabled"),
+        ("openai-unpinned", "openai", "disabled"),
+        ("compatible-pinned", "openai", "disabled"),
+        ("anthropic-account-unpinned", "openai", "active"),
+        ("anthropic-already-disabled", "openai", "disabled"),
+        ("hybrid-claude", "openai", "disabled"),
+        ("aggregate-first-claude", "openai", "disabled"),
+        ("hybrid-codex", "openai", "disabled"),
+        ("stale-pin", "openai", "disabled"),
+        ("account-claude", "openai", "active"),
+    ] {
+        let actual: (String, String, i64) = storage
+            .conn
+            .query_row(
+                "SELECT upstream_provider, status, requires_route_review FROM api_keys WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read migrated provider");
+        assert_eq!(
+            actual,
+            (
+                expected_provider.to_string(),
+                expected_status.to_string(),
+                i64::from(expected_status == "disabled"),
+            ),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn upstream_provider_migration_keeps_openai_keys_active_without_claude_aggregate() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage
+        .conn
+        .execute_batch(
+            "CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                rotation_strategy TEXT,
+                aggregate_api_id TEXT,
+                status TEXT NOT NULL
+             );
+             CREATE TABLE aggregate_apis (id TEXT PRIMARY KEY, provider_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active');
+             INSERT INTO aggregate_apis (id, provider_type) VALUES ('codex-api', 'codex');
+             INSERT INTO api_keys VALUES
+               ('openai-unpinned', 'aggregate_api_rotation', NULL, 'active'),
+               ('codex-pinned', 'aggregate_api_rotation', 'codex-api', 'active'),
+               ('openai-hybrid', 'hybrid_rotation', NULL, 'active'),
+               ('openai-account', 'account_rotation', NULL, 'active');",
+        )
+        .expect("seed OpenAI-only legacy schema");
+    storage
+        .conn
+        .execute_batch(include_str!("../../../migrations/135_api_keys_upstream_provider.sql"))
+        .expect("upgrade OpenAI-only schema");
+    let disabled: i64 = storage
+        .conn
+        .query_row("SELECT COUNT(*) FROM api_keys WHERE status != 'active'", [], |row| row.get(0))
+        .expect("read migrated statuses");
+    assert_eq!(disabled, 0);
+}
+
+#[test]
+fn upstream_provider_migration_reviews_shared_compatible_fallbacks() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage
+        .conn
+        .execute_batch(
+            "CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                rotation_strategy TEXT,
+                aggregate_api_id TEXT,
+                status TEXT NOT NULL
+             );
+             CREATE TABLE aggregate_apis (id TEXT PRIMARY KEY, provider_type TEXT NOT NULL, status TEXT NOT NULL);
+             INSERT INTO aggregate_apis VALUES
+               ('codex-api', 'codex', 'active'),
+               ('compatible-api', 'compatible', 'active'),
+               ('inactive-api', 'codex', 'disabled');
+             INSERT INTO api_keys VALUES
+               ('unpinned', 'aggregate_api_rotation', NULL, 'active'),
+               ('compatible-pinned', 'aggregate_api_rotation', 'compatible-api', 'active'),
+               ('stale-pin', 'aggregate_api_rotation', 'deleted-api', 'active'),
+               ('inactive-pin', 'aggregate_api_rotation', 'inactive-api', 'active'),
+               ('codex-pinned', 'aggregate_api_rotation', 'codex-api', 'active'),
+               ('codex-hybrid', 'hybrid_rotation', 'codex-api', 'active'),
+               ('account-only', 'account_rotation', NULL, 'active');",
+        )
+        .expect("seed legacy routes");
+    storage
+        .conn
+        .execute_batch(include_str!("../../../migrations/135_api_keys_upstream_provider.sql"))
+        .expect("upgrade legacy routes");
+    for (id, needs_review) in [
+        ("unpinned", true),
+        ("compatible-pinned", true),
+        ("stale-pin", true),
+        ("inactive-pin", true),
+        ("codex-pinned", false),
+        ("codex-hybrid", false),
+        ("account-only", false),
+    ] {
+        let actual: (String, i64) = storage
+            .conn
+            .query_row(
+                "SELECT status, requires_route_review FROM api_keys WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated route");
+        assert_eq!(
+            actual,
+            (
+                if needs_review { "disabled" } else { "active" }.to_string(),
+                i64::from(needs_review),
+            ),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn upstream_provider_compat_first_add_disables_ambiguous_aggregate_keys() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage
+        .conn
+        .execute_batch(
+            "CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                rotation_strategy TEXT,
+                aggregate_api_id TEXT,
+                status TEXT NOT NULL
+             );
+             CREATE TABLE aggregate_apis (id TEXT PRIMARY KEY, provider_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active');
+             CREATE TABLE api_key_profiles (key_id TEXT PRIMARY KEY, protocol_type TEXT NOT NULL);
+             INSERT INTO aggregate_apis (id, provider_type) VALUES
+               ('claude-api', 'claude'),
+               ('compatible-api', 'compatible'),
+               ('codex-api', 'codex');
+             INSERT INTO api_keys VALUES
+               ('ambiguous-aggregate', 'aggregate_api_rotation', NULL, 'active'),
+               ('ambiguous-hybrid', 'hybrid_rotation', NULL, 'active'),
+               ('openai-unpinned', 'aggregate_api_rotation', NULL, 'active'),
+               ('already-disabled', 'aggregate_api_rotation', NULL, 'disabled'),
+               ('compatible-pinned', 'aggregate_api_rotation', 'compatible-api', 'active'),
+               ('pinned-claude-hybrid', 'hybrid_rotation', 'claude-api', 'active'),
+               ('pinned-codex-hybrid', 'hybrid_rotation', 'codex-api', 'active'),
+               ('unambiguous-account', 'account_rotation', NULL, 'active');
+             INSERT INTO api_key_profiles VALUES
+               ('ambiguous-aggregate', 'anthropic_native'),
+               ('ambiguous-hybrid', 'anthropic_native'),
+               ('openai-unpinned', 'openai_compat'),
+               ('compatible-pinned', 'openai_compat'),
+               ('pinned-claude-hybrid', 'openai_compat'),
+               ('pinned-codex-hybrid', 'anthropic_native'),
+               ('unambiguous-account', 'anthropic_native');",
+        )
+        .expect("seed legacy schema");
+
+    storage
+        .ensure_api_key_upstream_provider_column()
+        .expect("compat upgrade");
+    for (id, expected_status) in [
+        ("ambiguous-aggregate", "disabled"),
+        ("ambiguous-hybrid", "disabled"),
+        ("openai-unpinned", "disabled"),
+        ("already-disabled", "disabled"),
+        ("compatible-pinned", "disabled"),
+        ("pinned-claude-hybrid", "disabled"),
+        ("pinned-codex-hybrid", "disabled"),
+        ("unambiguous-account", "active"),
+    ] {
+        let actual: (String, String, i64) = storage
+            .conn
+            .query_row(
+                "SELECT upstream_provider, status, requires_route_review FROM api_keys WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read compat key");
+        assert_eq!(
+            actual,
+            (
+                "openai".to_string(),
+                expected_status.to_string(),
+                i64::from(expected_status == "disabled"),
+            ),
+            "{id}"
+        );
+    }
+
+    storage
+        .conn
+        .execute(
+            "UPDATE api_keys SET status = 'active' WHERE id = 'ambiguous-aggregate'",
+            [],
+        )
+        .expect("simulate later administrator change");
+    storage
+        .ensure_api_key_upstream_provider_column()
+        .expect("repeat compat upgrade");
+    let status: String = storage
+        .conn
+        .query_row(
+            "SELECT status FROM api_keys WHERE id = 'ambiguous-aggregate'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read status after repeat compat");
+    assert_eq!(status, "active");
+}
+
+#[test]
+fn upstream_provider_compat_migration_does_not_reclassify_existing_keys() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    storage
+        .conn
+        .execute(
+            "INSERT INTO aggregate_apis (id, provider_type, url, created_at, updated_at)
+             VALUES ('changing-api', 'codex', 'https://api.example.test/v1', 1, 1)",
+            [],
+        )
+        .expect("insert aggregate API");
+    let mut key = make_test_api_key(8);
+    key.rotation_strategy = "aggregate_api_rotation".to_string();
+    key.aggregate_api_id = Some("changing-api".to_string());
+    storage.insert_api_key(&key).expect("insert OpenAI key");
+    storage
+        .conn
+        .execute(
+            "UPDATE aggregate_apis SET provider_type = 'claude' WHERE id = 'changing-api'",
+            [],
+        )
+        .expect("change aggregate provider type");
+    storage
+        .conn
+        .execute(
+            "DELETE FROM schema_migrations WHERE version = '135_api_keys_upstream_provider'",
+            [],
+        )
+        .expect("simulate missing migration marker");
+
+    storage.init().expect("compat migration");
+    assert_eq!(
+        storage
+            .find_api_key_by_id(&key.id)
+            .expect("find")
+            .expect("key")
+            .upstream_provider,
+        UpstreamProvider::Openai
+    );
 }
 
 fn seed_app_user(storage: &Storage, user_id: &str) {

@@ -15,6 +15,7 @@ mod codex_runtime;
 mod codex_skill_repositories;
 mod codex_skills;
 mod codex_skills_marketplace;
+mod claude_subscription_auth;
 mod dashboard;
 mod errors;
 mod gateway;

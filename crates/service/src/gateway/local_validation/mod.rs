@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use codexmanager_core::storage::ConversationBinding;
+use codexmanager_core::storage::{ConversationBinding, UpstreamProvider};
 use reqwest::Method;
 use tiny_http::Request;
 
@@ -22,6 +22,7 @@ pub(super) struct LocalValidationResult {
     pub(super) has_prompt_cache_key: bool,
     pub(super) request_shape: Option<String>,
     pub(super) protocol_type: String,
+    pub(super) upstream_provider: UpstreamProvider,
     pub(super) rotation_strategy: String,
     pub(super) aggregate_api_id: Option<String>,
     pub(super) account_group_filter: Option<String>,

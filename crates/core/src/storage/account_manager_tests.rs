@@ -27,6 +27,7 @@ fn seed_api_key(storage: &Storage, key_id: &str) {
             model_slug: None,
             reasoning_effort: None,
             service_tier: None,
+            upstream_provider: Default::default(),
             rotation_strategy: "account_rotation".to_string(),
             aggregate_api_id: None,
             account_plan_filter: None,
