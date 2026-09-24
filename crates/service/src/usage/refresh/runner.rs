@@ -58,6 +58,31 @@ pub(super) fn usage_polling_loop() {
     );
 }
 
+/// Claude subscription usage has a separate rate limit and must not delay or
+/// change the OpenAI account usage polling cycle.
+pub(super) fn claude_usage_polling_loop() {
+    const POLL_INTERVAL_SECS: u64 = 300;
+    run_dynamic_poll_loop(
+        "Claude usage polling",
+        claude_usage_polling_enabled,
+        || POLL_INTERVAL_SECS,
+        || 0,
+        |interval_secs| interval_secs.saturating_mul(4),
+        crate::claude_subscription_auth::refresh_one_due_usage_for_polling,
+        |_| true,
+    );
+}
+
+fn claude_usage_polling_enabled() -> bool {
+    if std::env::var_os("CODEXMANAGER_DISABLE_POLLING").is_some() {
+        return false;
+    }
+    match std::env::var("CODEXMANAGER_CLAUDE_USAGE_POLLING_ENABLED") {
+        Ok(value) => !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"),
+        Err(_) => true,
+    }
+}
+
 /// 函数 `gateway_keepalive_loop`
 ///
 /// 作者: gaohongshun

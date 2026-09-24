@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Result, Row};
 
-use super::{ClaudeSubscriptionAccount, ClaudeSubscriptionLoginSession, Storage};
+use super::{ClaudeSubscriptionAccount, ClaudeSubscriptionLoginSession, ClaudeSubscriptionUsage, Storage};
 
 const ACCOUNT_SELECT: &str = "SELECT id, label, email, account_uuid, organization_uuid,
     subscription_type, status, sort, access_token, refresh_token, scopes,
@@ -40,7 +40,114 @@ fn read_login_session(row: &Row<'_>) -> Result<ClaudeSubscriptionLoginSession> {
     })
 }
 
+fn read_usage(row: &Row<'_>) -> Result<ClaudeSubscriptionUsage> {
+    Ok(ClaudeSubscriptionUsage {
+        account_id: row.get(0)?,
+        five_hour_used_percent: row.get(1)?,
+        five_hour_resets_at: row.get(2)?,
+        seven_day_used_percent: row.get(3)?,
+        seven_day_resets_at: row.get(4)?,
+        captured_at: row.get(5)?,
+        last_attempt_at: row.get(6)?,
+        next_attempt_at: row.get(7)?,
+        last_error: row.get(8)?,
+    })
+}
+
 impl Storage {
+    pub fn find_claude_subscription_usage(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<ClaudeSubscriptionUsage>> {
+        self.conn.query_row(
+            "SELECT account_id, five_hour_used_percent, five_hour_resets_at,
+                    seven_day_used_percent, seven_day_resets_at, captured_at,
+                    last_attempt_at, next_attempt_at, last_error
+             FROM claude_subscription_usage WHERE account_id = ?1",
+            [account_id],
+            read_usage,
+        ).optional()
+    }
+
+    /// Pick one due account without loading OAuth credentials into the scheduler.
+    /// A recent 429 pauses all automatic Claude usage probes until its retry time.
+    pub fn next_claude_subscription_usage_poll_account(
+        &self,
+        now: i64,
+    ) -> Result<Option<String>> {
+        self.conn.query_row(
+            "SELECT account.id
+             FROM claude_subscription_accounts AS account
+             LEFT JOIN claude_subscription_usage AS usage
+               ON usage.account_id = account.id
+             WHERE account.status = 'active'
+               AND (usage.next_attempt_at IS NULL OR usage.next_attempt_at <= ?1)
+               AND NOT EXISTS (
+                 SELECT 1 FROM claude_subscription_usage AS blocked
+                 WHERE blocked.last_error = 'HTTP 429'
+                   AND blocked.next_attempt_at > ?1
+               )
+             ORDER BY usage.last_attempt_at ASC,
+                      account.sort ASC, account.created_at ASC, account.id ASC
+             LIMIT 1",
+            [now],
+            |row| row.get(0),
+        ).optional()
+    }
+
+    pub fn save_claude_subscription_usage_success(
+        &self,
+        usage: &ClaudeSubscriptionUsage,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO claude_subscription_usage
+             (account_id, five_hour_used_percent, five_hour_resets_at,
+              seven_day_used_percent, seven_day_resets_at, captured_at,
+              last_attempt_at, next_attempt_at, last_error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)
+             ON CONFLICT(account_id) DO UPDATE SET
+               five_hour_used_percent = excluded.five_hour_used_percent,
+               five_hour_resets_at = excluded.five_hour_resets_at,
+               seven_day_used_percent = excluded.seven_day_used_percent,
+               seven_day_resets_at = excluded.seven_day_resets_at,
+               captured_at = excluded.captured_at,
+               last_attempt_at = excluded.last_attempt_at,
+               next_attempt_at = excluded.next_attempt_at,
+               last_error = NULL",
+            params![
+                usage.account_id,
+                usage.five_hour_used_percent,
+                usage.five_hour_resets_at,
+                usage.seven_day_used_percent,
+                usage.seven_day_resets_at,
+                usage.captured_at,
+                usage.last_attempt_at,
+                usage.next_attempt_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_claude_subscription_usage_failure(
+        &self,
+        account_id: &str,
+        attempted_at: i64,
+        next_attempt_at: i64,
+        error: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO claude_subscription_usage
+             (account_id, last_attempt_at, next_attempt_at, last_error)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account_id) DO UPDATE SET
+               last_attempt_at = excluded.last_attempt_at,
+               next_attempt_at = excluded.next_attempt_at,
+               last_error = excluded.last_error",
+            params![account_id, attempted_at, next_attempt_at, error],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_claude_subscription_login_session(
         &self,
         session: &ClaudeSubscriptionLoginSession,
@@ -592,5 +699,82 @@ mod tests {
             .unwrap();
         assert_eq!(disabled.status, "disabled");
         assert_eq!(disabled.access_token, "claude-a-access-3");
+    }
+
+    #[test]
+    fn usage_failure_keeps_last_good_meter_and_account_delete_cascades() {
+        let storage = storage();
+        storage.upsert_claude_subscription_account(&account("claude-usage"))
+            .expect("insert account");
+        let good = ClaudeSubscriptionUsage {
+            account_id: "claude-usage".to_string(),
+            five_hour_used_percent: Some(25.0),
+            five_hour_resets_at: Some(2000),
+            seven_day_used_percent: Some(40.0),
+            seven_day_resets_at: Some(3000),
+            captured_at: Some(1000),
+            last_attempt_at: Some(1000),
+            next_attempt_at: Some(1600),
+            last_error: None,
+        };
+        storage.save_claude_subscription_usage_success(&good)
+            .expect("save meter");
+        storage.record_claude_subscription_usage_failure(
+            "claude-usage", 1600, 2500, "HTTP 429",
+        ).expect("save failure without deleting meter");
+        let later = storage.find_claude_subscription_usage("claude-usage")
+            .expect("read meter").expect("meter exists");
+        assert_eq!(later.five_hour_used_percent, Some(25.0));
+        assert_eq!(later.seven_day_used_percent, Some(40.0));
+        assert_eq!(later.captured_at, Some(1000));
+        assert_eq!(later.last_error.as_deref(), Some("HTTP 429"));
+        assert_eq!(later.next_attempt_at, Some(2500));
+        storage.delete_claude_subscription_account("claude-usage")
+            .expect("delete account");
+        assert!(storage.find_claude_subscription_usage("claude-usage")
+            .expect("read after deletion").is_none());
+    }
+
+    #[test]
+    fn usage_poll_selects_one_due_active_account_by_oldest_attempt() {
+        let storage = storage();
+        for id in ["claude-a", "claude-b", "claude-c", "claude-disabled"] {
+            storage.upsert_claude_subscription_account(&account(id))
+                .expect("insert account");
+        }
+        let mut needs_login = account("claude-needs-login");
+        needs_login.status = "needs_login".to_string();
+        storage.upsert_claude_subscription_account(&needs_login)
+            .expect("insert account requiring login");
+        storage.update_claude_subscription_account_status("claude-disabled", "disabled", 1000)
+            .expect("disable account");
+        storage.record_claude_subscription_usage_failure("claude-a", 1200, 1500, "network_error")
+            .expect("record old attempt");
+        storage.record_claude_subscription_usage_failure("claude-b", 1300, 1600, "network_error")
+            .expect("record later attempt");
+
+        assert_eq!(storage.next_claude_subscription_usage_poll_account(1400).unwrap().as_deref(), Some("claude-c"));
+        storage.record_claude_subscription_usage_failure("claude-c", 1400, 1700, "network_error")
+            .expect("record new account attempt");
+        assert!(storage.next_claude_subscription_usage_poll_account(1499).unwrap().is_none());
+        assert_eq!(storage.next_claude_subscription_usage_poll_account(1500).unwrap().as_deref(), Some("claude-a"));
+        assert_eq!(storage.next_claude_subscription_usage_poll_account(1600).unwrap().as_deref(), Some("claude-a"));
+        storage.record_claude_subscription_usage_failure("claude-a", 1600, 1800, "network_error")
+            .expect("advance oldest account");
+        assert_eq!(storage.next_claude_subscription_usage_poll_account(1600).unwrap().as_deref(), Some("claude-b"));
+    }
+
+    #[test]
+    fn usage_poll_429_cools_down_all_accounts_until_retry_time() {
+        let storage = storage();
+        storage.upsert_claude_subscription_account(&account("claude-a"))
+            .expect("insert first account");
+        storage.upsert_claude_subscription_account(&account("claude-b"))
+            .expect("insert second account");
+        storage.record_claude_subscription_usage_failure("claude-a", 1000, 1900, "HTTP 429")
+            .expect("record rate limit");
+
+        assert!(storage.next_claude_subscription_usage_poll_account(1899).unwrap().is_none());
+        assert_eq!(storage.next_claude_subscription_usage_poll_account(1900).unwrap().as_deref(), Some("claude-b"));
     }
 }

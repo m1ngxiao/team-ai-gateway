@@ -1,5 +1,19 @@
 import { invoke, withAddr } from "./transport";
 
+export interface ClaudeSubscriptionUsageWindow {
+  usedPercent: number | null;
+  resetsAt: number | null;
+}
+
+export interface ClaudeSubscriptionUsage {
+  fiveHour: ClaudeSubscriptionUsageWindow | null;
+  sevenDay: ClaudeSubscriptionUsageWindow | null;
+  capturedAt: number | null;
+  lastAttemptAt: number | null;
+  nextAttemptAt: number | null;
+  lastError: string | null;
+}
+
 export interface ClaudeSubscriptionAccount {
   id: string;
   label: string;
@@ -10,6 +24,7 @@ export interface ClaudeSubscriptionAccount {
   sort: number;
   expiresAt: number;
   lastError: string | null;
+  usage?: ClaudeSubscriptionUsage | null;
 }
 
 export interface ClaudeSubscriptionLoginStart {
@@ -38,6 +53,10 @@ export const claudeSubscriptionClient = {
   updateStatus: (accountId: string, status: "active" | "disabled", addr?: string) =>
     invoke<unknown>("service_claude_account_update_status", {
       ...paramsWithAddr(addr), accountId, status,
+    }),
+  usageRefresh: (accountId: string, addr?: string) =>
+    invoke<ClaudeSubscriptionUsage>("service_claude_account_usage_refresh", {
+      ...paramsWithAddr(addr), accountId,
     }),
   delete: (accountId: string, addr?: string) =>
     invoke<unknown>("service_claude_account_delete", {

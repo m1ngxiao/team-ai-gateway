@@ -68,10 +68,10 @@
         </section>
 
         <section id="view-claude-accounts" class="view" aria-labelledby="claude-accounts-title" hidden>
-          <div class="page-heading"><div><h2 id="claude-accounts-title">Claude 账号池</h2><p class="muted">Claude.ai 订阅账号，仅展示账号状态与已归因用量</p></div><span class="readonly-badge"><span class="icon" data-icon="lock" aria-hidden="true"></span>仅查看</span></div>
+          <div class="page-heading"><div><h2 id="claude-accounts-title">Claude 账号池</h2><p class="muted">Claude.ai 订阅账号、最近采集的额度与已归因用量</p></div><span class="readonly-badge"><span class="icon" data-icon="lock" aria-hidden="true"></span>仅查看</span></div>
           <div class="pool-page-usage glass-card"><span>当前时段已归因至 Claude 账号池</span><strong id="claude-pool-usage">—</strong><small id="claude-pool-requests">—</small></div>
-          <div class="glass-card"><div class="section-title table-title"><h3>账号列表</h3><span id="claude-account-count" class="muted"></span></div><div class="table-frame"><table class="account-table claude-account-table"><thead><tr><th scope="col">账号信息</th><th scope="col">套餐</th><th scope="col">顺序</th><th scope="col">状态</th><th scope="col">最近更新</th><th scope="col">额度</th></tr></thead><tbody id="claude-accounts"></tbody></table></div></div>
-          <p class="footnote">Claude 订阅剩余额度目前无法查询，页面不展示推测值。用量按请求实际来源归因，不代表订阅方最终账单；无法归因的记录计入仪表盘“未归属”。</p>
+          <div class="glass-card"><div class="section-title table-title"><h3>账号列表</h3><span id="claude-account-count" class="muted"></span></div><div class="table-frame"><table class="account-table claude-account-table"><thead><tr><th scope="col">账号信息</th><th scope="col">套餐</th><th scope="col">顺序</th><th scope="col">状态</th><th scope="col">采集 / 查询</th><th scope="col">订阅额度</th></tr></thead><tbody id="claude-accounts"></tbody></table></div></div>
+          <p class="footnote">额度来自 Claude 账号最近成功采集的 5 小时和 7 天用量百分比；超过 60 分钟或重置时间已过的数据显示“未知”。本站 Token 用量按实际请求来源归因，不能换算为订阅剩余额度。</p>
         </section>
 
         <section id="view-apikeys" class="view" aria-labelledby="keys-title" hidden>

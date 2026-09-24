@@ -27,6 +27,9 @@ ALLOWED_COLUMNS = {
     **CATALOG_COLUMNS,
     "accounts": {"id", "status", "created_at", "updated_at", "label", "sort", "group_name"},
     "claude_subscription_accounts": {"id", "email", "subscription_type", "status", "sort", "updated_at"},
+    "claude_subscription_usage": {"account_id", "five_hour_used_percent", "five_hour_resets_at",
+                                  "seven_day_used_percent", "seven_day_resets_at", "captured_at",
+                                  "last_attempt_at", "next_attempt_at", "last_error"},
     "account_subscriptions": {"account_id", "account_plan_type", "plan_type", "expires_at", "renews_at"},
     "account_quota_capacity_overrides": {"account_id", "primary_window_tokens", "secondary_window_tokens"},
     "account_proxy_settings": {"account_id", "enabled"},
@@ -126,6 +129,34 @@ def claude_plan(value):
 
 def claude_status(value):
     return {"active": "enabled", "disabled": "disabled", "needs_login": "needs_login"}.get(value, "unknown")
+
+
+def claude_usage_error(value):
+    """Expose only a small error category, never an upstream response or URL."""
+    if not value:
+        return None
+    code = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if code in {"rate_limited", "http_429", "429"}:
+        return "rate_limited"
+    if code in {"auth_error", "token_refresh_error", "unauthorized", "forbidden", "http_401", "http_403", "401", "403"}:
+        return "auth_error"
+    if code in {"timeout", "timed_out", "request_timeout"}:
+        return "timeout"
+    if code in {"network_error", "transport_error", "connection_error"}:
+        return "network_error"
+    if code in {"invalid_response", "parse_error", "invalid_json"}:
+        return "invalid_response"
+    if code == "upstream_error" or re.fullmatch(r"http_5\d\d", code):
+        return "upstream_error"
+    return "query_failed"
+
+
+def claude_quota_window(used, resets_at, minutes):
+    """The usage endpoint reports percentage used; the dashboard shows remaining."""
+    remaining = None
+    if isinstance(used, (int, float)) and not isinstance(used, bool) and math.isfinite(used) and 0 <= used <= 100:
+        remaining = float(100 - used)
+    return {"minutes": minutes, "remaining_percent": remaining, "resets_at": timestamp(resets_at)}
 
 
 def group_identity(value, secret):
@@ -265,6 +296,18 @@ def collect(config, now=None):
             if str(exc) != "no such table: claude_subscription_accounts":
                 raise
             raw_claude_accounts = []
+        try:
+            raw_claude_usage = connection.execute("""
+              SELECT account_id,five_hour_used_percent,five_hour_resets_at,
+                     seven_day_used_percent,seven_day_resets_at,captured_at,
+                     last_attempt_at,next_attempt_at,last_error
+              FROM claude_subscription_usage
+              ORDER BY captured_at DESC,last_attempt_at DESC
+            """).fetchall()
+        except sqlite3.OperationalError as exc:
+            if str(exc) != "no such table: claude_subscription_usage":
+                raise
+            raw_claude_usage = []
         key_sql = """
           SELECT k.id,k.name,k.status,k.created_at,k.last_used_at,k.account_group_filter,
             COALESCE(p.protocol_type,'openai_compat') AS protocol_type,
@@ -310,9 +353,16 @@ def collect(config, now=None):
                          "capacity_override": bool(capacity_primary or capacity_secondary),
                          "capacity_primary_tokens": capacity_primary, "capacity_secondary_tokens": capacity_secondary,
                          **credits_details(row["credits_json"], optional_timestamp(row["captured_at"]))})
+    # The table stores one latest row per account. If an older installation has
+    # duplicate rows, the most recently captured one wins without exposing IDs.
+    claude_usage_by_account = {}
+    for usage_row in raw_claude_usage:
+        claude_usage_by_account.setdefault(usage_row["account_id"], usage_row)
     claude_accounts = []
     for row in raw_claude_accounts:
         pid = public_id("acct", row["id"], secret)
+        usage = claude_usage_by_account.get(row["id"])
+        captured_at = timestamp(usage["captured_at"]) if usage else None
         claude_accounts.append({
             "id": pid,
             "label": safe_label(config.get("account_aliases", {}).get(row["id"]), "Claude " + pid[-6:]),
@@ -321,6 +371,14 @@ def collect(config, now=None):
             "status": claude_status(row["status"]),
             "sort_order": max(0, row["sort"]) if type(row["sort"]) is int else None,
             "updated_at": optional_timestamp(row["updated_at"]),
+            "five_hour": claude_quota_window(usage["five_hour_used_percent"], usage["five_hour_resets_at"], 300)
+                         if usage and captured_at else claude_quota_window(None, None, 300),
+            "seven_day": claude_quota_window(usage["seven_day_used_percent"], usage["seven_day_resets_at"], 10080)
+                         if usage and captured_at else claude_quota_window(None, None, 10080),
+            "captured_at": captured_at,
+            "last_attempt_at": timestamp(usage["last_attempt_at"]) if usage else None,
+            "next_attempt_at": timestamp(usage["next_attempt_at"]) if usage else None,
+            "last_error": claude_usage_error(usage["last_error"]) if usage else None,
         })
     # Only current keys belong in the list. Deleted/unattributed usage remains
     # in the independently aggregated team totals and model usage above.

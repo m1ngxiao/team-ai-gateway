@@ -62,7 +62,10 @@ def test_claude_account_is_separate_and_actual_pool_usage_reconciles(sample):
     assert claude == {"id": public_id("acct", "internal-claude", sample["config"]["id_secret"]),
                       "label": "Claude " + public_id("acct", "internal-claude", sample["config"]["id_secret"])[-6:],
                       "email": "member@example.com", "plan": "pro", "status": "enabled", "sort_order": 2,
-                      "updated_at": sample["now"]}
+                      "updated_at": sample["now"],
+                      "five_hour": {"minutes": 300, "remaining_percent": None, "resets_at": None},
+                      "seven_day": {"minutes": 10080, "remaining_percent": None, "resets_at": None},
+                      "captured_at": None, "last_attempt_at": None, "next_attempt_at": None, "last_error": None}
     key_id = public_id("key", "internal-key-a", sample["config"]["id_secret"])
     assert next(key for key in data["keys"] if key["id"] == key_id)["upstream_provider"] == "claude"
     for period in ("today", "week", "recorded"):
@@ -99,3 +102,51 @@ def test_actual_pool_usage_ignores_current_key_provider(sample):
     after = collect(sample["config"], sample["now"])
     assert after["pool_usage"] == baseline
     assert after["pool_usage"]["claude"]["today"]["total_tokens"] == 50
+
+
+def test_claude_quota_snapshot_is_separate_from_gateway_token_usage(sample):
+    add_claude_schema(sample)
+    with sqlite3.connect(sample["db"]) as db:
+        db.executescript("""
+          CREATE TABLE claude_subscription_usage (
+            account_id TEXT PRIMARY KEY,five_hour_used_percent REAL,five_hour_resets_at INT,
+            seven_day_used_percent REAL,seven_day_resets_at INT,captured_at INT,
+            last_attempt_at INT,next_attempt_at INT,last_error TEXT,private_response TEXT
+          );
+        """)
+        db.execute("INSERT INTO claude_subscription_usage VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   ("internal-claude", 24.5, sample["now"] + 3600, 70.0, sample["now"] + 604800,
+                    sample["now"], sample["now"], sample["now"] + 600, "HTTP 429", sample["canary"]))
+    source_before = sample["db"].read_bytes()
+    data = collect(sample["config"], sample["now"])
+    assert sample["db"].read_bytes() == source_before
+    account = data["claude_accounts"][0]
+    assert account["five_hour"] == {"minutes": 300, "remaining_percent": 75.5, "resets_at": sample["now"] + 3600}
+    assert account["seven_day"] == {"minutes": 10080, "remaining_percent": 30.0, "resets_at": sample["now"] + 604800}
+    assert account["captured_at"] == account["last_attempt_at"] == sample["now"]
+    assert account["next_attempt_at"] == sample["now"] + 600
+    assert account["last_error"] == "rate_limited"
+    assert data["pool_usage"]["claude"]["today"]["total_tokens"] == 50
+    assert sample["canary"] not in json.dumps(data)
+    with source_connection(sample["db"]) as db:
+        with pytest.raises(sqlite3.DatabaseError):
+            db.execute("SELECT private_response FROM claude_subscription_usage").fetchall()
+
+
+def test_claude_quota_invalid_values_do_not_become_invented_remaining(sample):
+    add_claude_schema(sample)
+    with sqlite3.connect(sample["db"]) as db:
+        db.executescript("""
+          CREATE TABLE claude_subscription_usage (
+            account_id TEXT PRIMARY KEY,five_hour_used_percent REAL,five_hour_resets_at INT,
+            seven_day_used_percent REAL,seven_day_resets_at INT,captured_at INT,
+            last_attempt_at INT,next_attempt_at INT,last_error TEXT
+          );
+        """)
+        db.execute("INSERT INTO claude_subscription_usage VALUES(?,?,?,?,?,?,?,?,?)",
+                   ("internal-claude", 123.4, None, -2.0, None, sample["now"], sample["now"], None, sample["canary"]))
+    account = collect(sample["config"], sample["now"])["claude_accounts"][0]
+    assert account["five_hour"]["remaining_percent"] is None
+    assert account["seven_day"]["remaining_percent"] is None
+    assert account["last_error"] == "query_failed"
+    assert sample["canary"] not in json.dumps(account)

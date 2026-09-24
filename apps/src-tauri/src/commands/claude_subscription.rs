@@ -29,6 +29,15 @@ pub async fn service_claude_account_update_status(
 }
 
 #[tauri::command]
+pub async fn service_claude_account_usage_refresh(
+    addr: Option<String>, account_id: String,
+) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("claudeAccount/usageRefresh", addr, Some(serde_json::json!({
+        "accountId": account_id,
+    }))).await
+}
+
+#[tauri::command]
 pub async fn service_claude_account_delete(
     addr: Option<String>, account_id: String,
 ) -> Result<serde_json::Value, String> {

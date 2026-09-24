@@ -77,6 +77,19 @@ pub struct ClaudeSubscriptionAccount {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClaudeSubscriptionUsage {
+    pub account_id: String,
+    pub five_hour_used_percent: Option<f64>,
+    pub five_hour_resets_at: Option<i64>,
+    pub seven_day_used_percent: Option<f64>,
+    pub seven_day_resets_at: Option<i64>,
+    pub captured_at: Option<i64>,
+    pub last_attempt_at: Option<i64>,
+    pub next_attempt_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClaudeSubscriptionLoginSession {
     pub id: String,
@@ -2355,6 +2368,10 @@ impl Storage {
         self.apply_sql_migration(
             "136_claude_subscription_accounts",
             include_str!("../../migrations/136_claude_subscription_accounts.sql"),
+        )?;
+        self.apply_sql_migration(
+            "137_claude_subscription_usage",
+            include_str!("../../migrations/137_claude_subscription_usage.sql"),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;

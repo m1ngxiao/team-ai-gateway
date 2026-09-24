@@ -1,9 +1,12 @@
 use codexmanager_core::auth::{generate_pkce, generate_state};
 use codexmanager_core::storage::{
-    now_ts, ClaudeSubscriptionAccount, ClaudeSubscriptionLoginSession, Storage,
+    now_ts, ClaudeSubscriptionAccount, ClaudeSubscriptionLoginSession, ClaudeSubscriptionUsage,
+    Storage,
 };
 use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
@@ -17,9 +20,28 @@ const PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
 const REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const SCOPES: &str = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
+const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+const USAGE_BETA: &str = "oauth-2025-04-20";
+const USAGE_SUCCESS_INTERVAL_SECS: i64 = 600;
+const USAGE_FAILURE_BACKOFF_SECS: i64 = 120;
+const USAGE_RATE_LIMIT_BACKOFF_SECS: i64 = 900;
 
 static CLAUDE_ACCOUNT_REFRESH_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
     OnceLock::new();
+static CLAUDE_USAGE_REFRESH_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
+    OnceLock::new();
+
+fn usage_refresh_lock(account_id: &str) -> Arc<Mutex<()>> {
+    let table = CLAUDE_USAGE_REFRESH_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut entries = crate::lock_utils::lock_recover(table, "claude_usage_refresh_locks");
+    if let Some(lock) = entries.get(account_id).and_then(Weak::upgrade) {
+        return lock;
+    }
+    entries.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(Mutex::new(()));
+    entries.insert(account_id.to_string(), Arc::downgrade(&lock));
+    lock
+}
 
 fn account_refresh_lock(account_id: &str) -> Arc<Mutex<()>> {
     let table = CLAUDE_ACCOUNT_REFRESH_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -59,6 +81,44 @@ pub(crate) struct ClaudeAccountSummary {
     sort: i64,
     expires_at: i64,
     last_error: Option<String>,
+    usage: Option<ClaudeUsageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClaudeUsageWindow {
+    used_percent: Option<f64>,
+    resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClaudeUsageSummary {
+    five_hour: ClaudeUsageWindow,
+    seven_day: ClaudeUsageWindow,
+    captured_at: Option<i64>,
+    last_attempt_at: Option<i64>,
+    next_attempt_at: Option<i64>,
+    last_error: Option<String>,
+}
+
+impl From<ClaudeSubscriptionUsage> for ClaudeUsageSummary {
+    fn from(usage: ClaudeSubscriptionUsage) -> Self {
+        Self {
+            five_hour: ClaudeUsageWindow {
+                used_percent: usage.five_hour_used_percent,
+                resets_at: usage.five_hour_resets_at,
+            },
+            seven_day: ClaudeUsageWindow {
+                used_percent: usage.seven_day_used_percent,
+                resets_at: usage.seven_day_resets_at,
+            },
+            captured_at: usage.captured_at,
+            last_attempt_at: usage.last_attempt_at,
+            next_attempt_at: usage.next_attempt_at,
+            last_error: usage.last_error,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,9 +313,13 @@ pub(crate) fn login_complete(login_id: &str, pasted_code: &str) -> Result<Claude
 
 pub(crate) fn list_accounts() -> Result<Vec<ClaudeAccountSummary>, String> {
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    storage.list_claude_subscription_accounts()
-        .map_err(|err| format!("list Claude accounts failed: {err}"))
-        .map(|accounts| accounts.into_iter().map(|account| ClaudeAccountSummary {
+    let accounts = storage.list_claude_subscription_accounts()
+        .map_err(|err| format!("list Claude accounts failed: {err}"))?;
+    accounts.into_iter().map(|account| {
+        let usage = storage.find_claude_subscription_usage(&account.id)
+            .map_err(|err| format!("read Claude usage failed: {err}"))?
+            .map(ClaudeUsageSummary::from);
+        Ok(ClaudeAccountSummary {
             id: account.id,
             label: account.label,
             email: account.email,
@@ -265,7 +329,188 @@ pub(crate) fn list_accounts() -> Result<Vec<ClaudeAccountSummary>, String> {
             sort: account.sort,
             expires_at: account.expires_at,
             last_error: account.last_error,
-        }).collect())
+            usage,
+        })
+    }).collect()
+}
+
+#[derive(Debug)]
+struct UsageFetchFailure {
+    category: String,
+    retry_after_secs: Option<i64>,
+}
+
+fn parse_usage_percent(value: Option<&Value>) -> Option<f64> {
+    value.and_then(Value::as_f64).filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+}
+
+fn parse_usage_reset(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    if let Some(timestamp) = value.as_i64() {
+        let seconds = if timestamp >= 1_000_000_000_000 { timestamp / 1000 } else { timestamp };
+        return (seconds > 0).then_some(seconds);
+    }
+    value.as_str().and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        .map(|date| date.timestamp()).filter(|timestamp| *timestamp > 0)
+}
+
+fn parse_usage_window(value: Option<&Value>) -> (Option<f64>, Option<i64>) {
+    let percent = value.and_then(|window| {
+        parse_usage_percent(window.get("utilization"))
+            .or_else(|| parse_usage_percent(window.get("used_percent")))
+            .or_else(|| parse_usage_percent(window.get("percent")))
+    });
+    let reset = parse_usage_reset(value.and_then(|window| window.get("resets_at")));
+    (percent, reset)
+}
+
+fn parse_usage_body(body: &Value, account_id: &str, captured_at: i64) -> Option<ClaudeSubscriptionUsage> {
+    let (five_hour, seven_day) = if let Some(entries) = body.as_array()
+        .or_else(|| body.get("usage").and_then(Value::as_array)) {
+        let mut session = None;
+        let mut weekly_all = None;
+        for entry in entries {
+            match entry.get("kind").and_then(Value::as_str) {
+                Some("session") => session = Some(entry),
+                Some("weekly_all") => weekly_all = Some(entry),
+                _ => {}
+            }
+        }
+        if session.is_none() && weekly_all.is_none() {
+            return None;
+        }
+        (session, weekly_all)
+    } else if body.is_object() && (body.get("five_hour").is_some() || body.get("seven_day").is_some()) {
+        (body.get("five_hour"), body.get("seven_day"))
+    } else {
+        return None;
+    };
+    let (five_hour_used_percent, five_hour_resets_at) = parse_usage_window(five_hour);
+    let (seven_day_used_percent, seven_day_resets_at) = parse_usage_window(seven_day);
+    if five_hour_used_percent.is_none() && seven_day_used_percent.is_none() {
+        return None;
+    }
+    Some(ClaudeSubscriptionUsage {
+        account_id: account_id.to_string(),
+        five_hour_used_percent,
+        five_hour_resets_at,
+        seven_day_used_percent,
+        seven_day_resets_at,
+        captured_at: Some(captured_at),
+        last_attempt_at: Some(captured_at),
+        next_attempt_at: Some(captured_at.saturating_add(USAGE_SUCCESS_INTERVAL_SECS)),
+        last_error: None,
+    })
+}
+
+fn retry_after_secs(headers: &HeaderMap, now: i64) -> Option<i64> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse::<i64>() {
+        return Some(seconds.max(0));
+    }
+    chrono::DateTime::parse_from_rfc2822(value).ok()
+        .map(|date| date.timestamp().saturating_sub(now).max(0))
+}
+
+fn fetch_usage(account: &ClaudeSubscriptionAccount, now: i64) -> Result<ClaudeSubscriptionUsage, UsageFetchFailure> {
+    let client = oauth_http_client(Some(&account.id)).map_err(|_| UsageFetchFailure {
+        category: "network_error".to_string(), retry_after_secs: None,
+    })?;
+    let response = client.get(USAGE_URL)
+        .timeout(Duration::from_secs(20))
+        .bearer_auth(&account.access_token)
+        .header("anthropic-beta", USAGE_BETA)
+        .header("Cache-Control", "no-cache")
+        .send()
+        .map_err(|_| UsageFetchFailure {
+            category: "network_error".to_string(), retry_after_secs: None,
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(UsageFetchFailure {
+            category: format!("HTTP {}", status.as_u16()),
+            retry_after_secs: (status.as_u16() == 429).then(|| retry_after_secs(response.headers(), now)).flatten(),
+        });
+    }
+    let body: Value = response.json().map_err(|_| UsageFetchFailure {
+        category: "invalid_response".to_string(), retry_after_secs: None,
+    })?;
+    parse_usage_body(&body, &account.id, now).ok_or_else(|| UsageFetchFailure {
+        category: "invalid_response".to_string(), retry_after_secs: None,
+    })
+}
+
+/// Refresh a Claude subscription meter without changing the account's routing status.
+/// The usage endpoint is separate from OAuth: an HTTP 401 here is not proof that
+/// the OAuth refresh token or inference access has expired.
+pub(crate) fn refresh_usage_for_account(account_id: &str) -> Result<ClaudeUsageSummary, String> {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return Err("accountId is required".to_string());
+    }
+    let lock = usage_refresh_lock(account_id);
+    let _guard = crate::lock_utils::lock_recover(lock.as_ref(), "claude_usage_refresh_lock");
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let account = storage.find_claude_subscription_account(account_id)
+        .map_err(|err| format!("read Claude account failed: {err}"))?
+        .ok_or_else(|| "Claude account not found".to_string())?;
+    if account.status != "active" {
+        return Err("Claude account is not active".to_string());
+    }
+    let now = now_ts();
+    if let Some(existing) = storage.find_claude_subscription_usage(account_id)
+        .map_err(|err| format!("read Claude usage failed: {err}"))? {
+        if existing.next_attempt_at.is_some_and(|next| next > now) {
+            return Ok(existing.into());
+        }
+    }
+    let refreshed = match refresh_account_token(&storage, &account) {
+        Ok(account) => account,
+        Err(_) => {
+            storage.record_claude_subscription_usage_failure(
+                account_id, now, now.saturating_add(USAGE_FAILURE_BACKOFF_SECS), "token_refresh_error",
+            ).map_err(|err| format!("save Claude usage failure failed: {err}"))?;
+            return storage.find_claude_subscription_usage(account_id)
+                .map_err(|err| format!("read Claude usage failed: {err}"))?
+                .map(ClaudeUsageSummary::from)
+                .ok_or_else(|| "Claude usage status unavailable".to_string());
+        }
+    };
+    match fetch_usage(&refreshed, now) {
+        Ok(usage) => storage.save_claude_subscription_usage_success(&usage)
+            .map_err(|err| format!("save Claude usage failed: {err}"))?,
+        Err(failure) => {
+            let minimum = if failure.category == "HTTP 429" {
+                USAGE_RATE_LIMIT_BACKOFF_SECS
+            } else {
+                USAGE_FAILURE_BACKOFF_SECS
+            };
+            let retry_after = failure.retry_after_secs.unwrap_or(0);
+            storage.record_claude_subscription_usage_failure(
+                account_id, now, now.saturating_add(minimum.max(retry_after)), &failure.category,
+            ).map_err(|err| format!("save Claude usage failure failed: {err}"))?;
+        }
+    }
+    storage.find_claude_subscription_usage(account_id)
+        .map_err(|err| format!("read Claude usage failed: {err}"))?
+        .map(ClaudeUsageSummary::from)
+        .ok_or_else(|| "Claude usage status unavailable".to_string())
+}
+
+/// Probe at most one due active account per scheduler cycle. The storage query
+/// enforces a provider-wide cooldown after a usage-endpoint HTTP 429.
+pub(crate) fn refresh_one_due_usage_for_polling() -> Result<(), String> {
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let account_id = storage.next_claude_subscription_usage_poll_account(now_ts())
+        .map_err(|err| format!("select Claude usage poll account failed: {err}"))?;
+    drop(storage);
+    if let Some(account_id) = account_id {
+        let usage = refresh_usage_for_account(&account_id)?;
+        if usage.last_error.as_deref() == Some("HTTP 429") {
+            log::info!("Claude usage polling rate limited; automatic probes paused until retry time");
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn set_account_status(account_id: &str, status: &str) -> Result<(), String> {
@@ -496,6 +741,45 @@ mod tests {
         assert_eq!(params.get("state").map(|value| value.as_ref()), Some("state-value"));
         assert_eq!(params.get("code_challenge").map(|value| value.as_ref()), Some("challenge-value"));
         assert_eq!(params.get("redirect_uri").map(|value| value.as_ref()), Some(REDIRECT_URI));
+    }
+
+    #[test]
+    fn usage_parser_accepts_legacy_windows_and_rejects_invalid_percent() {
+        let body = serde_json::json!({
+            "five_hour": {"utilization": 27.5, "resets_at": "2026-09-24T15:00:00Z"},
+            "seven_day": {"utilization": 120, "resets_at": "not-a-date"}
+        });
+        let usage = parse_usage_body(&body, "claude:test", 100).expect("valid five-hour meter");
+        assert_eq!(usage.five_hour_used_percent, Some(27.5));
+        assert!(usage.five_hour_resets_at.is_some_and(|timestamp| timestamp > 0));
+        assert_eq!(usage.seven_day_used_percent, None);
+        assert_eq!(usage.seven_day_resets_at, None);
+        assert!(parse_usage_body(&serde_json::json!({"five_hour": {"utilization": -1}}), "claude:test", 100).is_none());
+    }
+
+    #[test]
+    fn usage_parser_accepts_current_meter_entries_without_scoped_weekly_confusion() {
+        let body = serde_json::json!([
+            {"kind": "session", "group": "session", "percent": 5, "is_active": true},
+            {"kind": "weekly_all", "group": "weekly", "percent": 14,
+             "resets_at": "2026-09-30T10:00:00Z"},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 99}
+        ]);
+        let usage = parse_usage_body(&body, "claude:test", 100).expect("valid meters");
+        assert_eq!(usage.five_hour_used_percent, Some(5.0));
+        assert_eq!(usage.seven_day_used_percent, Some(14.0));
+        assert!(usage.seven_day_resets_at.is_some_and(|timestamp| timestamp > 0));
+        assert!(parse_usage_body(&serde_json::json!([{"kind": "weekly_scoped", "percent": 99}]), "claude:test", 100).is_none());
+        assert!(parse_usage_body(&serde_json::json!({"unknown": 0}), "claude:test", 100).is_none());
+    }
+
+    #[test]
+    fn retry_after_accepts_delay_and_http_date() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, "120".parse().unwrap());
+        assert_eq!(retry_after_secs(&headers, 100), Some(120));
+        headers.insert(RETRY_AFTER, "Thu, 24 Sep 2026 15:00:00 GMT".parse().unwrap());
+        assert!(retry_after_secs(&headers, 1_000_000).is_some_and(|seconds| seconds > 0));
     }
 
     #[test]

@@ -172,11 +172,47 @@ test("Claude subscription accounts have a separate read-only view and no invente
   assert.equal(elements.get("claude-account-count").textContent, "共 2 个账号");
   assert.equal(elements.get("accounts").children.length, 1);
   assert.equal(elements.get("claude-accounts").children.length, 2);
-  assert.match(elements.get("claude-accounts").textContent, /claude@example.com.*PRO.*启用.*暂无额度数据.*Claude 02.*MAX.*需重新登录/s);
-  assert.match(elements.get("overview-accounts").textContent, /Claude · PRO.*订阅额度暂不可查/s);
+  assert.match(elements.get("claude-accounts").textContent, /claude@example.com.*PRO.*启用.*暂无数据.*Claude 02.*MAX.*需重新登录/s);
+  assert.match(elements.get("overview-accounts").textContent, /Claude · PRO.*暂无数据.*最近成功采集：暂无记录/s);
   assert.ok(!elements.get("accounts").textContent.includes("claude@example.com"));
   assert.match(html, /href="#claude-accounts" data-view="claude-accounts"/);
-  assert.match(html, /Claude 订阅剩余额度目前无法查询/);
+  assert.match(html, /本站 Token 用量.*不能换算为订阅剩余额度/);
+});
+
+test("Claude quota shows fresh remaining percentages and safe refresh status", () => {
+  const { context, elements } = setup();
+  const data = structuredClone(fixture), now = Math.floor(Date.now() / 1000);
+  data.claude_accounts = [{ id: "acct-cccccccccccc", label: "Claude 01", email: "claude@example.com",
+    plan: "max", status: "enabled", captured_at: now - 120, last_attempt_at: now - 60,
+    next_attempt_at: now + 600, last_error: "rate_limited",
+    five_hour: { minutes: 300, remaining_percent: 75.5, resets_at: now + 1800 },
+    seven_day: { minutes: 10080, remaining_percent: 20, resets_at: now + 86400 * 5 } }];
+  vm.runInContext(`snapshot = ${JSON.stringify(data)}; renderAccounts();`, context);
+  const table = elements.get("claude-accounts").textContent;
+  assert.match(table, /75\.5%.*20\.0%/s);
+  assert.match(table, /最近成功采集.*最近查询.*查询限流.*下次尝试/s);
+  assert.match(elements.get("overview-accounts").textContent, /Claude · MAX.*75\.5%.*20\.0%/s);
+});
+
+test("Claude expired quota and elapsed reset are unknown even when gateway tokens exist", () => {
+  const { context, elements } = setup();
+  const data = structuredClone(fixture), now = Math.floor(Date.now() / 1000);
+  data.claude_accounts = [{ id: "acct-cccccccccccc", label: "Claude 01", plan: "pro", status: "enabled",
+    captured_at: now - 7200, five_hour: { minutes: 300, remaining_percent: 80, resets_at: now + 1800 },
+    seven_day: { minutes: 10080, remaining_percent: 90, resets_at: now + 86400 } }];
+  data.pool_usage.claude.today.total_tokens = 500000;
+  vm.runInContext(`snapshot = ${JSON.stringify(data)}; renderAccounts();`, context);
+  let shown = elements.get("claude-accounts").textContent;
+  assert.match(shown, /最近额度已过期，当前额度未知/);
+  assert.match(shown, /未知.*未知/s);
+  assert.ok(!shown.includes("80.0%") && !shown.includes("90.0%") && !shown.includes("500000"));
+  data.claude_accounts[0].captured_at = now - 60;
+  data.claude_accounts[0].five_hour.resets_at = now - 1;
+  vm.runInContext(`snapshot = ${JSON.stringify(data)}; renderAccounts();`, context);
+  shown = elements.get("claude-accounts").textContent;
+  assert.ok(!shown.includes("80.0%"));
+  assert.match(shown, /未知/);
+  assert.match(shown, /90\.0%/);
 });
 
 test("actual-source pool usage reconciles with team totals and changes with period", () => {

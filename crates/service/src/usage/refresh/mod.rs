@@ -43,6 +43,7 @@ mod runner;
 mod settings;
 
 static USAGE_POLLING_STARTED: OnceLock<()> = OnceLock::new();
+static CLAUDE_USAGE_POLLING_STARTED: OnceLock<()> = OnceLock::new();
 static GATEWAY_KEEPALIVE_STARTED: OnceLock<()> = OnceLock::new();
 static TOKEN_REFRESH_POLLING_STARTED: OnceLock<()> = OnceLock::new();
 static WARMUP_CRON_STARTED: OnceLock<()> = OnceLock::new();
@@ -187,7 +188,8 @@ use self::errors::{
 use self::queue::clear_pending_usage_refresh_tasks_for_tests;
 pub(crate) use self::queue::enqueue_usage_refresh_with_worker;
 use self::runner::{
-    gateway_keepalive_loop, token_refresh_polling_loop, usage_polling_loop, warmup_cron_loop,
+    claude_usage_polling_loop, gateway_keepalive_loop, token_refresh_polling_loop,
+    usage_polling_loop, warmup_cron_loop,
 };
 use self::settings::ensure_background_tasks_config_loaded;
 pub(crate) use self::settings::{
@@ -255,6 +257,12 @@ pub(crate) fn ensure_usage_polling() {
     ensure_background_tasks_config_loaded();
     USAGE_POLLING_STARTED.get_or_init(|| {
         spawn_background_loop("usage-polling", usage_polling_loop);
+    });
+}
+
+pub(crate) fn ensure_claude_usage_polling() {
+    CLAUDE_USAGE_POLLING_STARTED.get_or_init(|| {
+        spawn_background_loop("claude-usage-polling", claude_usage_polling_loop);
     });
 }
 
