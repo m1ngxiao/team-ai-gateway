@@ -188,3 +188,20 @@ test("GPT-6 Sol uses the official Codex Fast tier description", () => {
     description: "1.5x speed",
   }]);
 });
+
+for (const [slug, description] of [
+  ["gpt-6.1-sol", "2x speed, increased usage"],
+  ["gpt-6-luna", "1.5x speed"],
+]) {
+  test(`${slug} uses the Codex Fast tier description`, () => {
+    const info = managedModelV2ToModelInfo(model({
+      slug,
+      capabilities: { service_tiers: ["priority"] },
+    }));
+    assert.deepEqual(info.serviceTiers, [{
+      id: "priority",
+      name: "Fast",
+      description,
+    }]);
+  });
+}

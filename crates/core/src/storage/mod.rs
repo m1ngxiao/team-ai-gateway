@@ -2373,6 +2373,7 @@ impl Storage {
             "137_claude_subscription_usage",
             include_str!("../../migrations/137_claude_subscription_usage.sql"),
         )?;
+        self.apply_model_catalog_gpt6_new_models_migration()?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;

@@ -187,9 +187,13 @@ fn service_tier_display_name(id: &str) -> &str {
 
 fn service_tier_description(model_slug: &str, id: &str) -> &'static str {
     if id.eq_ignore_ascii_case("priority") {
-        if model_slug.eq_ignore_ascii_case("gpt-6-astra") {
+        if model_slug.eq_ignore_ascii_case("gpt-6-astra")
+            || model_slug.eq_ignore_ascii_case("gpt-6.1-sol")
+        {
             "2x speed, increased usage"
-        } else if model_slug.eq_ignore_ascii_case("gpt-6-sol") {
+        } else if model_slug.eq_ignore_ascii_case("gpt-6-sol")
+            || model_slug.eq_ignore_ascii_case("gpt-6-luna")
+        {
             "1.5x speed"
         } else if [
             "gpt-5.4",
@@ -547,6 +551,22 @@ mod tests {
 
         let info = model_info(&model);
         assert_eq!(info.service_tiers[0].description, "1.5x speed");
+    }
+
+    #[test]
+    fn new_gpt6_fast_service_tiers_match_live_codex_catalog() {
+        for (slug, description) in [
+            ("gpt-6.1-sol", "2x speed, increased usage"),
+            ("gpt-6-luna", "1.5x speed"),
+        ] {
+            let model = ManagedModelV2 {
+                slug: slug.to_string(),
+                capabilities: serde_json::json!({ "service_tiers": ["priority"] }),
+                ..Default::default()
+            };
+            let info = model_info(&model);
+            assert_eq!(info.service_tiers[0].description, description);
+        }
     }
 
     #[test]

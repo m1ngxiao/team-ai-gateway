@@ -122,7 +122,7 @@ def test_old_snapshot_remains_compatible(sample):
     assert parsed.model_catalog == [] and parsed.keys[0].quota_config_known is False
 
 
-@pytest.mark.parametrize("description", list(DESCRIPTION_ZH), ids=["astra", "gpt6-sol", "sol", "terra", "luna", "5.5", "5.4", "mini", "5.2", "image"])
+@pytest.mark.parametrize("description", list(DESCRIPTION_ZH), ids=["astra", "gpt61-sol", "gpt6-luna", "gpt6-sol", "sol", "terra", "luna", "5.5", "5.4", "mini", "5.2", "image"])
 def test_builtin_descriptions_are_translated_without_changing_model_ids(sample, description):
     with sqlite3.connect(sample["db"]) as db:
         db.execute("UPDATE models SET description=?", (description,))

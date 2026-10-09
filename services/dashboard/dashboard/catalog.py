@@ -4,7 +4,7 @@ import re
 
 from .account_details import positive_int
 
-PUBLIC_MODELS = frozenset({"claude-sonnet-5", "gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
+PUBLIC_MODELS = frozenset({"claude-sonnet-5", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
                           "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark",
                           "gpt-5.2", "gpt-5.2-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
                           "gpt-reserve", "codex-auto-review", "gpt-image-2"})
@@ -12,6 +12,8 @@ PUBLIC_MODELS = frozenset({"claude-sonnet-5", "gpt-6-astra", "gpt-6-sol", "gpt-5
 # Translate the known source copy, not arbitrary changed descriptions by slug.
 DESCRIPTION_ZH = {
     "Our most capable model for complex, demanding work.": "能力最强的模型，适合复杂、高要求的任务。",
+    "Latest workhorse model for coding and everyday work.": "适合复杂编程与日常工作的主力模型。",
+    "Fast and affordable model for easier tasks.": "适合较简单任务的快速、经济模型。",
     "Built to power complex coding and agentic workflows.": "适合复杂编程和智能体工作流。",
     "Latest frontier agentic coding model.": "最新前沿模型，适合自主编程。",
     "Balanced agentic coding model for everyday work.": "能力均衡的编程模型，适合日常工作。",

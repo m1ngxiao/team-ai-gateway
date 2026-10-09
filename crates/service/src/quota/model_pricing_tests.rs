@@ -19,7 +19,7 @@ fn prices() -> (Storage, Vec<CatalogModelPrice>) {
 #[test]
 fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     let (_storage, prices) = prices();
-    assert_eq!(prices.len(), 11);
+    assert_eq!(prices.len(), 13);
     let gpt6_sol =
         resolve_model_price_from_catalog(&prices, "gpt-6-sol", 0).expect("GPT-6 Sol");
     assert_close(gpt6_sol.input_price_per_1m, 2.0);
@@ -32,6 +32,27 @@ fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     assert_close(gpt6_sol_long.cached_input_price_per_1m, 0.4);
     assert_close(gpt6_sol_long.cache_write_price_per_1m, 5.0);
     assert_close(gpt6_sol_long.output_price_per_1m, 15.0);
+    for (slug, standard_rates, long_rates) in [
+        (
+            "gpt-6.1-sol",
+            (2.0, 0.10, 2.50, 10.0),
+            (4.0, 0.20, 5.0, 15.0),
+        ),
+        (
+            "gpt-6-luna",
+            (0.10, 0.01, 0.125, 0.50),
+            (0.20, 0.02, 0.25, 0.75),
+        ),
+    ] {
+        for (input_tokens, rates) in [(272_000, standard_rates), (272_001, long_rates)] {
+            let price = resolve_model_price_from_catalog(&prices, slug, input_tokens)
+                .unwrap_or_else(|| panic!("missing {slug} price at {input_tokens} tokens"));
+            assert_close(price.input_price_per_1m, rates.0);
+            assert_close(price.cached_input_price_per_1m, rates.1);
+            assert_close(price.cache_write_price_per_1m, rates.2);
+            assert_close(price.output_price_per_1m, rates.3);
+        }
+    }
     let astra = resolve_model_price_from_catalog(&prices, "gpt-6-astra", 0).expect("astra");
     assert_close(astra.input_price_per_1m, 10.0);
     assert_close(astra.cached_input_price_per_1m, 1.0);
