@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .models import Snapshot
 from .account_details import credits_details, email_from_label, positive_int, timestamp
-from .catalog import CATALOG_COLUMNS, PUBLIC_MODELS, collect_catalog, key_metadata, public_text
+from .catalog import CATALOG_COLUMNS, collect_catalog, key_metadata, public_text
 
 LOG = logging.getLogger("collector")
 TZ = timezone(timedelta(hours=8))
@@ -210,7 +210,7 @@ def quota_window(row, prefix=""):
             "resets_at": optional_timestamp(row[prefix + "resets_at"])}
 
 
-def aggregate(connection, start: int | None, end: int):
+def aggregate(connection, start: int | None, end: int, public_models=frozenset()):
     """Raw + disjoint archives; only recorded actual sources count toward a pool."""
     raw_filter = "t.created_at < ?" if start is None else "t.created_at >= ? AND t.created_at < ?"
     hourly_filter = "h.bucket_end <= ?" if start is None else "h.bucket_start >= ? AND h.bucket_end <= ?"
@@ -254,8 +254,8 @@ def aggregate(connection, start: int | None, end: int):
         item = {field: safe_number(row[field], floating=field == "estimated_usd") for field in FIELDS}
         merge(by_key.setdefault(row["key_id"], zero()), item)
         model = row["model"]
-        # Models are untrusted user input. Never echo an unapproved model string.
-        if model not in PUBLIC_MODELS:
+        # Request model strings are untrusted; only safe, listed local catalogue IDs are public.
+        if model not in public_models:
             model = "other"
         merge(by_model.setdefault(model, zero()), item)
         merge(total, item)
@@ -324,10 +324,11 @@ def collect(config, now=None):
                 raise
             raw_keys = connection.execute(key_sql.replace("k.upstream_provider", "'unknown'")).fetchall()
         catalog, unlisted = collect_catalog(connection)
+        public_models = frozenset(item["model"] for item in catalog)
         periods = {
-            "today": aggregate(connection, int(today.timestamp()), end),
-            "week": aggregate(connection, int((today - timedelta(days=6)).timestamp()), end),
-            "recorded": aggregate(connection, None, end),
+            "today": aggregate(connection, int(today.timestamp()), end, public_models),
+            "week": aggregate(connection, int((today - timedelta(days=6)).timestamp()), end, public_models),
+            "recorded": aggregate(connection, None, end, public_models),
         }
     accounts = []
     for row in raw_accounts:
@@ -392,7 +393,7 @@ def collect(config, now=None):
                      "group_name": group_identity(row["account_group_filter"], secret)[1],
                      "status": safe_status(row["status"]),
                      "last_used_at": optional_timestamp(row["last_used_at"]),
-                     "usage": {name: data[0].get(key_id, zero()) for name, data in periods.items()}, **key_metadata(row)})
+                     "usage": {name: data[0].get(key_id, zero()) for name, data in periods.items()}, **key_metadata(row, public_models)})
     models = sorted(periods["week"][1].items(), key=lambda pair: pair[1]["total_tokens"], reverse=True)
     # Keep the top 49 plus one explicit 'other' bucket rather than silently losing usage.
     if len(models) > 50:

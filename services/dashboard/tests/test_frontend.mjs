@@ -539,6 +539,25 @@ test("catalogue descriptions are text and unconfigured prices are not zero", () 
   assert.match(elements.get("catalog-rows").textContent, /价格未提供— \/ — \/ — \/ —/);
 });
 
+test("future catalog models render in directory, bindings and usage without invented prices", () => {
+  const { context, elements } = setup();
+  const data = structuredClone(fixture);
+  const model = { ...structuredClone(catalogFixture[0]), model: "vendor/next-model", name: "Vendor Next",
+    origin: "custom", price: { ...catalogFixture[0].price, cache_write_usd_per_million: null } };
+  data.model_catalog = [model];
+  data.models_week = [{ model: model.model, usage: usage(200) }];
+  Object.assign(data.keys[0], { model_binding: "fixed", bound_model: model.model });
+  vm.runInContext(`snapshot = ${JSON.stringify(data)}; renderCatalog(); renderUsage(); renderModels();`, context);
+  for (const id of ["catalog-rows", "keys", "models"]) assert.ok(elements.get(id).textContent.includes(model.model), id);
+  assert.match(elements.get("catalog-rows").textContent, /10 \/ 1 \/ — \/ 50/);
+  assert.match(elements.get("catalog-rows").textContent, /自定义/);
+  elements.get("catalog-search").value = "next-model";
+  elements.get("catalog-search").listeners.input();
+  assert.equal(elements.get("catalog-rows").children.length, 1);
+  const flatten = (element) => [element, ...element.children.flatMap(flatten)];
+  assert.equal(flatten(elements.get("catalog-rows")).filter((element) => ["button", "input"].includes(element.tag)).length, 0);
+});
+
 test("weekly-only Pro has no separate 5h card limit, but missing data is not unlimited", () => {
   const { context } = setup();
   const pro = structuredClone(fixture.accounts[0]);

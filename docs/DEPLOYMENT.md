@@ -1,6 +1,6 @@
 # Linux 部署
 
-仓库包含完整服务源码，构建不需要下载另一份上游仓库或应用补丁。推荐使用 Linux、Docker Engine 和 Docker Compose v2（支持 BuildKit）、Python 3.10+。以下命令面向普通的 rootful Docker；数据目录由容器 UID/GID `10001:10001` 持有。使用 rootless Docker 时需要自行适配 UID 映射，本模板不自动调整现有数据权限。
+仓库包含完整服务源码，构建不需要下载另一份上游仓库或应用补丁。推荐使用 Linux、Git、Docker Engine 和 Docker Compose v2（支持 BuildKit）、Python 3.10+。以下命令面向普通的 rootful Docker；数据目录由容器 UID/GID `10001:10001` 持有。使用 rootless Docker 时需要自行适配 UID 映射，本模板不自动调整现有数据权限。
 
 默认只启动 `gateway`，内含 Rust API 服务和嵌入式 Web 管理后台。`collector` 和 `dashboard` 是可选的 `dashboard` profile。所有宿主端口只监听 `127.0.0.1`；通过 SSH 转发访问后台，或另行配置 HTTPS 反向代理。
 
@@ -47,6 +47,7 @@ ssh -N -L 48761:127.0.0.1:48761 user@your-server
 | `TOKIO_WORKER_THREADS` / `RAYON_NUM_THREADS` | 底层运行时线程；默认各 4 |
 | `CARGO_BUILD_JOBS` | Rust 编译并发；默认 4，与运行时限制独立 |
 | `DYNAMIC_OVERLOAD_ENABLED` | 动态容量备用策略开关；模板显式启用 `true` |
+| `CODEX_LATEST_SYNC_INTERVAL_SECS` | 网关的 Codex 版本元数据检查周期，模板默认 86400 秒；新增模型由独立的每日模型同步任务验证并添加 |
 | `COLLECTOR_*` / `DASHBOARD_*` | 可选组件 CPU 与内存限制，完整名称见 env 模板 |
 | `SOURCE_REVISION` | 可选镜像来源标签；源码包可保留 `unknown` |
 
@@ -92,6 +93,8 @@ sudo bash scripts/server.sh --env-file deploy/.env --dashboard status
 看板访问 `http://127.0.0.1:48763`，远程可类似设置 SSH 转发。首次 snapshot 生成前看板可能暂时显示数据不可用。collector 没有网络，挂载源数据库为只读，只能写脱敏 snapshot；dashboard 只读该 snapshot，无法访问源数据库。
 
 ## 日常命令和启动检查
+
+美国节点自动选择与每日模型同步是独立的可选宿主工具，不由 Compose 自动安装。代理工具需要现有 Mihomo 实例、私有订阅和经过测量的美国出口清单，见 [代理维护](../deploy/proxy/MAINTENANCE.md)。模型同步需要已有管理员 RPC token、实际探测 Key 与宿主数据目录，首次验证后启用每日 systemd timer，见 [模型同步](../deploy/model-sync/README.md)。模型与节点的日常运行数据更新不要求重新构建镜像；宿主代理接入容器时仍须使用容器可访问的代理地址。
 
 ```bash
 sudo bash scripts/server.sh --env-file deploy/.env check

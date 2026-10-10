@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "verified_at_utc": "2026-01-01T00:00:00Z",
+  "evidence_file": "private/egress-evidence.json",
+  "verified_nodes": {
+    "us-a.example.invalid": {
+      "hostname": "us-a.example.invalid",
+      "server": "us-a.example.invalid",
+      "type": "vless",
+      "port": 443,
+      "country": "US",
+      "exit_ip": "192.0.2.10",
+      "city": "Example city",
+      "sources": ["Cloudflare trace", "IPinfo"]
+    }
+  }
+}

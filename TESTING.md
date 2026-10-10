@@ -36,12 +36,17 @@ node --test --test-concurrency=1 services/dashboard/tests/test_frontend.mjs
 
 ```bash
 .venv/bin/python -m pytest -q scripts/tests
+.venv/bin/python -m pip install -r scripts/proxy/requirements.txt
+.venv/bin/python -m unittest discover -s scripts/proxy/tests -v
+.venv/bin/python -m unittest discover -s scripts/model-sync -p 'test_*.py' -v
 bash -n scripts/server.sh
 docker compose --env-file deploy/.env.example \
   -f deploy/compose.yml --profile dashboard config --quiet
 ```
 
 部署测试验证回环监听、UID/GID、只读挂载、采集器禁网、明确的配置文件选择，以及初始化不覆盖数据、不跟随符号链接。Compose 命令只解析公共示例，不构建镜像、不启动容器。CI 还把解析结果交给 `scripts/deployment.py` 的 `validate_config`，核对实际模板与这些约束一致。
+
+代理测试使用合成节点和假 controller，覆盖国家与端点校验、订阅改名、选择保留、候选拒绝及应用失败回滚。模型同步测试模拟官方目录、价格、RPC 与 SSE，覆盖真实完成事件语义、工具往返、已有模型守旧、重试幂等、版本恢复和原子快照发布；不访问真实上游或消耗额度。systemd 模板渲染测试不安装或启用服务。
 
 发布扫描读取 Git index 中全部文件的 blob，包括已提交文件；它不使用尚未暂存的工作区内容替代扫描。准备提交时先检查差异，再暂存要发布的文件并执行：
 

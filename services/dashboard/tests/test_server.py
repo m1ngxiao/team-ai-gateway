@@ -144,7 +144,7 @@ def test_surrogate_and_non_ascii_csrf_are_rejected(web_files):
 def test_kdf_parallelism_is_bounded(web_files):
     import asyncio
     import threading
-    import httpx
+    import httpx2 as httpx
     app = create_app(web_files["auth"], web_files["snapshot"])
     active, maximum = 0, 0
     lock = threading.Lock()
@@ -241,7 +241,7 @@ def test_tunnel_http_redirects_only_to_configured_https_host(web_files, method, 
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def test_tunnel_http_non_read_methods_rejected_before_body_read(web_files, method):
     import asyncio
-    import httpx
+    import httpx2 as httpx
     c = tunnel_client(web_files)
     c.app.state.auth.verify = lambda *args: pytest.fail("HTTP must not verify credentials")
 
