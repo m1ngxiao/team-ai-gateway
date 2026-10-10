@@ -1,0 +1,10 @@
+{
+  "gateway_url": "http://127.0.0.1:48760",
+  "database": "gateway-data/codexmanager.db",
+  "rpc_token_file": "gateway-data/codexmanager.rpc-token",
+  "probe_key_file": "probe-key.json",
+  "official_cache_dir": "gateway-data/official-model-catalogs",
+  "state_dir": "model-sync-state",
+  "outbound_proxy": null,
+  "canary_model": "gpt-6.1-sol"
+}

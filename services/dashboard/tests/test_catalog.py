@@ -20,8 +20,8 @@ def test_catalog_uses_local_fields_and_correct_price_units(sample):
     assert sample["canary"] not in json.dumps(data)
 
 
-@pytest.mark.parametrize("cache,expected", [(None,10.0), (0,0.0), (1000000,1.0)])
-def test_cache_write_null_fallback_not_truthiness(sample, cache, expected):
+@pytest.mark.parametrize("cache,expected", [(None,None), (0,0.0), (1000000,1.0)])
+def test_missing_cache_write_price_stays_null_and_zero_stays_zero(sample, cache, expected):
     with sqlite3.connect(sample["db"]) as db:
         db.execute("UPDATE model_prices SET cache_write_microusd_per_1m=?", (cache,))
     assert collect(sample["config"], sample["now"])["model_catalog"][0]["price"]["cache_write_usd_per_million"] == expected
@@ -36,17 +36,17 @@ def test_missing_price_is_not_free_and_model_is_kept(sample, damage):
     assert item["price"]["input_usd_per_million"] is None
 
 
-def test_hidden_unapproved_and_route_counts_are_safe(sample):
+def test_hidden_invalid_slugs_and_route_counts_are_safe(sample):
     with sqlite3.connect(sample["db"]) as db:
         db.execute("INSERT INTO models VALUES('hidden','codex-auto-review','hidden','', 'builtin',1,'hide',1,'override',1,?)", (sample["canary"],))
-        db.execute("INSERT INTO models VALUES('unknown',?,?,?,'custom',1,'list',1,'override',2,?)", ("gpt-PRIVATE_TOKEN", sample["canary"], sample["canary"], sample["canary"]))
+        db.execute("INSERT INTO models VALUES('unknown',?,?,?,'custom',1,'list',1,'override',2,?)", ("invalid model id", sample["canary"], sample["canary"], sample["canary"]))
         db.execute("INSERT INTO model_routes VALUES('model-astra',0,'account_pool',?,?)", (sample["canary"],sample["canary"]))
         db.execute("INSERT INTO model_routes VALUES('model-astra',1,'aggregate_api',?,?)", (sample["canary"],sample["canary"]))
     data = collect(sample["config"], sample["now"])
     assert len(data["model_catalog"]) == 1 and data["catalog_unlisted_count"] == 1
     assert data["model_catalog"][0]["route_count"] == 2
     assert data["model_catalog"][0]["aggregate_api_routes"] == 1
-    assert sample["canary"] not in json.dumps(data) and "gpt-PRIVATE_TOKEN" not in json.dumps(data)
+    assert sample["canary"] not in json.dumps(data) and "invalid model id" not in json.dumps(data)
 
 
 def test_disabled_model_stays_disabled_and_catalog_does_not_invent_routes(sample):
@@ -122,7 +122,7 @@ def test_old_snapshot_remains_compatible(sample):
     assert parsed.model_catalog == [] and parsed.keys[0].quota_config_known is False
 
 
-@pytest.mark.parametrize("description", list(DESCRIPTION_ZH), ids=["astra", "gpt6-sol", "sol", "terra", "luna", "5.5", "5.4", "mini", "5.2", "image"])
+@pytest.mark.parametrize("description", list(DESCRIPTION_ZH), ids=["astra", "gpt61-sol", "gpt6-luna", "gpt6-sol", "sol", "terra", "luna", "5.5", "5.4", "mini", "5.2", "image"])
 def test_builtin_descriptions_are_translated_without_changing_model_ids(sample, description):
     with sqlite3.connect(sample["db"]) as db:
         db.execute("UPDATE models SET description=?", (description,))

@@ -5,6 +5,7 @@ use super::{
     respond_when_account_candidates_empty, should_fallback_to_account_after_aggregate_exhaustion,
     should_fallback_to_aggregate_after_account_exhaustion,
     should_try_provider_executor_aggregate_route, validate_model_route,
+    validate_model_route_for_provider,
 };
 use crate::gateway::upstream::executor::{
     GatewayUpstreamExecutionPlan, GatewayUpstreamExecutorKind, GatewayUpstreamRouteKind,
@@ -735,6 +736,35 @@ fn account_route_model_validation_ignores_aggregate_only_mapping() {
 
     assert_eq!(err.0, 503);
     assert!(err.1.contains("model_unavailable"));
+}
+
+#[test]
+fn newest_gpt6_models_route_only_to_openai_account_pool() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    for slug in ["gpt-6.1-sol", "gpt-6-luna"] {
+        let model = validate_model_route(
+            &storage,
+            "key-route",
+            Some(slug),
+            execution_plan(GatewayUpstreamRouteKind::AccountRotation),
+        )
+        .unwrap_or_else(|err| panic!("{slug} should have an OpenAI account route: {err:?}"))
+        .expect("configured model");
+        assert!(has_enabled_default_account_pool_route(&model));
+        assert_eq!(model.routes.len(), 1);
+        assert_eq!(model.routes[0].upstream_model, slug);
+        let err = validate_model_route_for_provider(
+            &storage,
+            "key-route",
+            Some(slug),
+            execution_plan(GatewayUpstreamRouteKind::AccountRotation),
+            UpstreamProvider::Claude,
+        )
+        .expect_err("OpenAI models must not enter the Claude account pool");
+        assert_eq!(err.0, 503);
+        assert!(err.1.contains("model_unavailable"));
+    }
 }
 
 #[test]

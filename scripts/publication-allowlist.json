@@ -600,6 +600,12 @@
       "category": "credential-url",
       "sha256": "093866188144b0216fb125431572e8ac2df8980dfeeb6ebeb3d9f3987d1e4c1d",
       "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
+    },
+    {
+      "path": "scripts/model-sync/test_gateway_contract.py",
+      "category": "credential-url",
+      "sha256": "ec25b8fa54a9d7a878a86e6f38233af24d5d27d184b396136d6d7f0251d33c19",
+      "reason": "Synthetic invalid user:secret URL at example.invalid verifies configuration rejects embedded credentials without exposing values."
     }
   ]
 }

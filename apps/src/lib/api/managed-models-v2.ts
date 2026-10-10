@@ -146,10 +146,10 @@ function serviceTierName(id: string): string {
 function serviceTierDescription(modelSlug: string, id: string): string {
   if (id.toLowerCase() === "priority") {
     const normalizedSlug = modelSlug.toLowerCase();
-    if (normalizedSlug === "gpt-6-astra") {
+    if (normalizedSlug === "gpt-6-astra" || normalizedSlug === "gpt-6.1-sol") {
       return "2x speed, increased usage";
     }
-    if (normalizedSlug === "gpt-6-sol") {
+    if (normalizedSlug === "gpt-6-sol" || normalizedSlug === "gpt-6-luna") {
       return "1.5x speed";
     }
     if (

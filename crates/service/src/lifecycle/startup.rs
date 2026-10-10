@@ -74,6 +74,7 @@ pub fn start_server(addr: &str) -> std::io::Result<()> {
     crate::sync_runtime_settings_from_storage();
     crate::app_settings::ensure_codex_latest_version_sync();
     crate::usage_refresh::ensure_usage_polling();
+    crate::usage_refresh::ensure_claude_usage_polling();
     crate::usage_refresh::ensure_gateway_keepalive();
     crate::usage_refresh::ensure_token_refresh_polling();
     crate::usage_refresh::ensure_warmup_cron();

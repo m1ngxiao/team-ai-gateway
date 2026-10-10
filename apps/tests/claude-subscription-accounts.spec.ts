@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 
 test("Claude subscription login, activation, and removal stay in the separate account pool", async ({ page }) => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const nowSeconds = Math.floor(Date.now() / 1000);
   let account: Record<string, unknown> | null = null;
+  let usageRefreshCount = 0;
   await page.route("**/api/runtime**", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -61,6 +63,30 @@ test("Claude subscription login, activation, and removal stay in the separate ac
         account = account ? { ...account, status: params.status } : null;
         result = { ok: true };
         break;
+      case "claudeAccount/usageRefresh": {
+        usageRefreshCount += 1;
+        const usage = usageRefreshCount <= 2
+          ? {
+              fiveHour: { usedPercent: 42.5, resetsAt: nowSeconds + 3_600 },
+              sevenDay: { usedPercent: 31, resetsAt: nowSeconds + 300_000 },
+              capturedAt: nowSeconds, lastAttemptAt: nowSeconds,
+              nextAttemptAt: nowSeconds + 300, lastError: null,
+            }
+          : usageRefreshCount === 3 ? {
+              fiveHour: { usedPercent: 42.5, resetsAt: nowSeconds + 3_600 },
+              sevenDay: { usedPercent: 31, resetsAt: nowSeconds + 300_000 },
+              capturedAt: nowSeconds - 3_601, lastAttemptAt: nowSeconds,
+              nextAttemptAt: nowSeconds + 300, lastError: "Claude usage temporarily unavailable",
+            } : {
+              fiveHour: { usedPercent: 42.5, resetsAt: nowSeconds - 1 },
+              sevenDay: { usedPercent: 31, resetsAt: nowSeconds + 300_000 },
+              capturedAt: nowSeconds, lastAttemptAt: nowSeconds,
+              nextAttemptAt: nowSeconds + 300, lastError: null,
+            };
+        account = account ? { ...account, usage } : null;
+        result = usage;
+        break;
+      }
       case "claudeAccount/delete":
         account = null;
         result = { ok: true };
@@ -90,6 +116,9 @@ test("Claude subscription login, activation, and removal stay in the separate ac
   await expect(page.getByText("Max", { exact: true })).toBeVisible();
   await expect(page.getByText("claude_max_5x", { exact: true })).toHaveCount(0);
   await expect(page.getByText("已停用", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("暂无额度数据", { exact: true })).toBeVisible();
+  await expect(page.getByText("5 小时已用:")).toBeVisible();
+  await expect(page.getByRole("button", { name: "刷新 Claude 额度 claude@example.com" })).toBeDisabled();
   expect(calls.find((call) => call.method === "claudeAccount/loginComplete")?.params).toMatchObject({
     loginId: "test-state", code: "test-code#test-state",
   });
@@ -100,6 +129,36 @@ test("Claude subscription login, activation, and removal stay in the separate ac
   expect(calls.find((call) => call.method === "claudeAccount/updateStatus")?.params).toMatchObject({
     accountId: "claude:test", status: "active",
   });
+
+  await page.getByRole("button", { name: "刷新 Claude 额度 claude@example.com" }).click();
+  await expect(page.getByText("42.5%", { exact: true })).toBeVisible();
+  await expect(page.getByText("31%", { exact: true })).toBeVisible();
+  await expect(page.getByText("已更新", { exact: true })).toBeVisible();
+  await expect(page.getByText(/最近观测于/)).toBeVisible();
+  await expect(page.getByText(/上次查询/)).toBeVisible();
+  await expect(page.getByText(/下次尝试/)).toBeVisible();
+  expect(calls.find((call) => call.method === "claudeAccount/usageRefresh")?.params).toMatchObject({
+    accountId: "claude:test",
+  });
+
+  await page.getByRole("button", { name: "刷新 Claude 额度 claude@example.com" }).click();
+  await expect(page.getByText("已是最新额度数据", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "刷新 Claude 额度 claude@example.com" }).click();
+  await expect(page.getByText("查询失败", { exact: true })).toBeVisible();
+  await expect(page.getByText("数据过期", { exact: true })).toBeVisible();
+  await expect(page.getByRole("main").getByText("Claude usage temporarily unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText("42.5%", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("31%", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("5 小时已用:").locator("strong")).toHaveText("—");
+  await expect(page.getByText("7 天已用:").locator("strong")).toHaveText("—");
+  await expect(page.getByText(/最近观测于/)).toBeVisible();
+
+  await page.getByRole("button", { name: "刷新 Claude 额度 claude@example.com" }).click();
+  await expect(page.getByText("42.5%", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("31%", { exact: true })).toBeVisible();
+  await expect(page.getByText("5 小时已用:").locator("strong")).toHaveText("—");
+  await expect(page.getByText("数据过期", { exact: true })).toBeVisible();
+  await expect(page.getByText(/最近观测于/)).toBeVisible();
 
   await page.getByRole("button", { name: "删除 Claude 账号 claude@example.com" }).click();
   const confirm = page.getByRole("dialog", { name: "删除 Claude 账号" });

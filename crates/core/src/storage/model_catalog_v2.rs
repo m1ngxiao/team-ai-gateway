@@ -17,6 +17,8 @@ const GPT6_ASTRA_MIGRATION_VERSION: &str = "131_model_catalog_gpt6_astra";
 const GPT6_ASTRA_MIGRATION_REVISION: i64 = 8;
 const GPT6_SOL_MIGRATION_VERSION: &str = "134_model_catalog_gpt6_sol";
 const GPT6_SOL_MIGRATION_REVISION: i64 = 9;
+const GPT6_NEW_MODELS_MIGRATION_VERSION: &str = "138_model_catalog_gpt61_sol_gpt6_luna";
+const GPT6_NEW_MODELS_MIGRATION_REVISION: i64 = 10;
 const GPT56_METADATA_FIX_MIGRATION_VERSION: &str = "132_model_catalog_gpt56_metadata_fix";
 const GPT56_METADATA_FIX_CONTEXT_WINDOW: i64 = 272_000;
 const GPT56_METADATA_FIX_MAX_CONTEXT_WINDOW: i64 = 872_000;
@@ -25,12 +27,16 @@ const GPT6_ASTRA_SLUG: &str = "gpt-6-astra";
 const GPT6_ASTRA_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6-astra";
 const GPT6_SOL_SLUG: &str = "gpt-6-sol";
 const GPT6_SOL_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6-sol";
+const GPT61_SOL_SLUG: &str = "gpt-6.1-sol";
+const GPT61_SOL_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6.1-sol";
+const GPT6_LUNA_SLUG: &str = "gpt-6-luna";
+const GPT6_LUNA_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6-luna";
 #[cfg(test)]
 const GPT_IMAGE_2_PRICE_SOURCE: &str =
     "https://developers.openai.com/api/docs/pricing#image-generation";
 const DEFAULT_MODEL_GROUP_ID: &str = "mg_default";
 const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] =
-    &["gpt-image-2", GPT6_ASTRA_SLUG, GPT6_SOL_SLUG];
+    &["gpt-image-2", GPT6_ASTRA_SLUG, GPT6_SOL_SLUG, GPT61_SOL_SLUG, GPT6_LUNA_SLUG];
 
 #[derive(Debug, Clone, Deserialize)]
 struct BuiltinCatalogFixture {
@@ -257,6 +263,40 @@ fn gpt6_sol_migration_fixture() -> BuiltinCatalogFixture {
     let sol = &fixture.models[0];
     assert!(sol.slug.eq_ignore_ascii_case(GPT6_SOL_SLUG));
     assert_eq!(sol.price_source.as_deref(), Some(GPT6_SOL_PRICE_SOURCE));
+    fixture
+}
+
+fn gpt6_new_models_migration_fixture() -> BuiltinCatalogFixture {
+    let fixture: BuiltinCatalogFixture = serde_json::from_str(include_str!(
+        "../../seeds/model_catalog_gpt61_sol_gpt6_luna_v10.json"
+    ))
+    .expect("GPT-6.1 Sol and GPT-6 Luna migration fixture must be valid");
+    assert_eq!(
+        fixture.revision, GPT6_NEW_MODELS_MIGRATION_REVISION,
+        "GPT-6.1 Sol and GPT-6 Luna migration fixture revision must remain frozen"
+    );
+    assert_eq!(fixture.models.len(), 2);
+    assert_eq!(
+        fixture
+            .models
+            .iter()
+            .map(|model| model.slug.to_ascii_lowercase())
+            .collect::<HashSet<_>>()
+            .len(),
+        2,
+        "new GPT-6 model slugs must be unique"
+    );
+    for (slug, price_source) in [
+        (GPT61_SOL_SLUG, GPT61_SOL_PRICE_SOURCE),
+        (GPT6_LUNA_SLUG, GPT6_LUNA_PRICE_SOURCE),
+    ] {
+        let model = fixture
+            .models
+            .iter()
+            .find(|model| model.slug.eq_ignore_ascii_case(slug))
+            .expect("new GPT-6 model must appear exactly once in the fixture");
+        assert_eq!(model.price_source.as_deref(), Some(price_source));
+    }
     fixture
 }
 
@@ -1966,6 +2006,118 @@ impl Storage {
         Ok(())
     }
 
+    pub(super) fn apply_model_catalog_gpt6_new_models_migration(&self) -> Result<()> {
+        if self.has_migration(GPT6_NEW_MODELS_MIGRATION_VERSION)? {
+            return Ok(());
+        }
+
+        let fixture = gpt6_new_models_migration_fixture();
+        let tx = self.conn.unchecked_transaction()?;
+        let now = now_ts();
+        let stored_catalog_revision = tx
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM model_catalog_v2_meta
+                 WHERE key='builtin_revision'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        let max_unedited_builtin_revision = tx.query_row(
+            "SELECT COALESCE(MAX(builtin_revision),0) FROM models
+             WHERE origin='builtin' AND user_edited=0",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let effective_catalog_revision = stored_catalog_revision.max(max_unedited_builtin_revision);
+
+        for seed in &fixture.models {
+            let state = tx
+                .query_row(
+                    "SELECT origin,user_edited,builtin_revision
+                     FROM models WHERE slug=?1 COLLATE NOCASE",
+                    [seed.slug.as_str()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, bool>(1)?,
+                            row.get::<_, Option<i64>>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            match state.as_ref() {
+                None if effective_catalog_revision <= fixture.revision => {
+                    insert_seed(&self.conn, &fixture, seed, now)?;
+                }
+                Some((origin, user_edited, revision))
+                    if origin == "builtin"
+                        && !user_edited
+                        && revision.unwrap_or_default() <= fixture.revision =>
+                {
+                    replace_unedited_builtin_seed(&self.conn, fixture.revision, seed, now)?;
+                }
+                _ => {}
+            }
+        }
+
+        if effective_catalog_revision <= fixture.revision {
+            tx.execute(
+                "INSERT INTO model_catalog_v2_meta(key,value) VALUES('builtin_revision',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [fixture.revision.to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO model_catalog_v2_meta(key,value) VALUES('fixture_sha256',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [fixture.source_sha256.as_str()],
+            )?;
+        } else if stored_catalog_revision < effective_catalog_revision {
+            tx.execute(
+                "INSERT INTO model_catalog_v2_meta(key,value) VALUES('builtin_revision',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [effective_catalog_revision.to_string()],
+            )?;
+        }
+        tx.execute_batch(include_str!(
+            "../../migrations/138_model_catalog_gpt61_sol_gpt6_luna.sql"
+        ))?;
+
+        for seed in &fixture.models {
+            let migrated = get_managed_model_v2_with_conn(&self.conn, &seed.slug)?;
+            match migrated.as_ref() {
+                Some(model) if model.origin == "builtin" && !model.user_edited => {
+                    let revision = model.builtin_revision.unwrap_or_default();
+                    if revision < fixture.revision
+                        || (revision == fixture.revision
+                            && !seeded_builtin_matches(model, fixture.revision, seed))
+                    {
+                        return Err(rusqlite::Error::SqliteFailure(
+                            (),
+                            Some(format!("{} catalog migration smoke check failed", seed.slug)),
+                        ));
+                    }
+                }
+                None if effective_catalog_revision <= fixture.revision => {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                }
+                _ => {}
+            }
+        }
+        if effective_catalog_revision <= fixture.revision {
+            migration_smoke_for_fixture(&self.conn, &fixture)?;
+        }
+        tx.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+            params![GPT6_NEW_MODELS_MIGRATION_VERSION, now],
+        )?;
+        tx.commit()?;
+        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+            migrations.insert(GPT6_NEW_MODELS_MIGRATION_VERSION.to_string());
+        }
+        Ok(())
+    }
+
     pub(super) fn apply_model_catalog_gpt56_metadata_fix_migration(&self) -> Result<()> {
         self.apply_sql_migration(
             GPT56_METADATA_FIX_MIGRATION_VERSION,
@@ -2604,12 +2756,32 @@ mod tests {
     }
 
     #[test]
+    fn gpt6_new_models_fixture_is_frozen_and_omits_prompt_fields() {
+        let raw = include_str!("../../seeds/model_catalog_gpt61_sol_gpt6_luna_v10.json");
+        let value: Value = serde_json::from_str(raw).expect("parse new GPT-6 fixture");
+        assert_eq!(value["revision"], GPT6_NEW_MODELS_MIGRATION_REVISION);
+        assert_eq!(value["models"].as_array().map(Vec::len), Some(2));
+        assert!(!raw.contains("base_instructions"));
+        assert!(!raw.contains("instructions_template"));
+        assert!(!raw.contains("instructions_text"));
+        let digest = Sha256::digest(serde_json::to_vec(&value["models"]).expect("serialize models"));
+        let computed = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(value["source_sha256"], computed);
+        let fixture = gpt6_new_models_migration_fixture();
+        assert_eq!(fixture.models[0].slug, GPT61_SOL_SLUG);
+        assert_eq!(fixture.models[1].slug, GPT6_LUNA_SLUG);
+    }
+
+    #[test]
     fn fresh_catalog_seeds_prices_routes_and_hidden_model() {
         let storage = storage();
         let all = storage.list_managed_models_v2(true).expect("list all");
         let visible = storage.list_api_models_v2().expect("list visible");
-        assert_eq!(all.len(), 11);
-        assert_eq!(visible.len(), 10);
+        assert_eq!(all.len(), 13);
+        assert_eq!(visible.len(), 12);
         assert_eq!(
             all.iter()
                 .filter(|model| model.price.price_status == "missing")
@@ -2804,6 +2976,60 @@ mod tests {
         assert_eq!(gpt6_sol.routes.len(), 1);
         assert_eq!(gpt6_sol.routes[0].source_kind, "account_pool");
         assert_eq!(gpt6_sol.routes[0].upstream_model, GPT6_SOL_SLUG);
+        for (slug, reasoning, default_effort, price_source, base, long) in [
+            (
+                GPT61_SOL_SLUG,
+                serde_json::json!(["low", "medium", "high", "xhigh", "max"]),
+                "low",
+                GPT61_SOL_PRICE_SOURCE,
+                (2_000_000, 100_000, 2_500_000, 10_000_000),
+                (4_000_000, 200_000, 5_000_000, 15_000_000),
+            ),
+            (
+                GPT6_LUNA_SLUG,
+                serde_json::json!(["low", "medium", "high", "xhigh", "max"]),
+                "medium",
+                GPT6_LUNA_PRICE_SOURCE,
+                (100_000, 10_000, 125_000, 500_000),
+                (200_000, 20_000, 250_000, 750_000),
+            ),
+        ] {
+            let model = all.iter().find(|model| model.slug == slug).unwrap();
+            assert_eq!(model.builtin_revision, Some(10));
+            assert_eq!(model.default_reasoning_effort.as_deref(), Some(default_effort));
+            assert_eq!(model.capabilities["reasoning_efforts"], reasoning);
+            assert_eq!(model.capabilities["service_tiers"], serde_json::json!(["priority"]));
+            assert_eq!(model.context_window, Some(272_000));
+            assert_eq!(model.max_context_window, Some(872_000));
+            assert_eq!(model.capabilities["api_context_window"], 1_050_000);
+            assert_eq!(model.capabilities["max_output_tokens"], 128_000);
+            assert_eq!(model.price.price_source.as_deref(), Some(price_source));
+            assert_eq!(model.price.price_status, "official");
+            assert_eq!(
+                (
+                    model.price.input_microusd_per_1m.unwrap(),
+                    model.price.cached_input_microusd_per_1m.unwrap(),
+                    model.price.cache_write_microusd_per_1m.unwrap(),
+                    model.price.output_microusd_per_1m.unwrap(),
+                ),
+                base
+            );
+            assert_eq!(model.price_tiers.len(), 2);
+            assert_eq!(model.price_tiers[1].min_input_tokens, 272_001);
+            assert_eq!(
+                (
+                    model.price_tiers[1].input_microusd_per_1m,
+                    model.price_tiers[1].cached_input_microusd_per_1m,
+                    model.price_tiers[1].cache_write_microusd_per_1m.unwrap(),
+                    model.price_tiers[1].output_microusd_per_1m,
+                ),
+                long
+            );
+            assert_eq!(model.routes.len(), 1);
+            assert_eq!(model.routes[0].source_kind, "account_pool");
+            assert_eq!(model.routes[0].source_id, "default");
+            assert_eq!(model.routes[0].upstream_model, slug);
+        }
         let image = all
             .iter()
             .find(|model| model.slug == "gpt-image-2")
@@ -2841,6 +3067,10 @@ mod tests {
     #[test]
     fn gpt6_sol_migration_seeds_upgraded_database_and_is_idempotent() {
         let storage = storage();
+        // Recreate a revision-eight database before replaying the historical migration.
+        for slug in [GPT61_SOL_SLUG, GPT6_LUNA_SLUG] {
+            storage.conn.execute("DELETE FROM models WHERE slug=?1", [slug]).unwrap();
+        }
         storage
             .conn
             .execute("DELETE FROM models WHERE slug=?1", [GPT6_SOL_SLUG])
@@ -2903,6 +3133,98 @@ mod tests {
             )
             .unwrap();
         assert_eq!(marker_count, 1);
+    }
+
+    #[test]
+    fn gpt6_new_models_migration_seeds_upgrades_and_is_idempotent() {
+        let storage = storage();
+        let old_sol_id = storage.get_managed_model_v2(GPT6_SOL_SLUG).unwrap().unwrap().id;
+        for slug in [GPT61_SOL_SLUG, GPT6_LUNA_SLUG] {
+            storage.conn.execute("DELETE FROM models WHERE slug=?1", [slug]).unwrap();
+        }
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT6_NEW_MODELS_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE model_catalog_v2_meta SET value='9' WHERE key='builtin_revision'",
+                [],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+
+        storage.apply_model_catalog_gpt6_new_models_migration().unwrap();
+        let models = [GPT61_SOL_SLUG, GPT6_LUNA_SLUG].map(|slug| {
+            storage.get_managed_model_v2(slug).unwrap().unwrap()
+        });
+        let fixture = gpt6_new_models_migration_fixture();
+        for (model, seed) in models.iter().zip(&fixture.models) {
+            assert!(seeded_builtin_matches(model, fixture.revision, seed));
+        }
+        storage.apply_model_catalog_gpt6_new_models_migration().unwrap();
+        for (slug, first) in [GPT61_SOL_SLUG, GPT6_LUNA_SLUG].into_iter().zip(models) {
+            let replayed = storage.get_managed_model_v2(slug).unwrap().unwrap();
+            assert_eq!(replayed.id, first.id);
+            assert_eq!(replayed.updated_at, first.updated_at);
+        }
+        assert_eq!(
+            storage.get_managed_model_v2(GPT6_SOL_SLUG).unwrap().unwrap().id,
+            old_sol_id
+        );
+        let revision: String = storage
+            .conn
+            .query_row(
+                "SELECT value FROM model_catalog_v2_meta WHERE key='builtin_revision'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(revision, "10");
+    }
+
+    #[test]
+    fn gpt6_new_models_migration_preserves_custom_and_edited_models() {
+        let storage = storage();
+        storage
+            .conn
+            .execute("DELETE FROM models WHERE slug=?1", [GPT61_SOL_SLUG])
+            .unwrap();
+        let mut candidate = custom_creation_candidate("GpT-6.1-SoL");
+        candidate.model.display_name = "My Sol Route".to_string();
+        candidate.model.routes.push(account_route_ensure(GPT61_SOL_SLUG, "private-upstream").route);
+        let custom = storage.upsert_managed_model_v2(&candidate).unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE models SET display_name='My Luna',user_edited=1,updated_at=77 WHERE slug=?1",
+                [GPT6_LUNA_SLUG],
+            )
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT6_NEW_MODELS_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+
+        storage.apply_model_catalog_gpt6_new_models_migration().unwrap();
+        let preserved_custom = storage.get_managed_model_v2(GPT61_SOL_SLUG).unwrap().unwrap();
+        assert_eq!(preserved_custom.id, custom.id);
+        assert_eq!(preserved_custom.origin, "custom");
+        assert_eq!(preserved_custom.display_name, "My Sol Route");
+        assert_eq!(preserved_custom.price.price_status, "missing");
+        assert_eq!(preserved_custom.routes[0].upstream_model, "private-upstream");
+        let preserved_luna = storage.get_managed_model_v2(GPT6_LUNA_SLUG).unwrap().unwrap();
+        assert_eq!(preserved_luna.display_name, "My Luna");
+        assert!(preserved_luna.user_edited);
+        assert_eq!(preserved_luna.updated_at, 77);
     }
 
     #[test]
@@ -3821,7 +4143,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(revision, "9");
+        assert_eq!(revision, "10");
         let source_sha256: String = storage
             .conn
             .query_row(
@@ -3870,8 +4192,14 @@ mod tests {
         storage
             .conn
             .execute(
-                "DELETE FROM models WHERE slug IN (?1,?2,?3)",
-                params![GPT6_ASTRA_SLUG, "gpt-5.6-sol", GPT6_SOL_SLUG],
+                "DELETE FROM models WHERE slug IN (?1,?2,?3,?4,?5)",
+                params![
+                    GPT6_ASTRA_SLUG,
+                    "gpt-5.6-sol",
+                    GPT6_SOL_SLUG,
+                    GPT61_SOL_SLUG,
+                    GPT6_LUNA_SLUG
+                ],
             )
             .unwrap();
 

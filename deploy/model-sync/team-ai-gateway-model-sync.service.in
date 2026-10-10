@@ -1,0 +1,21 @@
+[Unit]
+Description=Update verified Team AI Gateway models from stable Codex releases
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+ExecStart=@PYTHON@ @SCRIPT@ --config @CONFIG@ --apply
+TimeoutStartSec=20min
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=@WRITABLE_PATHS@

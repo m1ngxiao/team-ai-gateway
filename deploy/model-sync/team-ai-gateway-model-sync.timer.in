@@ -1,0 +1,12 @@
+[Unit]
+Description=Check stable Codex model support once per day
+
+[Timer]
+OnCalendar=@CALENDAR@
+RandomizedDelaySec=5min
+AccuracySec=1min
+Persistent=true
+Unit=team-ai-gateway-model-sync.service
+
+[Install]
+WantedBy=timers.target

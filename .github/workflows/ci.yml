@@ -95,6 +95,12 @@ jobs:
         run: python -m pip install -r services/dashboard/requirements-dev.txt
       - name: Test deployment safeguards and publication scanner
         run: python -m pytest -q scripts/tests
+      - name: Install proxy maintenance dependency
+        run: python -m pip install -r scripts/proxy/requirements.txt
+      - name: Test proxy maintenance without real subscriptions
+        run: python -m unittest discover -s scripts/proxy/tests -v
+      - name: Test daily model synchronization without real keys
+        run: python -m unittest discover -s scripts/model-sync -p 'test_*.py' -v
       - name: Validate Compose examples without starting services
         run: |
           docker compose version

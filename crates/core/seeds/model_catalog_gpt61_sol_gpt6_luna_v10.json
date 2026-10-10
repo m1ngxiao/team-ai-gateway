@@ -1,0 +1,124 @@
+{
+  "revision": 10,
+  "source_sha256": "5787761eef88bd628ddfd57e7560024e33238fe309761c897d50b6bbf506bea2",
+  "models": [
+    {
+      "slug": "gpt-6.1-sol",
+      "display_name": "GPT-6.1-Sol",
+      "description": "Latest workhorse model for coding and everyday work.",
+      "visibility": "list",
+      "priority": 1,
+      "default_reasoning_effort": "low",
+      "context_window": 272000,
+      "max_context_window": 872000,
+      "capabilities": {
+        "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "service_tiers": ["priority"],
+        "additional_speed_tiers": ["fast"],
+        "input_modalities": ["text", "image"],
+        "supported_endpoints": ["/v1/responses", "/v1/chat/completions"],
+        "api_context_window": 1050000,
+        "max_output_tokens": 128000,
+        "prefer_websockets": true,
+        "supports_parallel_tool_calls": true,
+        "supports_reasoning_summaries": true,
+        "default_reasoning_summary": "none",
+        "supports_verbosity": true,
+        "default_verbosity": "low",
+        "supports_image_detail_original": true,
+        "supports_search_tool": true,
+        "apply_patch_tool_type": "freeform",
+        "web_search_tool_type": "text_and_image",
+        "shell_type": "shell_command",
+        "truncation_mode": "tokens",
+        "truncation_limit": 10000,
+        "experimental_supported_tools": [],
+        "minimal_client_version": "0.153.0",
+        "default_service_tier": null,
+        "auto_compact_token_limit": null,
+        "comp_hash": "3000",
+        "tool_mode": "code_mode_only",
+        "multi_agent_version": "v2",
+        "use_responses_lite": true,
+        "include_skills_usage_instructions": false
+      },
+      "price_status": "official",
+      "price_source": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+      "price_tiers": [
+        {
+          "min_input_tokens": 0,
+          "input_microusd_per_1m": 2000000,
+          "cached_input_microusd_per_1m": 100000,
+          "cache_write_microusd_per_1m": 2500000,
+          "output_microusd_per_1m": 10000000
+        },
+        {
+          "min_input_tokens": 272001,
+          "input_microusd_per_1m": 4000000,
+          "cached_input_microusd_per_1m": 200000,
+          "cache_write_microusd_per_1m": 5000000,
+          "output_microusd_per_1m": 15000000
+        }
+      ]
+    },
+    {
+      "slug": "gpt-6-luna",
+      "display_name": "GPT-6-Luna",
+      "description": "Fast and affordable model for easier tasks.",
+      "visibility": "list",
+      "priority": 4,
+      "default_reasoning_effort": "medium",
+      "context_window": 272000,
+      "max_context_window": 872000,
+      "capabilities": {
+        "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+        "service_tiers": ["priority"],
+        "additional_speed_tiers": ["fast"],
+        "input_modalities": ["text", "image"],
+        "supported_endpoints": ["/v1/responses", "/v1/chat/completions"],
+        "api_context_window": 1050000,
+        "max_output_tokens": 128000,
+        "prefer_websockets": true,
+        "supports_parallel_tool_calls": true,
+        "supports_reasoning_summaries": true,
+        "default_reasoning_summary": "none",
+        "supports_verbosity": true,
+        "default_verbosity": "low",
+        "supports_image_detail_original": true,
+        "supports_search_tool": true,
+        "apply_patch_tool_type": "freeform",
+        "web_search_tool_type": "text_and_image",
+        "shell_type": "shell_command",
+        "truncation_mode": "tokens",
+        "truncation_limit": 10000,
+        "experimental_supported_tools": [],
+        "minimal_client_version": "0.155.0",
+        "default_service_tier": null,
+        "auto_compact_token_limit": null,
+        "comp_hash": "3000",
+        "tool_mode": "code_mode_only",
+        "multi_agent_version": "v2",
+        "use_responses_lite": true,
+        "include_skills_usage_instructions": false
+      },
+      "price_status": "official",
+      "price_source": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "price_tiers": [
+        {
+          "min_input_tokens": 0,
+          "input_microusd_per_1m": 100000,
+          "cached_input_microusd_per_1m": 10000,
+          "cache_write_microusd_per_1m": 125000,
+          "output_microusd_per_1m": 500000
+        },
+        {
+          "min_input_tokens": 272001,
+          "input_microusd_per_1m": 200000,
+          "cached_input_microusd_per_1m": 20000,
+          "cache_write_microusd_per_1m": 250000,
+          "output_microusd_per_1m": 750000
+        }
+      ]
+    }
+  ]
+}

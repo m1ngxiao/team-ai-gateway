@@ -1,0 +1,23 @@
+[Unit]
+Description=Private Mihomo proxy instance
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Render these placeholders when installing a separate unit for each instance.
+WorkingDirectory=@PROXY_DIRECTORY@
+ExecStart=@MIHOMO_BINARY@ -d @PROXY_DIRECTORY@ -f @CONFIG_FILE@
+Restart=on-failure
+RestartSec=5
+UMask=0077
+LimitNOFILE=65536
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=@PROXY_DIRECTORY@
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

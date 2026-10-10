@@ -157,6 +157,8 @@ export const EN_MODELS_MESSAGES: MessageCatalog = {
     "Batch assignment completed: {success} succeeded, {failed} failed",
   批量分配路由失败: "Batch route assignment failed",
   模型不存在: "Model does not exist",
+  "适合复杂编程与日常工作的主力模型。": "Latest workhorse model for coding and everyday work.",
+  "适合较简单任务的快速、经济模型。": "Fast and affordable model for easier tasks.",
   "最新的前沿智能体编程模型。": "Latest frontier agentic coding model.",
   "适合日常工作的均衡型智能体编程模型。":
     "Balanced agentic coding model for everyday work.",

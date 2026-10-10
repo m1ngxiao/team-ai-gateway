@@ -15,6 +15,7 @@ pnpm -C apps install --frozen-lockfile
 rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r services/dashboard/requirements-dev.txt
+.venv/bin/python -m pip install -r scripts/proxy/requirements.txt
 ```
 
 保留 `Cargo.lock`、`apps/pnpm-lock.yaml` 和 Python 固定版本。依赖更新应作为可审阅的单独变更，不能通过去掉 `--locked` 或 `--frozen-lockfile` 绕过安装失败。首次下载工具链和依赖需要网络；测试使用本地模拟服务和临时数据，不需要真实上游账号。
@@ -62,7 +63,7 @@ CODEXMANAGER_DEV_WEB_ORIGIN=http://127.0.0.1:48761 \
 
 开发界面位于 `http://127.0.0.1:3000`，API/RPC 由 Next.js 开发代理转发到本地 Web 服务。单独启动 Next.js 不会启动网关。`NEXT_PUBLIC_API_ORIGIN`、`NEXT_PUBLIC_ADMIN_ORIGIN` 和 `NEXT_PUBLIC_STATS_ORIGIN` 是公开的构建期地址；不要在其中放入凭据。
 
-团队看板的独立运行和初始化步骤见 [看板说明](services/dashboard/README.md)。统计按照 Key 当前分组归属历史用量；新增模型需要维护公开白名单。
+团队看板的独立运行和初始化步骤见 [看板说明](services/dashboard/README.md)。统计按照 Key 当前分组归属历史用量；模型从数据库中的公开可见目录动态读取，隐藏模型不导出。代理维护另需安装 `scripts/proxy/requirements.txt`；模型同步仅使用 Python 标准库，标准测试不调用真实上游。
 
 ## 提交变更
 

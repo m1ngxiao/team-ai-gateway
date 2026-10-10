@@ -28,6 +28,14 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 super::value_or_error(claude_subscription_auth::list_accounts())
             }
         }
+        "claudeAccount/usageRefresh" => {
+            if !actor.is_admin() {
+                super::value_or_error::<()>(Err(super::permission_denied(&req.method)))
+            } else {
+                let account_id = super::str_param(req, "accountId").unwrap_or("");
+                super::value_or_error(claude_subscription_auth::refresh_usage_for_account(account_id))
+            }
+        }
         "claudeAccount/updateStatus" => {
             if !actor.is_admin() {
                 super::value_or_error::<()>(Err(super::permission_denied(&req.method)))

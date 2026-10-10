@@ -65,6 +65,12 @@ class ClaudeAccount(ClosedModel):
     status: Literal["enabled", "disabled", "needs_login", "unknown"] = "unknown"
     sort_order: int | None = None
     updated_at: int | None = Field(default=None, ge=0)
+    five_hour: Window = Field(default_factory=Window)
+    seven_day: Window = Field(default_factory=Window)
+    captured_at: int | None = Field(default=None, ge=0)
+    last_attempt_at: int | None = Field(default=None, ge=0)
+    next_attempt_at: int | None = Field(default=None, ge=0)
+    last_error: Literal["rate_limited", "auth_error", "timeout", "network_error", "invalid_response", "upstream_error", "query_failed"] | None = None
 
 
 class Key(ClosedModel):

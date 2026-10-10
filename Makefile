@@ -16,5 +16,7 @@ test-dashboard:
 	cd services/dashboard && $(PYTHON) -m pytest tests && node --test tests/test_frontend.mjs
 test-tools:
 	$(PYTHON) -m pytest scripts/tests
+	$(PYTHON) -m unittest discover -s scripts/proxy/tests -v
+	$(PYTHON) -m unittest discover -s scripts/model-sync -p 'test_*.py' -v
 check-publication:
 	$(PYTHON) scripts/check-publication.py

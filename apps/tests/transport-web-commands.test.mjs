@@ -194,6 +194,7 @@ test("Claude 订阅账号命令映射到独立管理 RPC", () => {
   assert.equal(commandMap.service_claude_account_login_start.rpcMethod, "claudeAccount/loginStart");
   assert.equal(commandMap.service_claude_account_login_complete.rpcMethod, "claudeAccount/loginComplete");
   assert.equal(commandMap.service_claude_account_update_status.rpcMethod, "claudeAccount/updateStatus");
+  assert.equal(commandMap.service_claude_account_usage_refresh.rpcMethod, "claudeAccount/usageRefresh");
   assert.equal(commandMap.service_claude_account_delete.rpcMethod, "claudeAccount/delete");
 });
 

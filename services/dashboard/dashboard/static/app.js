@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id);
 let csrf = "", snapshot = null, period = "today", view = "overview", fetching = false, sessionVersion = 0;
 let countdowns = [];
 const fmt = new Intl.NumberFormat("zh-CN");
+const CLAUDE_QUOTA_MAX_AGE_SECONDS = 3600;
 const number = (value) => fmt.format(value || 0);
 const compact = (value) => new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(value || 0);
 const money = (value) => "$" + Number(value || 0).toFixed(3);
@@ -71,11 +72,11 @@ function countdownText(resetsAt, now = Date.now() / 1000) {
   const minutes = Math.ceil((resetsAt - now) / 60), days = Math.floor(minutes / 1440), hours = Math.floor(minutes % 1440 / 60);
   return (days ? days + " 天 " : "") + (hours ? hours + " 时 " : "") + (minutes % 60) + " 分后重置";
 }
-function renderWindow(data, fallback, capturedAt, extra = false) {
+function renderWindow(data, fallback, capturedAt, extra = false, unknownText = "暂无数据") {
   data = data || {};
   const section = node("div", undefined, extra ? "window spark-window" : "window"), heading = node("div", undefined, "window-heading");
   const label = extra || !data.minutes ? fallback : windowLabel(data.minutes, fallback);
-  heading.append(node("span", label), node("strong", data.remaining_percent == null ? "暂无数据" : data.remaining_percent.toFixed(1) + "%"));
+  heading.append(node("span", label), node("strong", data.remaining_percent == null ? unknownText : data.remaining_percent.toFixed(1) + "%"));
   section.append(heading);
   if (data.remaining_percent != null) {
     const progress = node("progress"); progress.max = 100; progress.value = data.remaining_percent;
@@ -137,13 +138,42 @@ function accountCard(account) {
   title.append(avatar, label); head.append(title, accountStatus(account)); card.append(head);
   card.append(accountWindows(account), node("p", "最近更新：" + date(account.captured_at), "account-time")); return card;
 }
+function claudeQuotaFresh(account, now = Date.now() / 1000) {
+  return Number.isFinite(account.captured_at) && account.captured_at > 0 &&
+    account.captured_at <= now && now - account.captured_at <= CLAUDE_QUOTA_MAX_AGE_SECONDS;
+}
+function claudeAccountWindows(account) {
+  const windows = node("div", undefined, "windows"), now = Date.now() / 1000;
+  for (const [key, label, minutes] of [["five_hour", "5 小时", 300], ["seven_day", "7 天", 10080]]) {
+    const observed = account[key] || {}, current = claudeQuotaFresh(account, now) &&
+      (!observed.resets_at || observed.resets_at > now);
+    const shown = current ? observed : { minutes, remaining_percent: null, resets_at: null };
+    windows.append(renderWindow(shown, label, current ? account.captured_at : null, false,
+      !current && account.captured_at ? "未知" : "暂无数据"));
+  }
+  return windows;
+}
+function claudeQuotaDetails(account) {
+  const details = node("div", undefined, "account-time");
+  details.append(node("div", "最近成功采集：" + date(account.captured_at)));
+  if (account.last_attempt_at) details.append(node("div", "最近查询：" + date(account.last_attempt_at)));
+  if (account.last_error) {
+    const reason = { rate_limited: "查询限流", auth_error: "查询授权失败", timeout: "查询超时",
+      network_error: "网络错误", invalid_response: "返回数据无效", upstream_error: "上游服务错误",
+      query_failed: "查询失败" }[account.last_error] || "查询失败";
+    details.append(node("div", "额度查询：" + reason, "quota-stale"));
+  }
+  if (account.next_attempt_at && account.last_error) details.append(node("div", "下次尝试：" + date(account.next_attempt_at)));
+  if (account.captured_at && !claudeQuotaFresh(account)) details.append(node("div", "最近额度已过期，当前额度未知", "quota-stale"));
+  return details;
+}
 function claudeAccountCard(account) {
   const card = node("article", undefined, "account"), head = node("div", undefined, "account-head"), title = node("div", undefined, "account-title");
   const avatar = node("span", undefined, "account-avatar claude-avatar"); avatar.append(icon("users"));
   const label = node("div", account.email || account.label, "account-label");
   label.append(node("span", "Claude · " + (account.plan === "unknown" ? "套餐未知" : account.plan.toUpperCase()), "account-plan"));
   title.append(avatar, label); head.append(title, status(account.status)); card.append(head);
-  card.append(node("p", "订阅额度暂不可查", "claude-quota-note"), node("p", "最近更新：" + date(account.updated_at), "account-time"));
+  card.append(claudeAccountWindows(account), claudeQuotaDetails(account));
   return card;
 }
 function currentKeys() {
@@ -209,7 +239,9 @@ function renderAccounts() {
     const plan = node("td"); plan.append(node("span", account.plan === "unknown" ? "套餐未知" : account.plan.toUpperCase(), "table-tag"));
     const order = node("td"); order.append(node("span", account.sort_order == null ? "—" : String(account.sort_order), "sort-value"));
     row.append(name, plan, order, node("td", undefined)); row.children[3].append(status(account.status));
-    row.append(node("td", date(account.updated_at)), node("td", "暂无额度数据"));
+    const collected = node("td"); collected.append(claudeQuotaDetails(account));
+    const quota = node("td"); quota.append(claudeAccountWindows(account));
+    row.append(collected, quota);
     $("claude-accounts").append(row);
   }
 }

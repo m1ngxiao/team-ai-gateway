@@ -4,14 +4,11 @@ import re
 
 from .account_details import positive_int
 
-PUBLIC_MODELS = frozenset({"claude-sonnet-5", "gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
-                          "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark",
-                          "gpt-5.2", "gpt-5.2-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
-                          "gpt-reserve", "codex-auto-review", "gpt-image-2"})
-
 # Translate the known source copy, not arbitrary changed descriptions by slug.
 DESCRIPTION_ZH = {
     "Our most capable model for complex, demanding work.": "能力最强的模型，适合复杂、高要求的任务。",
+    "Latest workhorse model for coding and everyday work.": "适合复杂编程与日常工作的主力模型。",
+    "Fast and affordable model for easier tasks.": "适合较简单任务的快速、经济模型。",
     "Built to power complex coding and agentic workflows.": "适合复杂编程和智能体工作流。",
     "Latest frontier agentic coding model.": "最新前沿模型，适合自主编程。",
     "Balanced agentic coding model for everyday work.": "能力均衡的编程模型，适合日常工作。",
@@ -61,17 +58,24 @@ def public_text(value, fallback="", maximum=128):
     return value
 
 
+def public_model_slug(value):
+    """Return a public model ID, never a URL, credential or free-form value."""
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", value):
+        return None
+    return value if public_text(value, maximum=128) == value else None
+
+
 def choice(value, options, fallback="unknown"):
     return value if isinstance(value, str) and value in options else fallback
 
 
-def key_metadata(row):
+def key_metadata(row, public_models=frozenset()):
     if row is None:
         return {"is_historical": True}
     protocol = str(row["protocol_type"] or "").strip().lower().replace("-", "_")
     protocol = {"openai": "openai_compat", "anthropic": "anthropic_native", "gemini": "gemini_native"}.get(protocol, protocol)
     model = row["model_slug"]
-    binding = "request" if model is None or (isinstance(model, str) and not model.strip()) else "fixed" if model in PUBLIC_MODELS else "unlisted"
+    binding = "request" if model is None or (isinstance(model, str) and not model.strip()) else "fixed" if isinstance(model, str) and model in public_models else "unlisted"
     return {"display_id": row["id"] if re.fullmatch(r"gk_[a-f0-9]{12}", str(row["id"])) else None,
             "upstream_provider": choice(row["upstream_provider"], {"openai", "claude"}),
             "protocol": choice(protocol, {"openai_compat", "anthropic_native", "gemini_native"}),
@@ -93,7 +97,8 @@ def price_value(value):
 def collect_catalog(connection):
     catalog, unlisted = [], 0
     for row in connection.execute(CATALOG_SQL):
-        if row["slug"] not in PUBLIC_MODELS:
+        slug = public_model_slug(row["slug"])
+        if slug is None:
             unlisted += 1
             continue
         price_status = choice(row["price_status"], {"official", "estimated", "custom", "missing"}, "missing")
@@ -101,11 +106,9 @@ def collect_catalog(connection):
         if price_status != "missing":
             for source, target in (("input", "input"), ("cached_input", "cached_input"), ("cache_write", "cache_write"), ("output", "output")):
                 value = row[source + "_microusd_per_1m"]
-                if source == "cache_write" and value is None:
-                    value = row["input_microusd_per_1m"]
                 price[target + "_usd_per_million"] = price_value(value)
         description = public_text(row["description"], maximum=600)
-        catalog.append({"model": row["slug"], "name": public_text(row["display_name"], row["slug"]),
+        catalog.append({"model": slug, "name": public_text(row["display_name"], slug),
                         "description": DESCRIPTION_ZH.get(description, description),
                         "origin": choice(row["origin"], {"builtin", "custom"}),
                         "enabled": nullable_bool(row["enabled"]), "supported_in_api": nullable_bool(row["supported_in_api"]),

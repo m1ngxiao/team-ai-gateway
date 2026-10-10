@@ -186,6 +186,7 @@ macro_rules! invoke_handler {
             crate::commands::claude_subscription::service_claude_account_login_start,
             crate::commands::claude_subscription::service_claude_account_login_complete,
             crate::commands::claude_subscription::service_claude_account_update_status,
+            crate::commands::claude_subscription::service_claude_account_usage_refresh,
             crate::commands::claude_subscription::service_claude_account_delete,
             crate::commands::apikey::service_apikey_list,
             crate::commands::apikey::service_apikey_read_secret,

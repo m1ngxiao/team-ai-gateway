@@ -14,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { ClaudeSubscriptionUsageView } from "./claude-subscription-usage";
 import {
   claudeSubscriptionClient,
   type ClaudeSubscriptionAccount,
@@ -40,16 +41,18 @@ export function ClaudeSubscriptionAccountsPanel({ serviceAddr, enabled }: Claude
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const queryKey = ["claude-subscription-accounts", serviceAddr] as const;
-  const { data: accounts = [], isLoading, isError, refetch } = useQuery({
+  const { data: accounts = [], dataUpdatedAt, isLoading, isError, refetch } = useQuery({
     queryKey,
     queryFn: () => claudeSubscriptionClient.list(serviceAddr),
     enabled,
+    refetchInterval: enabled ? 60_000 : false,
     retry: 1,
   });
   const [login, setLogin] = useState<ClaudeSubscriptionLoginStart | null>(null);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [busyAccountId, setBusyAccountId] = useState<string | null>(null);
+  const [refreshingAccountId, setRefreshingAccountId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<ClaudeSubscriptionAccount | null>(null);
   const activeCount = accounts.filter((account) => account.status === "active").length;
   const disabledCount = accounts.filter((account) => account.status === "disabled").length;
@@ -106,6 +109,31 @@ export function ClaudeSubscriptionAccountsPanel({ serviceAddr, enabled }: Claude
       toast.error(getAppErrorMessage(error));
     } finally {
       setBusyAccountId(null);
+    }
+  };
+
+  const refreshUsage = async (account: ClaudeSubscriptionAccount) => {
+    if (refreshingAccountId) return;
+    setRefreshingAccountId(account.id);
+    try {
+      const usage = await claudeSubscriptionClient.usageRefresh(account.id, serviceAddr);
+      if (usage?.lastError) {
+        toast.error(usage.lastError);
+      } else if (usage?.capturedAt != null && usage.capturedAt !== account.usage?.capturedAt) {
+        toast.success(t("Claude 额度已刷新"));
+      } else if (usage?.capturedAt != null) {
+        toast.info(t("已是最新额度数据"));
+      } else {
+        toast.info(t("暂无额度数据"));
+      }
+    } catch (error) {
+      toast.error(getAppErrorMessage(error));
+    } finally {
+      try {
+        await refresh();
+      } finally {
+        setRefreshingAccountId(null);
+      }
     }
   };
 
@@ -180,6 +208,7 @@ export function ClaudeSubscriptionAccountsPanel({ serviceAddr, enabled }: Claude
                   </Badge>
                 </div>
                 {account.lastError ? <p className="text-xs text-destructive">{account.lastError}</p> : null}
+                <ClaudeSubscriptionUsageView usage={account.usage} now={Math.max(Date.now(), dataUpdatedAt)} />
               </div>
               <div className="flex items-center gap-3">
                 {account.status === "needs_login" ? (
@@ -187,6 +216,16 @@ export function ClaudeSubscriptionAccountsPanel({ serviceAddr, enabled }: Claude
                     {t("重新登录")}
                   </Button>
                 ) : null}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label={`${t("刷新 Claude 额度")} ${account.email || account.label}`}
+                  onClick={() => void refreshUsage(account)}
+                  disabled={refreshingAccountId !== null || account.status !== "active"}
+                >
+                  {refreshingAccountId === account.id ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                  {t("刷新额度")}
+                </Button>
                 <Switch
                   aria-label={`${t(account.status === "active" ? "停用 Claude 账号" : "启用 Claude 账号")} ${account.email || account.label}`}
                   checked={account.status === "active"}
