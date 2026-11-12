@@ -20,15 +20,21 @@ struct KeyGateTable {
 
 static KEY_GATES: OnceLock<Mutex<KeyGateTable>> = OnceLock::new();
 
+#[derive(Default)]
+struct KeyGateState {
+    active: usize,
+    mode: u8,
+}
+
 struct KeyGateLock {
-    active: Mutex<usize>,
+    state: Mutex<KeyGateState>,
     available: Condvar,
 }
 
 impl KeyGateLock {
     fn new() -> Self {
         Self {
-            active: Mutex::new(0),
+            state: Mutex::new(KeyGateState::default()),
             available: Condvar::new(),
         }
     }
@@ -40,12 +46,15 @@ pub(crate) struct KeyConcurrencyGuard {
 
 impl Drop for KeyConcurrencyGuard {
     fn drop(&mut self) {
-        let mut active = match self.lock.active.lock() {
+        let mut state = match self.lock.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        *active = active.saturating_sub(1);
-        drop(active);
+        state.active = state.active.saturating_sub(1);
+        if state.active == 0 {
+            state.mode = 0;
+        }
+        drop(state);
         self.lock.available.notify_all();
     }
 }
@@ -86,29 +95,39 @@ pub(crate) fn acquire_key_concurrency(
         return None;
     }
     let max_active = max_active.max(1);
+    let mode = max_active.min(2) as u8;
     let lock = key_gate(key_id);
-    let active = match lock.active.lock() {
+    let state = match lock.state.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if *active < max_active {
-        let mut active = active;
-        *active += 1;
-        drop(active);
+    let can_enter = |state: &KeyGateState| {
+        state.active == 0 || (state.mode == mode && state.active < max_active)
+    };
+    if can_enter(&state) {
+        let mut state = state;
+        if state.active == 0 {
+            state.mode = mode;
+        }
+        state.active += 1;
+        drop(state);
         return Some(KeyConcurrencyGuard { lock });
     }
-    let (mut active, _) = match lock
+    let (mut state, _) = match lock
         .available
-        .wait_timeout_while(active, timeout, |active| *active >= max_active)
+        .wait_timeout_while(state, timeout, |state| !can_enter(state))
     {
         Ok(result) => result,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if *active >= max_active {
+    if !can_enter(&state) {
         return None;
     }
-    *active += 1;
-    drop(active);
+    if state.active == 0 {
+        state.mode = mode;
+    }
+    state.active += 1;
+    drop(state);
     Some(KeyConcurrencyGuard { lock })
 }
 
@@ -136,6 +155,15 @@ mod tests {
         assert!(acquire_key_concurrency("key-b", 2, Duration::from_millis(10)).is_none());
         drop(first);
         drop(second);
+    }
+
+    #[test]
+    fn normal_and_ultra_do_not_share_a_key() {
+        let normal = acquire_key_concurrency("key-d", 1, Duration::from_millis(50))
+            .expect("normal slot");
+        assert!(acquire_key_concurrency("key-d", 2, Duration::from_millis(10)).is_none());
+        drop(normal);
+        assert!(acquire_key_concurrency("key-d", 2, Duration::from_millis(10)).is_some());
     }
 
     #[test]
