@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Result};
 
-use super::{now_ts, Storage, UsageSnapshotRecord};
+use super::{now_ts, Storage};
 
 pub const SECONDS_PER_HOUR: i64 = 60 * 60;
 pub const SECONDS_PER_WEEK: i64 = 7 * 24 * SECONDS_PER_HOUR;
@@ -194,7 +194,7 @@ impl Storage {
         self.conn.query_row(
             "SELECT COALESCE(SUM(CAST(ROUND(estimated_cost_usd * 100.0) AS INTEGER)), 0)
              FROM request_token_stats
-             WHERE account_id = ?1 AND created_at >= ?2",
+             WHERE account_id = ?1 AND created_at >= ?2 AND usage_included = 1",
             params![account_id, since],
             |row| row.get(0),
         )
@@ -341,6 +341,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::UsageSnapshotRecord;
 
     fn open_storage() -> Storage {
         let storage = Storage::open_in_memory().expect("open");

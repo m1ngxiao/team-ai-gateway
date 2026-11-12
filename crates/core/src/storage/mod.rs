@@ -2383,6 +2383,10 @@ impl Storage {
             "139_quota_ledger",
             include_str!("../../migrations/139_quota_ledger.sql"),
         )?;
+        self.apply_sql_migration(
+            "140_quota_ledger_usage_included",
+            include_str!("../../migrations/140_quota_ledger_usage_included.sql"),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;

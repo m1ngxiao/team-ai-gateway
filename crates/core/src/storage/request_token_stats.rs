@@ -703,8 +703,18 @@ impl Storage {
             ),
         )?;
 
+        let usage_included: i64 = self.conn.query_row(
+            "SELECT COALESCE(
+                (SELECT CASE WHEN status_code >= 200 AND status_code <= 299 THEN 1 ELSE 0 END
+                 FROM request_logs WHERE id = ?1),
+                1
+             )",
+            params![stat.request_log_id],
+            |row| row.get(0),
+        )?;
+
         let cost_cents = (stat.estimated_cost_usd.unwrap_or(0.0).max(0.0) * 100.0).round() as i64;
-        if cost_cents > 0 {
+        if usage_included == 1 && cost_cents > 0 {
             if let Some(key_id) = stat.key_id.as_deref() {
                 self.add_key_usage_hourly(key_id, stat.created_at, cost_cents, 1)?;
             }
