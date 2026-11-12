@@ -20,10 +20,20 @@ struct KeyGateTable {
 
 static KEY_GATES: OnceLock<Mutex<KeyGateTable>> = OnceLock::new();
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyGateRole {
+    Normal,
+    UltraParent,
+    UltraChild,
+}
+
 #[derive(Default)]
 struct KeyGateState {
     active: usize,
+    /// 0 = idle, 1 = normal, 2 = ultra.
     mode: u8,
+    parent_active: bool,
+    child_active: bool,
 }
 
 struct KeyGateLock {
@@ -42,6 +52,7 @@ impl KeyGateLock {
 
 pub(crate) struct KeyConcurrencyGuard {
     lock: Arc<KeyGateLock>,
+    role: KeyGateRole,
 }
 
 impl Drop for KeyConcurrencyGuard {
@@ -51,8 +62,13 @@ impl Drop for KeyConcurrencyGuard {
             Err(poisoned) => poisoned.into_inner(),
         };
         state.active = state.active.saturating_sub(1);
+        match self.role {
+            KeyGateRole::UltraParent => state.parent_active = false,
+            KeyGateRole::UltraChild => state.child_active = false,
+            KeyGateRole::Normal => {}
+        }
         if state.active == 0 {
-            state.mode = 0;
+            *state = KeyGateState::default();
         }
         drop(state);
         self.lock.available.notify_all();
@@ -83,52 +99,77 @@ fn key_gate(key_id: &str) -> Arc<KeyGateLock> {
     entry.lock.clone()
 }
 
-/// Acquire one key-level concurrency slot. `max_active` is the total number of
-/// in-flight requests allowed for this key at the moment of admission:
-/// 1 for a normal request, 2 for an Astra Ultra request (parent + one child).
+fn can_enter(state: &KeyGateState, max_active: usize, is_subagent: bool) -> bool {
+    if max_active <= 1 {
+        return state.active == 0;
+    }
+    if state.active == 0 {
+        return true;
+    }
+    if state.mode != 2 {
+        return false;
+    }
+    if is_subagent {
+        state.parent_active && !state.child_active
+    } else {
+        false
+    }
+}
+
+/// Acquire one key-level concurrency slot.
+///
+/// Normal requests are exclusive (`max_active = 1`). Astra Ultra requests use
+/// `max_active = 2`, but only one parent and one child may overlap; a second
+/// parent or a second child waits. This keeps a single Ultra turn from turning
+/// into two independent parent turns while still allowing one subagent to run
+/// alongside its parent.
 pub(crate) fn acquire_key_concurrency(
     key_id: &str,
     max_active: usize,
+    is_subagent: bool,
     timeout: Duration,
 ) -> Option<KeyConcurrencyGuard> {
     if key_id.trim().is_empty() {
         return None;
     }
     let max_active = max_active.max(1);
-    let mode = max_active.min(2) as u8;
+    let role = if max_active <= 1 {
+        KeyGateRole::Normal
+    } else if is_subagent {
+        KeyGateRole::UltraChild
+    } else {
+        KeyGateRole::UltraParent
+    };
     let lock = key_gate(key_id);
-    let state = match lock.state.lock() {
+    let mut state = match lock.state.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    let can_enter = |state: &KeyGateState| {
-        state.active == 0 || (state.mode == mode && state.active < max_active)
-    };
-    if can_enter(&state) {
-        let mut state = state;
-        if state.active == 0 {
-            state.mode = mode;
-        }
-        state.active += 1;
-        drop(state);
-        return Some(KeyConcurrencyGuard { lock });
+    if !can_enter(&state, max_active, is_subagent) {
+        let (next, _) = match lock
+            .available
+            .wait_timeout_while(state, timeout, |state| {
+                !can_enter(state, max_active, is_subagent)
+            }) {
+            Ok(result) => result,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state = next;
     }
-    let (mut state, _) = match lock
-        .available
-        .wait_timeout_while(state, timeout, |state| !can_enter(state))
-    {
-        Ok(result) => result,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if !can_enter(&state) {
+    if !can_enter(&state, max_active, is_subagent) {
         return None;
     }
     if state.active == 0 {
-        state.mode = mode;
+        state.mode = if max_active <= 1 { 1 } else { 2 };
+    }
+    match role {
+        KeyGateRole::UltraParent => state.parent_active = true,
+        KeyGateRole::UltraChild => state.child_active = true,
+        KeyGateRole::Normal => {}
     }
     state.active += 1;
     drop(state);
-    Some(KeyConcurrencyGuard { lock })
+    Some(KeyConcurrencyGuard { lock, role })
 }
 
 #[cfg(test)]
@@ -139,40 +180,55 @@ mod tests {
 
     #[test]
     fn normal_request_is_exclusive_per_key() {
-        let first = acquire_key_concurrency("key-a", 1, Duration::from_millis(50))
+        let first = acquire_key_concurrency("key-a", 1, false, Duration::from_millis(50))
             .expect("first slot");
-        assert!(acquire_key_concurrency("key-a", 1, Duration::from_millis(10)).is_none());
+        assert!(
+            acquire_key_concurrency("key-a", 1, false, Duration::from_millis(10)).is_none()
+        );
         drop(first);
-        assert!(acquire_key_concurrency("key-a", 1, Duration::from_millis(10)).is_some());
+        assert!(
+            acquire_key_concurrency("key-a", 1, false, Duration::from_millis(10)).is_some()
+        );
     }
 
     #[test]
-    fn ultra_request_can_use_two_slots() {
-        let first = acquire_key_concurrency("key-b", 2, Duration::from_millis(50))
-            .expect("first slot");
-        let second = acquire_key_concurrency("key-b", 2, Duration::from_millis(50))
-            .expect("second slot");
-        assert!(acquire_key_concurrency("key-b", 2, Duration::from_millis(10)).is_none());
-        drop(first);
-        drop(second);
+    fn ultra_parent_and_one_child_can_overlap() {
+        let parent = acquire_key_concurrency("key-b", 2, false, Duration::from_millis(50))
+            .expect("parent slot");
+        let child = acquire_key_concurrency("key-b", 2, true, Duration::from_millis(50))
+            .expect("child slot");
+        assert!(
+            acquire_key_concurrency("key-b", 2, false, Duration::from_millis(10)).is_none(),
+            "second parent must wait"
+        );
+        assert!(
+            acquire_key_concurrency("key-b", 2, true, Duration::from_millis(10)).is_none(),
+            "second child must wait"
+        );
+        drop(parent);
+        drop(child);
     }
 
     #[test]
     fn normal_and_ultra_do_not_share_a_key() {
-        let normal = acquire_key_concurrency("key-d", 1, Duration::from_millis(50))
+        let normal = acquire_key_concurrency("key-d", 1, false, Duration::from_millis(50))
             .expect("normal slot");
-        assert!(acquire_key_concurrency("key-d", 2, Duration::from_millis(10)).is_none());
+        assert!(
+            acquire_key_concurrency("key-d", 2, false, Duration::from_millis(10)).is_none()
+        );
         drop(normal);
-        assert!(acquire_key_concurrency("key-d", 2, Duration::from_millis(10)).is_some());
+        assert!(
+            acquire_key_concurrency("key-d", 2, false, Duration::from_millis(10)).is_some()
+        );
     }
 
     #[test]
     fn waiting_request_wakes_when_slot_is_released() {
-        let first = acquire_key_concurrency("key-c", 1, Duration::from_millis(50))
+        let first = acquire_key_concurrency("key-c", 1, false, Duration::from_millis(50))
             .expect("first slot");
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let guard = acquire_key_concurrency("key-c", 1, Duration::from_secs(1));
+            let guard = acquire_key_concurrency("key-c", 1, false, Duration::from_secs(1));
             tx.send(guard.is_some()).unwrap();
             drop(guard);
         });

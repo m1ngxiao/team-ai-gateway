@@ -1397,10 +1397,15 @@ pub(in super::super) fn proxy_validated_request(
     let _key_concurrency_guard = if context.is_control_request() {
         None
     } else {
-        let max_active = if context.is_ultra_request() { 2 } else { 1 };
+        let is_ultra = context.is_ultra_request();
+        let ultra_subagent = is_ultra
+            && (incoming_headers.subagent().is_some()
+                || incoming_headers.parent_thread_id().is_some());
+        let max_active = if is_ultra { 2 } else { 1 };
         match crate::gateway::key_gate::acquire_key_concurrency(
             key_id.as_str(),
             max_active,
+            ultra_subagent,
             std::time::Duration::from_secs(30),
         ) {
             Some(guard) => Some(guard),
