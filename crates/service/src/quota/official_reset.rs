@@ -49,11 +49,13 @@ impl From<QuotaResetEvent> for ResetEventView {
     }
 }
 
-/// Detect a *pending* official global reset by comparing each account's two
-/// newest weekly snapshots. A reset is considered early when `resets_at` moves
-/// earlier by more than an hour and the used percentage collapses to near zero.
-/// Three such accounts within the same 15-minute window produce a pending
-/// event; we deliberately do not move Key epochs automatically.
+/// Detect an official global reset by comparing each account's two newest
+/// weekly snapshots. A reset is considered early when `resets_at` moves earlier
+/// by more than an hour and the used percentage collapses to near zero. Three
+/// such accounts within the same 15-minute window are treated as an official
+/// global reset: all Key epochs are moved to `now` immediately, and an
+/// `official_auto` event is recorded. Manual single-account resets never match
+/// this path because they do not move all three accounts early at once.
 pub(crate) fn detect_official_global_reset(
     storage: &Storage,
     now: i64,
@@ -122,20 +124,24 @@ pub(crate) fn detect_official_global_reset(
             .into_iter()
             .any(|existing| {
                 existing.scope == "global"
-                    && existing.source == "official_pending"
+                    && existing.source.starts_with("official")
                     && now.saturating_sub(existing.occurred_at) <= GLOBAL_EVENT_DEDUPE_SECS
             });
         if !already_recorded {
+            let reset_keys = storage
+                .reset_all_key_quota_epochs(now)
+                .map_err(|err| err.to_string())?;
             let note = format!(
-                "auto-detected early weekly reset on {} accounts",
-                candidates.len()
+                "auto-applied official weekly reset on {} accounts; reset {} key epochs",
+                candidates.len(),
+                reset_keys
             );
             let id = storage
                 .record_quota_reset_event(
                     "global",
-                    "official_pending",
+                    "official_auto",
                     now,
-                    None,
+                    Some("auto"),
                     Some(note.as_str()),
                 )
                 .map_err(|err| err.to_string())?;
@@ -164,7 +170,7 @@ pub(crate) fn observe_usage_snapshot(storage: &Storage) -> Result<(), String> {
     let detection = detect_official_global_reset(storage, now_ts())?;
     if let Some(event) = detection.event {
         log::warn!(
-            "event=gateway_official_global_reset_pending event_id={} accounts={} note={:?}",
+            "event=gateway_official_global_reset_applied event_id={} accounts={} note={:?}",
             event.id,
             detection.candidates.len(),
             event.note
@@ -213,10 +219,35 @@ mod tests {
     }
 
     #[test]
-    fn three_early_resets_create_pending_global_event() {
+    fn three_early_resets_apply_global_event_and_reset_keys() {
         let storage = Storage::open_in_memory().expect("open");
         storage.init().expect("init");
         let now = 1_800_000_000;
+        let key = codexmanager_core::storage::ApiKey {
+            id: "gk-auto-reset".to_string(),
+            name: Some("auto-reset".to_string()),
+            model_slug: Some("gpt-5-mini".to_string()),
+            reasoning_effort: None,
+            service_tier: None,
+            upstream_provider: Default::default(),
+            rotation_strategy: "account_rotation".to_string(),
+            aggregate_api_id: None,
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "codex".to_string(),
+            protocol_type: "openai_compat".to_string(),
+            auth_scheme: "authorization_bearer".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: "hash-auto-reset".to_string(),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        };
+        storage.insert_api_key(&key).expect("api key");
+        storage
+            .add_key_usage_hourly("gk-auto-reset", now - 3_600, 1_000, 1)
+            .expect("key usage");
         for (index, id) in ["acc-a", "acc-b", "acc-c"].iter().enumerate() {
             storage.insert_account(&account(id)).expect("account");
             storage
@@ -235,10 +266,17 @@ mod tests {
         let detected = detect_official_global_reset(&storage, now).expect("detect");
         assert_eq!(detected.candidates.len(), 3);
         assert!(detected.global_detected);
-        assert!(detected.event.is_some());
+        let event = detected.event.expect("global event");
+        assert_eq!(event.source, "official_auto");
+        assert_eq!(
+            storage
+                .key_usage_cents_rolling_7d("gk-auto-reset", now)
+                .expect("key usage"),
+            0
+        );
 
         let second = detect_official_global_reset(&storage, now + 10).expect("detect again");
-        assert!(second.event.is_none(), "duplicate pending event must be suppressed");
+        assert!(second.event.is_none(), "duplicate event must be suppressed");
     }
 
     #[test]
