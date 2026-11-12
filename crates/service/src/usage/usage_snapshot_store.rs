@@ -454,6 +454,9 @@ where
         // rebuilt from the pre-commit account state.
         crate::gateway::invalidate_candidate_cache();
     }
+    if let Err(err) = crate::quota::official_reset::observe_usage_snapshot(storage) {
+        log::warn!("event=gateway_official_reset_detection_failed err={err}");
+    }
     Ok(record)
 }
 

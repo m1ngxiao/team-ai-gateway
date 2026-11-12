@@ -90,6 +90,9 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let confirmed_by = super::str_param(req, "confirmedBy").unwrap_or("admin");
             super::value_or_error(read::official_global_reset(confirmed_by))
         }
+        "quota/officialResetCandidates" => super::value_or_error(
+            crate::quota::official_reset::read_official_reset_candidates(),
+        ),
         _ => return None,
     };
 

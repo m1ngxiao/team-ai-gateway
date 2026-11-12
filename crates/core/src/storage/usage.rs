@@ -312,6 +312,29 @@ impl Storage {
         }
     }
 
+    /// Returns the snapshot immediately before `before_captured_at` for an
+    /// account. Used to detect an early weekly reset by comparing two adjacent
+    /// snapshots.
+    pub fn previous_usage_snapshot_for_account(
+        &self,
+        account_id: &str,
+        before_captured_at: i64,
+    ) -> Result<Option<UsageSnapshotRecord>> {
+        self.conn
+            .query_row(
+                "SELECT account_id, used_percent, window_minutes, resets_at,
+                        secondary_used_percent, secondary_window_minutes,
+                        secondary_resets_at, credits_json, captured_at
+                 FROM usage_snapshots
+                 WHERE account_id = ?1 AND captured_at < ?2
+                 ORDER BY captured_at DESC, id DESC
+                 LIMIT 1",
+                rusqlite::params![account_id, before_captured_at],
+                map_usage_snapshot_row,
+            )
+            .optional()
+    }
+
     /// Returns the newest snapshot for an account that still contains at least
     /// one normalized optional rate-limit bucket.
     ///
