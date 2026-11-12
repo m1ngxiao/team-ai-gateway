@@ -81,6 +81,15 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 source_ids: string_array_param(req, "sourceIds"),
             }))
         }
+        "quota/weeklyOverview" => super::value_or_error(read::read_weekly_quota_overview()),
+        "quota/resetKeyWeekly" => {
+            let key_id = super::str_param(req, "keyId").unwrap_or("");
+            super::value_or_error(read::reset_key_weekly_quota(key_id))
+        }
+        "quota/officialGlobalReset" => {
+            let confirmed_by = super::str_param(req, "confirmedBy").unwrap_or("admin");
+            super::value_or_error(read::official_global_reset(confirmed_by))
+        }
         _ => return None,
     };
 

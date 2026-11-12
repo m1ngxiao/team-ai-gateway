@@ -16,7 +16,7 @@ use codexmanager_core::storage::{
     UsageSnapshotRecord,
 };
 use rand::RngCore;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::api_key_usage::load_api_key_quota_context;
 use super::model_pricing;
@@ -245,7 +245,7 @@ fn read_quota_overview_with_storage(
         .account_quota_overview_stats()
         .map_err(|err| format!("summarize account quota overview failed: {err}"))?;
 
-    let (day_start, day_end) = time_bounds::local_day_bounds_ts()?;
+    let (day_start, day_end) = time_bounds::business_day_bounds_ts()?;
     let today = storage
         .summarize_request_token_stats_between(day_start, day_end)
         .map_err(|err| format!("summarize today token usage failed: {err}"))?;
@@ -1460,6 +1460,102 @@ fn normalize_source_ids(source_ids: Vec<String>) -> Vec<String> {
     source_ids.sort();
     source_ids.dedup();
     source_ids
+}
+
+
+pub(crate) fn read_weekly_quota_overview() -> Result<Value, String> {
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    read_weekly_quota_overview_with_storage(&storage)
+}
+
+pub(crate) fn read_weekly_quota_overview_with_storage(
+    storage: &Storage,
+) -> Result<Value, String> {
+    let now = codexmanager_core::storage::now_ts();
+    let key_limit = codexmanager_core::storage::DEFAULT_KEY_WEEKLY_LIMIT_CENTS;
+    let account_limit = codexmanager_core::storage::DEFAULT_ACCOUNT_WEEKLY_LIMIT_CENTS;
+
+    let keys = storage
+        .list_api_keys()
+        .map_err(|err| format!("list api keys failed: {err}"))?;
+    let mut key_items = Vec::with_capacity(keys.len());
+    for key in keys {
+        let used = storage
+            .key_usage_cents_rolling_7d(key.id.as_str(), now)
+            .map_err(|err| format!("key usage failed for {}: {err}", key.id))?;
+        key_items.push(json!({
+            "keyId": key.id,
+            "name": key.name,
+            "status": key.status,
+            "usedCents": used,
+            "limitCents": key_limit,
+            "remainingCents": (key_limit - used).max(0),
+        }));
+    }
+
+    let accounts = storage
+        .list_accounts()
+        .map_err(|err| format!("list accounts failed: {err}"))?;
+    let mut account_items = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        let used = storage
+            .account_usage_cents_rolling_7d(account.id.as_str(), now)
+            .map_err(|err| format!("account usage failed for {}: {err}", account.id))?;
+        let reset_at = storage
+            .latest_account_weekly_reset_at(account.id.as_str())
+            .map_err(|err| format!("account reset failed for {}: {err}", account.id))?;
+        account_items.push(json!({
+            "accountId": account.id,
+            "label": account.label,
+            "status": account.status,
+            "usedCents": used,
+            "limitCents": account_limit,
+            "remainingCents": (account_limit - used).max(0),
+            "resetAt": reset_at,
+        }));
+    }
+
+    Ok(json!({
+        "generatedAt": now,
+        "keyLimitCents": key_limit,
+        "accountLimitCents": account_limit,
+        "keys": key_items,
+        "accounts": account_items,
+    }))
+}
+
+pub(crate) fn reset_key_weekly_quota(key_id: &str) -> Result<Value, String> {
+    let key_id = key_id.trim();
+    if key_id.is_empty() {
+        return Err("keyId is required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let now = codexmanager_core::storage::now_ts();
+    storage
+        .set_key_quota_epoch(key_id, now)
+        .map_err(|err| format!("reset key epoch failed: {err}"))?;
+    storage
+        .record_quota_reset_event("key", "manual", now, Some("admin"), Some(key_id))
+        .map_err(|err| format!("record reset event failed: {err}"))?;
+    Ok(json!({ "keyId": key_id, "epochAt": now }))
+}
+
+pub(crate) fn official_global_reset(confirmed_by: &str) -> Result<Value, String> {
+    let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
+    let now = codexmanager_core::storage::now_ts();
+    let reset_keys = storage
+        .reset_all_key_quota_epochs(now)
+        .map_err(|err| format!("reset all key epochs failed: {err}"))?;
+    storage
+        .record_quota_reset_event(
+            "global",
+            "official",
+            now,
+            Some(confirmed_by),
+            Some("official upstream global reset"),
+        )
+        .map_err(|err| format!("record reset event failed: {err}"))?;
+    Ok(json!({ "resetKeys": reset_keys, "occurredAt": now }))
 }
 
 #[cfg(test)]

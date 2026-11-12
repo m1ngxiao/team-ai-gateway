@@ -113,6 +113,22 @@ impl Storage {
         Ok(())
     }
 
+    /// Advance every active API key's rolling quota epoch. Returns how many
+    /// keys were advanced. This is used for an official upstream global reset.
+    pub fn reset_all_key_quota_epochs(&self, epoch_at: i64) -> Result<usize> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM api_keys WHERE status = 'active' ORDER BY id")?;
+        let key_ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>>>()?;
+        drop(stmt);
+        for key_id in &key_ids {
+            self.set_key_quota_epoch(key_id, epoch_at)?;
+        }
+        Ok(key_ids.len())
+    }
+
     /// Add settled cost to the hourly bucket. Money is stored as integer cents.
     pub fn add_key_usage_hourly(
         &self,
