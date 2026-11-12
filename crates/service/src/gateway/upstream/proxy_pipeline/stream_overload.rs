@@ -37,9 +37,11 @@ pub(super) fn retry_after_delay(
 
 pub(super) fn is_structured_overload(value: &Value, event_type: &str) -> bool {
     // An error can include an output snapshot even without preceding delta
-    // frames. A tool call or already generated content must never be replayed.
-    if !empty_array_or_absent(value.pointer("/response/output"))
-        || !empty_array_or_absent(value.get("output"))
+    // frames. Empty reasoning/message placeholders are metadata, not output;
+    // any real text, tool arguments, tool result, or encrypted reasoning is a
+    // hard boundary and must never be replayed.
+    if !content_free_output(value.pointer("/response/output"))
+        || !content_free_output(value.get("output"))
     {
         return false;
     }
@@ -59,28 +61,61 @@ fn empty_array_or_absent(value: Option<&Value>) -> bool {
     value.is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
 }
 
+fn empty_string_or_absent(value: Option<&Value>) -> bool {
+    value.is_none_or(|value| value.as_str().is_none_or(|text| text.is_empty()))
+}
+
+/// True only when an output item carries no user-visible or replay-sensitive
+/// payload. `reasoning` may appear before an overload with an empty summary;
+/// that is a placeholder, not generated content. Encrypted reasoning is always
+/// a hard boundary.
+fn content_free_output_item(item: &Value) -> bool {
+    let Some(object) = item.as_object() else {
+        return false;
+    };
+    match object.get("type").and_then(Value::as_str) {
+        Some("reasoning") => {
+            empty_array_or_absent(object.get("summary"))
+                && empty_array_or_absent(object.get("content"))
+                && empty_string_or_absent(object.get("encrypted_content"))
+        }
+        Some("message") => empty_array_or_absent(object.get("content")),
+        _ => false,
+    }
+}
+
+fn content_free_output(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(items)) => items.iter().all(content_free_output_item),
+        _ => false,
+    }
+}
+
 pub(super) fn is_retry_safe_metadata(event_type: &str, value: Option<&Value>) -> bool {
     let Some(value) = value.filter(|value| value.is_object()) else {
         return false;
     };
     match event_type {
         "response.created" | "response.in_progress" | "response.queued" | "ping" => {
-            empty_array_or_absent(value.pointer("/response/output"))
+            content_free_output(value.pointer("/response/output"))
         }
-        "response.output_item.added" => {
-            value.pointer("/item/type").and_then(Value::as_str) == Some("message")
-                && value
-                    .pointer("/item/content")
-                    .and_then(Value::as_array)
-                    .is_some_and(Vec::is_empty)
-        }
+        "response.output_item.added" => value
+            .pointer("/item")
+            .is_some_and(content_free_output_item),
         "response.content_part.added" | "response.reasoning_summary_part.added" => {
             matches!(
                 value.pointer("/part/type").and_then(Value::as_str),
-                Some("output_text" | "summary_text")
+                Some("output_text" | "summary_text" | "reasoning_text")
             ) && value.pointer("/part/text").and_then(Value::as_str) == Some("")
                 && empty_array_or_absent(value.pointer("/part/annotations"))
         }
+        "response.output_text.delta"
+        | "response.reasoning_summary_text.delta"
+        | "response.reasoning_text.delta"
+        | "response.function_call_arguments.delta"
+        | "response.custom_tool_call_input.delta"
+        | "response.refusal.delta" => empty_string_or_absent(value.get("delta")),
         _ => false,
     }
 }

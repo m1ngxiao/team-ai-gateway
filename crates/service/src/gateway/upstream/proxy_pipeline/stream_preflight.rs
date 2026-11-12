@@ -8,10 +8,11 @@ use super::super::GatewayUpstreamResponse;
 mod stream_overload;
 
 // Codex echoes its tools/instructions in the first `response.created` frame.
-// That frame is routinely ~80 KB, so a 64 KB cap truncated it, forced the
-// missing-SSE-header fallback to commit, and made `server_is_overloaded`
-// arrive after the stream was already delivered (no backup was ever tried).
-const STREAM_PREFLIGHT_MAX_BYTES: usize = 256 * 1024;
+// That frame is routinely ~80 KB; reasoning/tool placeholders can push the
+// metadata prefix past 256 KB before `response.failed` arrives. Keep a 1 MB
+// ceiling so the terminal overload can still be classified before commit.
+// The 10-second wall clock remains the primary bound for slow first tokens.
+const STREAM_PREFLIGHT_MAX_BYTES: usize = 1024 * 1024;
 // Keep response headers below the default 15-second SSE keepalive window. A longer
 // transparent failover window requires moving candidate coordination into the body.
 const STREAM_PREFLIGHT_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(10);

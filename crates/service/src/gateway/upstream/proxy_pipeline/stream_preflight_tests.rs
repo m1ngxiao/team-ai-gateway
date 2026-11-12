@@ -679,7 +679,7 @@ fn overload_preflight_does_not_retry_failed_response_with_output_snapshot() {
     for output in [
         r#"[{"type":"function_call","name":"write_file","arguments":"{}"}]"#,
         r#"[{"type":"message","content":[{"type":"output_text","text":"hello"}]}]"#,
-        r#"[{"type":"reasoning","summary":[]}]"#,
+        r#"[{"type":"reasoning","summary":[],"encrypted_content":"abc"}]"#,
     ] {
         let frame = format!(
             "data: {{\"type\":\"response.failed\",\"response\":{{\"output\":{output},\"error\":{{\"code\":\"server_is_overloaded\"}}}}}}\n\n"
@@ -689,6 +689,30 @@ fn overload_preflight_does_not_retry_failed_response_with_output_snapshot() {
             PrefixDecision::Deliver
         );
     }
+}
+
+#[test]
+fn overload_preflight_retries_failed_response_with_empty_reasoning_snapshot() {
+    let frame = concat!(
+        "data: {\"type\":\"response.failed\",\"response\":{",
+        "\"output\":[{\"type\":\"reasoning\",\"summary\":[]}],",
+        "\"error\":{\"code\":\"server_is_overloaded\"}}}\n\n"
+    );
+    assert_eq!(
+        super::classify_prefix(frame.as_bytes(), false, true),
+        PrefixDecision::Overload
+    );
+}
+
+#[test]
+fn overload_preflight_holds_empty_reasoning_metadata() {
+    let body = format!(
+        "data: {{\"type\":\"response.output_item.added\",\"item\":{{\"type\":\"reasoning\",\"summary\":[]}}}}\n\n{OVERLOAD_EVENT}"
+    );
+    assert_eq!(
+        super::classify_prefix(body.as_bytes(), false, true),
+        PrefixDecision::Overload
+    );
 }
 
 #[test]
@@ -928,12 +952,8 @@ fn overload_preflight_parses_retry_after_http_date_and_duplicate_headers() {
 fn overload_preflight_reassembles_fragmented_error_without_losing_fallback() {
     let split = OVERLOAD_EVENT.len() - 17;
     let response = stream_response_from_items(vec![
-        GatewayByteStreamItem::Chunk(Bytes::copy_from_slice(
-            &OVERLOAD_EVENT.as_bytes()[..split],
-        )),
-        GatewayByteStreamItem::Chunk(Bytes::copy_from_slice(
-            &OVERLOAD_EVENT.as_bytes()[split..],
-        )),
+        GatewayByteStreamItem::Chunk(Bytes::copy_from_slice(&OVERLOAD_EVENT.as_bytes()[..split])),
+        GatewayByteStreamItem::Chunk(Bytes::copy_from_slice(&OVERLOAD_EVENT.as_bytes()[split..])),
         GatewayByteStreamItem::Eof,
     ]);
     let StreamPreflightOutcome::OverloadFailover { response, .. } =
@@ -1013,7 +1033,12 @@ fn overload_preflight_prefix_limit_commits_error_after_large_metadata() {
 #[test]
 fn dynamic_preflight_can_refresh_an_initially_single_candidate_pool() {
     let outcome = preflight_stream_response_with_dynamic_failover(
-        stream_response(OVERLOAD_EVENT), "/v1/responses", true, false, true, true,
+        stream_response(OVERLOAD_EVENT),
+        "/v1/responses",
+        true,
+        false,
+        true,
+        true,
     );
     let StreamPreflightOutcome::OverloadFailover { response, .. } = outcome else {
         panic!("dynamic coordinator must be able to refresh candidates");
@@ -1022,26 +1047,43 @@ fn dynamic_preflight_can_refresh_an_initially_single_candidate_pool() {
     assert_eq!(body.as_ref(), OVERLOAD_EVENT.as_bytes());
 }
 
-fn sniff_response(header: Option<&str>, body: &[u8], retry_after: Option<&str>) -> GatewayUpstreamResponse {
+fn sniff_response(
+    header: Option<&str>,
+    body: &[u8],
+    retry_after: Option<&str>,
+) -> GatewayUpstreamResponse {
     let mut headers = HeaderMap::new();
     if let Some(header) = header {
         headers.insert(CONTENT_TYPE, HeaderValue::from_str(header).unwrap());
     }
     if let Some(value) = retry_after {
-        headers.insert(reqwest::header::RETRY_AFTER, HeaderValue::from_str(value).unwrap());
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            HeaderValue::from_str(value).unwrap(),
+        );
     }
     GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
-        reqwest::StatusCode::OK, headers,
+        reqwest::StatusCode::OK,
+        headers,
         GatewayByteStream::from_bytes(Bytes::copy_from_slice(body)),
     ))
 }
 
 #[test]
 fn dynamic_sniff_retries_headerless_and_mislabelled_sse_overload_preserving_bytes() {
-    for header in [None, Some("application/json"), Some("application/octet-stream"), Some("Text/Event-Stream")] {
+    for header in [
+        None,
+        Some("application/json"),
+        Some("application/octet-stream"),
+        Some("Text/Event-Stream"),
+    ] {
         let outcome = preflight_stream_response_with_dynamic_failover(
             sniff_response(header, OVERLOAD_EVENT.as_bytes(), None),
-            "/v1/responses", true, false, true, true,
+            "/v1/responses",
+            true,
+            false,
+            true,
+            true,
         );
         let StreamPreflightOutcome::OverloadFailover { response, .. } = outcome else {
             panic!("structured SSE overload must qualify: header={header:?}");
@@ -1056,44 +1098,88 @@ fn dynamic_sniff_preserves_json_plain_text_and_partial_field_prefixes() {
     let bodies = [
         "{\"error\":{\"code\":\"server_is_overloaded\"}}",
         " [{\"type\":\"response.failed\",\"error\":{\"code\":\"server_is_overloaded\"}}]",
-        "plain server_is_overloaded text", "eventual plaintext", "data without colon",
-        "data", "eve", "re", "i", "\u{feff}", " \r\n\t", "",
+        "plain server_is_overloaded text",
+        "eventual plaintext",
+        "data without colon",
+        "data",
+        "eve",
+        "re",
+        "i",
+        "\u{feff}",
+        " \r\n\t",
+        "",
     ];
     for header in [None, Some("application/json"), Some("text/event-stream")] {
         for body in bodies {
-            assert_ready_preserves_body(preflight_stream_response_with_dynamic_failover(
-                sniff_response(header, body.as_bytes(), None),
-                "/v1/responses", true, true, true, true,
-            ), body.as_bytes());
+            assert_ready_preserves_body(
+                preflight_stream_response_with_dynamic_failover(
+                    sniff_response(header, body.as_bytes(), None),
+                    "/v1/responses",
+                    true,
+                    true,
+                    true,
+                    true,
+                ),
+                body.as_bytes(),
+            );
         }
     }
 }
 
 #[test]
 fn dynamic_sniff_never_skips_plaintext_before_an_embedded_sse_error() {
-    for prefix in ["plain output\n\n", "eventual text\n\n", "[not-json]\n\n", "data without colon\n\n",
-                   ": comment\nordinary visible text\n\n", "id: synthetic\nordinary visible text\n\n"] {
+    for prefix in [
+        "plain output\n\n",
+        "eventual text\n\n",
+        "[not-json]\n\n",
+        "data without colon\n\n",
+        ": comment\nordinary visible text\n\n",
+        "id: synthetic\nordinary visible text\n\n",
+    ] {
         let body = format!("{prefix}{OVERLOAD_EVENT}");
-        assert_ready_preserves_body(preflight_stream_response_with_dynamic_failover(
-            sniff_response(None, body.as_bytes(), None),
-            "/v1/responses", true, true, true, true,
-        ), body.as_bytes());
+        assert_ready_preserves_body(
+            preflight_stream_response_with_dynamic_failover(
+                sniff_response(None, body.as_bytes(), None),
+                "/v1/responses",
+                true,
+                true,
+                true,
+                true,
+            ),
+            body.as_bytes(),
+        );
     }
 }
 
 #[test]
 fn dynamic_sniff_handles_bytewise_bom_whitespace_and_all_standard_field_prefixes() {
-    for first_field in ["", ": comment\r\n", "id: synthetic\r\n", "retry: 1000\r\n", "event: response.failed\r\n"] {
+    for first_field in [
+        "",
+        ": comment\r\n",
+        "id: synthetic\r\n",
+        "retry: 1000\r\n",
+        "event: response.failed\r\n",
+    ] {
         let body = format!(" \r\n\u{feff}\t{first_field}data: {{\"type\":\"response.failed\",\"response\":{{\"error\":{{\"code\":\"server_is_overloaded\"}}}}}}\r\n\r\n");
         let (tx, rx) = mpsc::sync_channel(body.len() + 1);
-        for byte in body.bytes() { tx.send(GatewayByteStreamItem::Chunk(Bytes::from(vec![byte]))).unwrap(); }
+        for byte in body.bytes() {
+            tx.send(GatewayByteStreamItem::Chunk(Bytes::from(vec![byte])))
+                .unwrap();
+        }
         tx.send(GatewayByteStreamItem::Eof).unwrap();
         drop(tx);
         let response = GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
-            reqwest::StatusCode::OK, HeaderMap::new(), GatewayByteStream::from_receiver(rx),
+            reqwest::StatusCode::OK,
+            HeaderMap::new(),
+            GatewayByteStream::from_receiver(rx),
         ));
         let outcome = preflight_stream_response_with_dynamic_failover(
-            response, "/v1/responses", true, true, true, true,
+            response,
+            "/v1/responses",
+            true,
+            true,
+            true,
+            true,
         );
         let StreamPreflightOutcome::OverloadFailover { response, .. } = outcome else {
             panic!("fragmented SSE prefix must be recognized: {first_field:?}");
@@ -1112,10 +1198,17 @@ fn dynamic_sniff_never_replays_text_tool_or_unknown_events_before_overload() {
     ] {
         let body = format!("data: {content}\n\n{OVERLOAD_EVENT}");
         for header in [None, Some("application/json")] {
-            assert_ready_preserves_body(preflight_stream_response_with_dynamic_failover(
-                sniff_response(header, body.as_bytes(), None),
-                "/v1/responses", true, true, true, true,
-            ), body.as_bytes());
+            assert_ready_preserves_body(
+                preflight_stream_response_with_dynamic_failover(
+                    sniff_response(header, body.as_bytes(), None),
+                    "/v1/responses",
+                    true,
+                    true,
+                    true,
+                    true,
+                ),
+                body.as_bytes(),
+            );
         }
     }
 }
@@ -1123,22 +1216,47 @@ fn dynamic_sniff_never_replays_text_tool_or_unknown_events_before_overload() {
 #[test]
 fn dynamic_sniff_respects_feature_replay_permission_stream_and_retry_after_gates() {
     for header in [None, Some("application/json")] {
-        for (is_stream, allowed, enabled) in [(true, true, false), (true, false, true), (false, true, true)] {
-            assert_ready_preserves_body(preflight_stream_response_with_dynamic_failover(
-                sniff_response(header, OVERLOAD_EVENT.as_bytes(), None),
-                "/v1/responses", is_stream, true, allowed, enabled,
-            ), OVERLOAD_EVENT.as_bytes());
+        for (is_stream, allowed, enabled) in [
+            (true, true, false),
+            (true, false, true),
+            (false, true, true),
+        ] {
+            assert_ready_preserves_body(
+                preflight_stream_response_with_dynamic_failover(
+                    sniff_response(header, OVERLOAD_EVENT.as_bytes(), None),
+                    "/v1/responses",
+                    is_stream,
+                    true,
+                    allowed,
+                    enabled,
+                ),
+                OVERLOAD_EVENT.as_bytes(),
+            );
         }
         for retry_after in ["3", "120", "later", "-1"] {
-            assert_ready_preserves_body(preflight_stream_response_with_dynamic_failover(
-                sniff_response(header, OVERLOAD_EVENT.as_bytes(), Some(retry_after)),
-                "/v1/responses", true, true, true, true,
-            ), OVERLOAD_EVENT.as_bytes());
+            assert_ready_preserves_body(
+                preflight_stream_response_with_dynamic_failover(
+                    sniff_response(header, OVERLOAD_EVENT.as_bytes(), Some(retry_after)),
+                    "/v1/responses",
+                    true,
+                    true,
+                    true,
+                    true,
+                ),
+                OVERLOAD_EVENT.as_bytes(),
+            );
         }
-        assert_ready_preserves_body(preflight_stream_response_with_dynamic_failover(
-            sniff_response(header, OVERLOAD_EVENT.as_bytes(), None),
-            "/v1/chat/completions", true, true, true, true,
-        ), OVERLOAD_EVENT.as_bytes());
+        assert_ready_preserves_body(
+            preflight_stream_response_with_dynamic_failover(
+                sniff_response(header, OVERLOAD_EVENT.as_bytes(), None),
+                "/v1/chat/completions",
+                true,
+                true,
+                true,
+                true,
+            ),
+            OVERLOAD_EVENT.as_bytes(),
+        );
     }
 }
 
@@ -1160,14 +1278,23 @@ fn dynamic_sniff_keeps_the_single_prefix_budget() {
 fn dynamic_sniff_commits_json_immediately_without_waiting_for_eof() {
     let body = b"{\"error\":{\"code\":\"server_is_overloaded\"}}";
     let (tx, rx) = mpsc::sync_channel(2);
-    tx.send(GatewayByteStreamItem::Chunk(Bytes::from_static(body))).unwrap();
+    tx.send(GatewayByteStreamItem::Chunk(Bytes::from_static(body)))
+        .unwrap();
     let response = GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
-        reqwest::StatusCode::OK, HeaderMap::new(), GatewayByteStream::from_receiver(rx),
+        reqwest::StatusCode::OK,
+        HeaderMap::new(),
+        GatewayByteStream::from_receiver(rx),
     ));
     let started = std::time::Instant::now();
     let outcome = preflight_stream_response_with_dynamic_timeouts(
-        response, "/v1/responses", true, true, Some(Duration::from_secs(1)),
-        Some(Duration::from_secs(1)), true, true,
+        response,
+        "/v1/responses",
+        true,
+        true,
+        Some(Duration::from_secs(1)),
+        Some(Duration::from_secs(1)),
+        true,
+        true,
     );
     assert!(started.elapsed() < Duration::from_millis(250));
     tx.send(GatewayByteStreamItem::Eof).unwrap();
@@ -1178,19 +1305,34 @@ fn dynamic_sniff_commits_json_immediately_without_waiting_for_eof() {
 fn dynamic_sniff_does_not_restart_the_wall_clock_while_waiting_for_overload() {
     let metadata = b"data: {\"type\":\"response.created\",\"response\":{\"output\":[]}}\n\n";
     let (tx, rx) = mpsc::sync_channel(3);
-    tx.send(GatewayByteStreamItem::Chunk(Bytes::from_static(metadata))).unwrap();
+    tx.send(GatewayByteStreamItem::Chunk(Bytes::from_static(metadata)))
+        .unwrap();
     let producer = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
-        tx.send(GatewayByteStreamItem::Chunk(Bytes::from_static(OVERLOAD_EVENT.as_bytes()))).unwrap();
+        tx.send(GatewayByteStreamItem::Chunk(Bytes::from_static(
+            OVERLOAD_EVENT.as_bytes(),
+        )))
+        .unwrap();
         tx.send(GatewayByteStreamItem::Eof).unwrap();
     });
     let response = GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
-        reqwest::StatusCode::OK, HeaderMap::new(), GatewayByteStream::from_receiver(rx),
+        reqwest::StatusCode::OK,
+        HeaderMap::new(),
+        GatewayByteStream::from_receiver(rx),
     ));
     let outcome = preflight_stream_response_with_dynamic_timeouts(
-        response, "/v1/responses", true, true, Some(Duration::from_secs(1)),
-        Some(Duration::from_millis(25)), true, true,
+        response,
+        "/v1/responses",
+        true,
+        true,
+        Some(Duration::from_secs(1)),
+        Some(Duration::from_millis(25)),
+        true,
+        true,
     );
     producer.join().unwrap();
-    assert_ready_preserves_body(outcome, &[metadata.as_slice(), OVERLOAD_EVENT.as_bytes()].concat());
+    assert_ready_preserves_body(
+        outcome,
+        &[metadata.as_slice(), OVERLOAD_EVENT.as_bytes()].concat(),
+    );
 }
