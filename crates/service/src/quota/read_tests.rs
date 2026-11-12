@@ -708,3 +708,67 @@ fn target_model_assignment_map_expands_v2_default_account_pool_route() {
     );
     assert_eq!(pool.account_estimated_remaining_tokens, 240);
 }
+
+#[test]
+fn weekly_quota_overview_reports_key_and_account_usage() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let now = now_ts();
+    storage
+        .insert_account(&account("weekly-account", "active", now))
+        .expect("insert account");
+    storage
+        .insert_api_key(&test_api_key("weekly-key", now))
+        .expect("insert api key");
+    storage
+        .add_key_usage_hourly("weekly-key", now, 1_234, 2)
+        .expect("add key usage");
+    let reset_at = now + 7 * 24 * 60 * 60;
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: "weekly-account".to_string(),
+            used_percent: Some(12.5),
+            window_minutes: Some(10_080),
+            resets_at: Some(reset_at),
+            secondary_used_percent: None,
+            secondary_window_minutes: None,
+            secondary_resets_at: None,
+            credits_json: None,
+            captured_at: now,
+        })
+        .expect("insert usage snapshot");
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 1,
+            account_id: Some("weekly-account".to_string()),
+            estimated_cost_usd: Some(56.78),
+            created_at: now,
+            ..RequestTokenStat::default()
+        })
+        .expect("add account usage");
+
+    let value = read_weekly_quota_overview_with_storage(&storage).expect("overview");
+    let key_limit = codexmanager_core::storage::DEFAULT_KEY_WEEKLY_LIMIT_CENTS;
+    let account_limit = codexmanager_core::storage::DEFAULT_ACCOUNT_WEEKLY_LIMIT_CENTS;
+
+    let key_item = value["keys"]
+        .as_array()
+        .expect("keys array")
+        .iter()
+        .find(|item| item["keyId"] == "weekly-key")
+        .expect("weekly key");
+    assert_eq!(key_item["usedCents"], 1_234);
+    assert_eq!(key_item["limitCents"], key_limit);
+    assert_eq!(key_item["remainingCents"], key_limit - 1_234);
+
+    let account_item = value["accounts"]
+        .as_array()
+        .expect("accounts array")
+        .iter()
+        .find(|item| item["accountId"] == "weekly-account")
+        .expect("weekly account");
+    assert_eq!(account_item["usedCents"], 5_678);
+    assert_eq!(account_item["limitCents"], account_limit);
+    assert_eq!(account_item["remainingCents"], account_limit - 5_678);
+    assert_eq!(account_item["resetAt"], reset_at);
+}

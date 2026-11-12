@@ -9,6 +9,7 @@ fn sample_setup() -> super::super::request_setup::UpstreamRequestSetup {
         url: "https://chatgpt.com/backend-api/codex/responses".to_string(),
         url_alt: None,
         candidate_count: 1,
+        candidate_account_ids: Vec::new(),
         account_max_inflight: 1,
         anthropic_has_thread_anchor: false,
         has_sticky_fallback_session: false,

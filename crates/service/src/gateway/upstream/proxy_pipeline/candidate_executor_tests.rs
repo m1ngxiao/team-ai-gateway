@@ -1,7 +1,7 @@
 use super::{
     account_model_override_for_request, execute_candidate_sequence, is_challenge_failover_error,
-    should_forward_thread_anchor_as_prompt_cache_key, CandidateExecutionResult,
-    CandidateExecutorParams,
+    prepare_initial_candidates, should_forward_thread_anchor_as_prompt_cache_key,
+    CandidateExecutionResult, CandidateExecutorParams,
 };
 use crate::gateway::{IncomingHeaderSnapshot, ResponseAdapter, ToolNameRestoreMap};
 use axum::http::{HeaderMap, HeaderValue};
@@ -25,6 +25,14 @@ struct CandidateSequenceOutcome {
     logged_model: Option<String>,
     logged_upstream_model: Option<String>,
     binding_last_model: Option<String>,
+}
+
+struct CooldownReset;
+
+impl Drop for CooldownReset {
+    fn drop(&mut self) {
+        crate::gateway::gateway_clear_account_cooldowns_for_tests();
+    }
 }
 
 fn build_account(id: &str, now: i64) -> Account {
@@ -57,6 +65,143 @@ fn build_token(account_id: &str, now: i64) -> Token {
         api_key_access_token: Some("api-key-token".to_string()),
         last_refresh: now,
     }
+}
+
+fn candidate_accounts(ids: &[&str]) -> Vec<(Account, Token)> {
+    let now = now_ts();
+    ids.iter()
+        .map(|id| (build_account(id, now), build_token(id, now)))
+        .collect()
+}
+
+#[test]
+fn nonportable_new_session_skips_cooling_account_before_single_send() {
+    let _guard = crate::test_env_guard();
+    let _cooldown_reset = CooldownReset;
+    crate::gateway::gateway_mark_account_cooldown_for_status("acc-a", 429);
+
+    let (remaining, temporary) = prepare_initial_candidates(
+        candidate_accounts(&["acc-a", "acc-b", "acc-c"]),
+        true,
+        None,
+        None,
+        0,
+    );
+
+    assert!(temporary.is_none());
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|(account, _)| account.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["acc-b", "acc-c", "acc-a"]
+    );
+}
+
+#[test]
+fn nonportable_bound_session_keeps_binding_and_reports_cooldown() {
+    let _guard = crate::test_env_guard();
+    let _cooldown_reset = CooldownReset;
+    crate::gateway::gateway_mark_account_cooldown_for_status("acc-a", 429);
+
+    let (remaining, temporary) = prepare_initial_candidates(
+        candidate_accounts(&["acc-b", "acc-a", "acc-c"]),
+        true,
+        Some("acc-a"),
+        None,
+        0,
+    );
+
+    assert!(remaining.is_empty());
+    let temporary = temporary.expect("bound account cooldown");
+    assert_eq!(temporary.account_id, "acc-a");
+    assert_eq!(temporary.reason, "bound_account_cooldown");
+    assert!(temporary.retry_after_secs > 0);
+}
+
+#[test]
+fn bound_session_inflight_backoff_does_not_invite_tight_retry_loops() {
+    let _held = crate::gateway::acquire_account_inflight("acc-bound-inflight");
+    let (remaining, temporary) = prepare_initial_candidates(
+        candidate_accounts(&["acc-bound-inflight"]),
+        true,
+        Some("acc-bound-inflight"),
+        None,
+        1,
+    );
+
+    assert!(remaining.is_empty());
+    let temporary = temporary.expect("bound account inflight");
+    assert_eq!(temporary.account_id, "acc-bound-inflight");
+    assert_eq!(temporary.reason, "bound_account_inflight");
+    assert!(temporary.retry_after_secs >= 5);
+}
+
+#[test]
+fn nonportable_bound_session_is_rotated_to_binding_before_one_send() {
+    let _guard = crate::test_env_guard();
+    let _cooldown_reset = CooldownReset;
+
+    let (remaining, temporary) = prepare_initial_candidates(
+        candidate_accounts(&["acc-b", "acc-a", "acc-c"]),
+        true,
+        Some("acc-a"),
+        None,
+        0,
+    );
+
+    assert!(temporary.is_none());
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|(account, _)| account.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["acc-a", "acc-c", "acc-b"]
+    );
+}
+
+#[test]
+fn portable_bound_session_migrates_when_bound_account_is_missing() {
+    let (remaining, temporary) = prepare_initial_candidates(
+        candidate_accounts(&["acc-b", "acc-c"]),
+        false,
+        Some("acc-a"),
+        Some(super::BoundAccountQuotaUnavailable {
+            reset_at: Some(now_ts() + 3600),
+        }),
+        0,
+    );
+
+    assert!(temporary.is_none());
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|(account, _)| account.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["acc-b", "acc-c"]
+    );
+}
+
+#[test]
+fn nonportable_bound_session_reports_quota_guard_recovery() {
+    let now = now_ts();
+    let reset_at = now + 7200;
+    let (remaining, temporary) = prepare_initial_candidates(
+        candidate_accounts(&["acc-b"]),
+        true,
+        Some("acc-a"),
+        Some(super::BoundAccountQuotaUnavailable {
+            reset_at: Some(reset_at),
+        }),
+        0,
+    );
+
+    assert!(remaining.is_empty());
+    let temporary = temporary.expect("bound account quota guard");
+    assert_eq!(temporary.account_id, "acc-a");
+    assert_eq!(temporary.reason, "bound_account_low_quota");
+    assert_eq!(temporary.low_quota_reset_at, Some(reset_at));
+    assert!((7200..=7201).contains(&temporary.retry_after_secs));
 }
 
 fn codex_session_headers() -> IncomingHeaderSnapshot {
@@ -190,6 +335,7 @@ fn run_candidate_sequence_with_model_and_statuses(
         url: canonical_url,
         url_alt: None,
         candidate_count: 1,
+        candidate_account_ids: Vec::new(),
         account_max_inflight: 1,
         anthropic_has_thread_anchor: false,
         has_sticky_fallback_session: false,
@@ -255,6 +401,8 @@ fn run_candidate_sequence_with_model_and_statuses(
             debug: false,
             allow_openai_fallback: false,
             disable_challenge_stateless_retry: false,
+            has_anthropic_safeguards: false,
+            context_enrichment: None,
         },
     )
     .expect("execute candidate sequence");
