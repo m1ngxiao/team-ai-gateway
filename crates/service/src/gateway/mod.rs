@@ -147,6 +147,9 @@ pub(crate) fn error_message_for_client(
 }
 
 mod anchor_fingerprint;
+mod anthropic_context_management;
+mod anthropic_safeguards;
+mod artifacts;
 mod concurrency;
 #[path = "routing/conversation_binding.rs"]
 pub(crate) mod conversation_binding;
@@ -164,6 +167,8 @@ mod local_count_tokens;
 #[path = "request/local_models.rs"]
 mod local_models;
 pub(crate) use local_models::filter_managed_models_for_gateway_key;
+#[path = "routing/dynamic_pool.rs"]
+pub(crate) mod dynamic_pool;
 #[path = "request/local_response.rs"]
 mod local_response;
 mod local_validation;
@@ -174,6 +179,10 @@ mod official_responses_http;
 #[path = "auth/openai_fallback.rs"]
 mod openai_fallback;
 mod protocol_adapter;
+#[path = "routing/key_gate.rs"]
+mod key_gate;
+#[path = "routing/quota_aware.rs"]
+mod quota_aware;
 #[path = "request/request_entry.rs"]
 mod request_entry;
 #[path = "routing/request_gate.rs"]
@@ -188,8 +197,6 @@ mod request_rewrite;
 mod route_hint;
 #[path = "routing/route_quality.rs"]
 mod route_quality;
-#[path = "routing/dynamic_pool.rs"]
-pub(crate) mod dynamic_pool;
 #[path = "core/runtime_config.rs"]
 mod runtime_config;
 #[path = "routing/selection.rs"]
@@ -206,9 +213,9 @@ mod upstream;
 
 pub(crate) use concurrency::current_gateway_concurrency_recommendation;
 use metrics::{
-    account_inflight_count, acquire_account_inflight, try_acquire_account_inflight, begin_gateway_request,
+    account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_candidate_skip, record_gateway_cooldown_mark, record_gateway_failover_attempt,
-    record_gateway_request_outcome, AccountInFlightGuard,
+    record_gateway_request_outcome, try_acquire_account_inflight, AccountInFlightGuard,
 };
 pub(crate) use metrics::{
     begin_rpc_request, duration_to_millis, gateway_metrics_prometheus,
@@ -243,8 +250,8 @@ pub(super) use thread_anchor::{
     resolve_fallback_thread_anchor, resolve_local_conversation_id_with_sticky_fallback,
 };
 pub(crate) use trace_log::{
-    log_client_service_tier, log_request_execution_plan, log_request_final, log_request_start,
-    next_trace_id,
+    log_client_service_tier, log_messages_ingress, log_request_execution_plan, log_request_final,
+    log_request_start, next_trace_id,
 };
 
 pub(crate) fn strip_cross_account_encrypted_content(body: &[u8]) -> Option<Vec<u8>> {
@@ -315,8 +322,8 @@ pub(crate) fn record_http_queue_enqueue_failure() {
 #[cfg(test)]
 use cooldown::cooldown_reason_for_status;
 use cooldown::{
-    clear_account_cooldown, is_account_in_cooldown, mark_account_cooldown,
-    mark_account_cooldown_for_status, CooldownReason,
+    account_cooldown_remaining_secs, clear_account_cooldown, is_account_in_cooldown,
+    mark_account_cooldown, mark_account_cooldown_for_status, CooldownReason,
 };
 #[cfg(test)]
 pub(super) use failover::should_failover_after_refresh;
@@ -472,6 +479,10 @@ fn decode_base64_header_value(input: &[u8]) -> Option<Vec<u8>> {
 
     Some(output)
 }
+pub(crate) use anthropic_safeguards::{
+    request_has_safeguards, response_has_safeguard_results, safeguards_request_capability_kind,
+    SafeguardsCapability,
+};
 pub(super) use incoming_headers::IncomingHeaderSnapshot;
 use local_count_tokens::maybe_respond_local_count_tokens;
 use local_models::maybe_respond_local_models;
@@ -479,7 +490,9 @@ use openai_fallback::try_openai_fallback;
 pub(crate) use request_entry::handle_gateway_request;
 use request_gate::{request_gate_lock, RequestGateAcquireError};
 pub(crate) use request_log::write_request_log;
-use route_hint::{apply_route_strategy, apply_route_strategy_with_source};
+use route_hint::{
+    apply_route_strategy, apply_route_strategy_with_quota_snapshot, quota_aware_route_active,
+};
 use route_quality::record_route_quality;
 pub(crate) use runtime_config::invalidate_account_proxy_client_cache as invalidate_account_proxy_cache;
 pub(crate) use runtime_config::upstream_client;
@@ -505,7 +518,8 @@ pub(crate) use runtime_config::{
 pub(crate) use selection::{
     collect_gateway_candidates_for_account_ids_with_low_quota_mode,
     collect_gateway_candidates_with_low_quota_mode, current_quota_guard_config,
-    invalidate_candidate_cache, set_quota_guard_config, LowQuotaCandidateMode, QuotaGuardConfig,
+    invalidate_candidate_cache, low_quota_recovery, set_quota_guard_config, LowQuotaCandidateMode,
+    QuotaGuardConfig,
 };
 #[cfg(test)]
 use token_exchange::account_token_exchange_lock;
@@ -604,6 +618,22 @@ pub(crate) fn current_compact_api_path() -> String {
 
 pub(crate) fn compact_api_path_uses_chat_completions() -> bool {
     runtime_config::compact_api_path_uses_chat_completions()
+}
+
+pub(crate) fn current_claude_safeguards_classifier_model() -> Option<String> {
+    runtime_config::current_claude_safeguards_classifier_model()
+}
+
+pub(crate) fn claude_context_management_enabled() -> bool {
+    runtime_config::claude_context_management_enabled()
+}
+
+pub(crate) fn current_claude_compact_summary_model() -> Option<String> {
+    runtime_config::current_claude_compact_summary_model()
+}
+
+pub(crate) fn current_claude_compact_summary_max_tokens() -> usize {
+    runtime_config::current_claude_compact_summary_max_tokens()
 }
 
 /// 函数 `current_model_forward_rules`
@@ -1195,6 +1225,35 @@ pub(crate) struct GatewayRoutedCandidates {
     pub(crate) conversation_routing: Option<conversation_binding::ConversationRoutingContext>,
 }
 
+pub(crate) fn load_quota_aware_snapshot_if_enabled(
+    storage: &codexmanager_core::storage::Storage,
+    platform_key_hash: &str,
+    candidates: &[(
+        codexmanager_core::storage::Account,
+        codexmanager_core::storage::Token,
+    )],
+) -> Option<quota_aware::QuotaAwareSnapshot> {
+    if !quota_aware_route_active() {
+        return None;
+    }
+    let account_ids = candidates
+        .iter()
+        .map(|(account, _)| account.id.clone())
+        .collect::<Vec<_>>();
+    match quota_aware::QuotaAwareSnapshot::load(
+        storage,
+        platform_key_hash,
+        account_ids.as_slice(),
+        codexmanager_core::storage::now_ts(),
+    ) {
+        Ok(snapshot) => Some(snapshot),
+        Err(err) => {
+            log::warn!("load quota-aware routing snapshot failed: {err}");
+            None
+        }
+    }
+}
+
 pub(crate) fn gateway_collect_routed_candidates_with_log_source(
     storage: &codexmanager_core::storage::Storage,
     key_id: &str,
@@ -1214,7 +1273,17 @@ pub(crate) fn gateway_collect_routed_candidates_with_log_source(
         api_key.account_plan_filter.as_deref(),
         LowQuotaCandidateMode::NormalOnly,
     )?;
-    let application = apply_route_strategy_with_source(&mut candidates, key_id, model);
+    let quota_snapshot = load_quota_aware_snapshot_if_enabled(
+        storage,
+        api_key.key_hash.as_str(),
+        candidates.as_slice(),
+    );
+    let application = apply_route_strategy_with_quota_snapshot(
+        &mut candidates,
+        key_id,
+        model,
+        quota_snapshot.as_ref(),
+    );
     Ok(GatewayRoutedCandidates {
         candidates,
         route_strategy: application.strategy_label,
@@ -1282,12 +1351,15 @@ pub(crate) fn gateway_collect_routed_candidates_for_ws(
     } else {
         None
     };
-    let mut rotation_plan = conversation_binding::apply_candidate_rotation(
+    let quota_snapshot =
+        load_quota_aware_snapshot_if_enabled(storage, api_key.key_hash.as_str(), &candidates);
+    let mut rotation_plan = conversation_binding::apply_candidate_rotation_with_quota(
         &mut candidates,
         conversation_routing.as_ref(),
         key_id,
         model,
         account_binding_counts.as_ref(),
+        quota_snapshot.as_ref(),
     );
     match conversation_binding::claim_initial_conversation_binding(
         storage,
@@ -1332,6 +1404,12 @@ pub(crate) fn gateway_ws_account_requires_switch(
     // computed from the fresh preference snapshot above, so do not let the persistent socket
     // keep using a formerly selected non-preferred account.
     if routed.route_source == "manual_preferred_account" {
+        return routed
+            .candidates
+            .first()
+            .is_some_and(|(account, _)| account.id != current_account_id);
+    }
+    if routed.route_source == "quota_aware_rebalance" {
         return routed
             .candidates
             .first()
@@ -1384,6 +1462,11 @@ pub(crate) fn gateway_record_failover_attempt() {
 /// 无
 pub(crate) fn gateway_mark_account_cooldown_for_status(account_id: &str, status: u16) {
     mark_account_cooldown_for_status(account_id, status);
+}
+
+#[cfg(test)]
+pub(crate) fn gateway_clear_account_cooldowns_for_tests() {
+    cooldown::clear_runtime_state();
 }
 
 /// 函数 `gateway_resolve_openai_bearer_token`

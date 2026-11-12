@@ -139,6 +139,20 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             || self.original_path.contains("/responses/compact")
     }
 
+    /// Astra Ultra is a client-side orchestration mode. The gateway sees the
+    /// client model and the original `reasoning_effort=ultra`; upstream requests
+    /// are normalized to `max`.
+    pub(in super::super) fn is_ultra_request(&self) -> bool {
+        let model = self
+            .client_model_for_log
+            .or(self.model_for_log)
+            .unwrap_or_default();
+        model.to_ascii_lowercase().contains("ultra")
+            || self
+                .client_reasoning_for_log
+                .is_some_and(|effort| effort.trim().eq_ignore_ascii_case("ultra"))
+    }
+
     pub(in super::super) fn effective_account_inflight_limit(&self) -> usize {
         if self.account_max_inflight == 0 || self.is_control_request() {
             self.account_max_inflight

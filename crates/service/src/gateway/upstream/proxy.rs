@@ -10,12 +10,15 @@ use super::executor::{
 };
 use super::protocol::aggregate_api::{AggregateAttemptOutcome, AggregateFailurePolicy};
 use super::proxy_pipeline::candidate_executor::{
-    execute_candidate_sequence, CandidateExecutionResult, CandidateExecutorParams,
+    account_model_override_for_request, execute_candidate_sequence, CandidateExecutionResult,
+    CandidateExecutorParams,
 };
 use super::proxy_pipeline::execution_context::GatewayUpstreamExecutionContext;
 use super::proxy_pipeline::request_gate::acquire_request_gate;
 use super::proxy_pipeline::request_setup::prepare_request_setup;
-use super::proxy_pipeline::response_finalize::respond_terminal;
+use super::proxy_pipeline::response_finalize::{
+    respond_conversation_rebind_required, respond_temporary_unavailable, respond_terminal,
+};
 use super::support::precheck::{prepare_candidates_for_proxy, CandidatePrecheckResult};
 
 /// 函数 `exhausted_gateway_error_for_log`
@@ -211,7 +214,13 @@ fn validate_model_route(
     model: Option<&str>,
     execution_plan: super::executor::GatewayUpstreamExecutionPlan,
 ) -> Result<Option<ManagedModelV2>, (u16, String)> {
-    validate_model_route_for_provider(storage, key_id, model, execution_plan, UpstreamProvider::Openai)
+    validate_model_route_for_provider(
+        storage,
+        key_id,
+        model,
+        execution_plan,
+        UpstreamProvider::Openai,
+    )
 }
 
 fn validate_model_route_for_provider(
@@ -412,7 +421,8 @@ fn resolve_active_explicit_aggregate_candidate(
     if let Some(candidate) = candidate.as_ref() {
         let candidate_provider =
             super::protocol::aggregate_api::normalize_provider_type_value(&candidate.provider_type);
-        let compatible_openai = aggregate_provider == crate::aggregate_api::AGGREGATE_API_PROVIDER_CODEX
+        let compatible_openai = aggregate_provider
+            == crate::aggregate_api::AGGREGATE_API_PROVIDER_CODEX
             && candidate_provider == crate::aggregate_api::AGGREGATE_API_PROVIDER_COMPATIBLE;
         if candidate_provider != aggregate_provider && !compatible_openai {
             return Err(format!(
@@ -772,7 +782,7 @@ pub(in super::super) fn proxy_validated_request(
         passthrough_path,
         path,
         passthrough_body,
-        body,
+        mut body,
         is_stream,
         has_prompt_cache_key,
         request_shape,
@@ -785,6 +795,7 @@ pub(in super::super) fn proxy_validated_request(
         response_adapter,
         gemini_stream_output_mode,
         tool_name_restore_map,
+        mut context_management,
         request_method,
         key_id,
         platform_key_hash,
@@ -803,6 +814,8 @@ pub(in super::super) fn proxy_validated_request(
         service_tier_source_for_log,
         gateway_mode_for_log,
         method,
+        has_anthropic_safeguards,
+        anthropic_safeguards_capability,
     } = validated;
     let started_at = Instant::now();
     let client_is_stream = is_stream;
@@ -810,6 +823,45 @@ pub(in super::super) fn proxy_validated_request(
     // 下游是否流式仍由客户端 `stream` 参数决定（在 response bridge 层聚合/透传）。
     let upstream_is_stream = resolve_upstream_is_stream(client_is_stream, path.as_str());
     let request_deadline = request_deadline_for_path(started_at, client_is_stream, path.as_str());
+
+    if let Some(capability) = anthropic_safeguards_capability {
+        log::info!(
+            "event=anthropic_safeguards_capability trace_id={} capability={} provider={:?} protocol={} path={}",
+            trace_id,
+            capability.as_str(),
+            upstream_provider,
+            protocol_type,
+            passthrough_path,
+        );
+        if capability == super::super::SafeguardsCapability::Unsupported {
+            return respond_model_route_error(
+                request,
+                &storage,
+                trace_id.as_str(),
+                key_id.as_str(),
+                original_path.as_str(),
+                passthrough_path.as_str(),
+                request_method.as_str(),
+                super::super::ResponseAdapter::Passthrough,
+                service_tier_for_log.as_deref(),
+                effective_service_tier_for_log.as_deref(),
+                service_tier_source_for_log.as_deref(),
+                gateway_mode_for_log.as_deref(),
+                client_model_for_log.as_deref(),
+                model_for_log.as_deref(),
+                model_source_for_log.as_deref(),
+                client_reasoning_for_log.as_deref(),
+                reasoning_for_log.as_deref(),
+                reasoning_source_for_log.as_deref(),
+                started_at,
+                501,
+                crate::gateway::bilingual_error(
+                    "当前上游不支持 Anthropic server-side safeguards",
+                    "anthropic safeguards capability=false: configure a native Anthropic upstream",
+                ),
+            );
+        }
+    }
 
     super::super::trace_log::log_request_start(
         trace_id.as_str(),
@@ -876,7 +928,44 @@ pub(in super::super) fn proxy_validated_request(
             reasoning_source_for_log.as_deref(),
             started_at,
             503,
-            "Claude subscription keys require account rotation; hybrid routes are unavailable".to_string(),
+            "Claude subscription keys require account rotation; hybrid routes are unavailable"
+                .to_string(),
+        );
+    }
+
+    if has_anthropic_safeguards
+        && upstream_provider == UpstreamProvider::Claude
+        && matches!(
+            execution_plan.route_kind,
+            GatewayUpstreamRouteKind::HybridAccountFirst
+                | GatewayUpstreamRouteKind::HybridAggregateFirst
+        )
+    {
+        return respond_model_route_error(
+            request,
+            &storage,
+            trace_id.as_str(),
+            key_id.as_str(),
+            original_path.as_str(),
+            passthrough_path.as_str(),
+            request_method.as_str(),
+            super::super::ResponseAdapter::Passthrough,
+            service_tier_for_log.as_deref(),
+            effective_service_tier_for_log.as_deref(),
+            service_tier_source_for_log.as_deref(),
+            gateway_mode_for_log.as_deref(),
+            client_model_for_log.as_deref(),
+            model_for_log.as_deref(),
+            model_source_for_log.as_deref(),
+            client_reasoning_for_log.as_deref(),
+            reasoning_for_log.as_deref(),
+            reasoning_source_for_log.as_deref(),
+            started_at,
+            501,
+            crate::gateway::bilingual_error(
+                "safeguards 请求不允许使用会切换协议的混合路由",
+                "anthropic safeguards requests require a single native Anthropic route",
+            ),
         );
     }
 
@@ -951,7 +1040,11 @@ pub(in super::super) fn proxy_validated_request(
     // 因此这里使用可变绑定。
     let mut request = request;
     if should_try_provider_executor_aggregate_route(execution_plan, configured_model.as_ref()) {
-        let (aggregate_path, aggregate_body) = if is_hybrid_passthrough_route(execution_plan) {
+        let (aggregate_path, aggregate_body) = if has_anthropic_safeguards {
+            // The native Messages body is the source of truth for safeguards. Never send the
+            // Responses compatibility rewrite to a Claude aggregate candidate.
+            (passthrough_path.as_str(), &passthrough_body)
+        } else if is_hybrid_passthrough_route(execution_plan) {
             (passthrough_path.as_str(), &passthrough_body)
         } else {
             (path.as_str(), &body)
@@ -1159,6 +1252,69 @@ pub(in super::super) fn proxy_validated_request(
         model_for_log.as_deref(),
         trace_id.as_str(),
     );
+    if context_management.needs_compaction_summary()
+        && response_adapter == super::super::ResponseAdapter::AnthropicMessagesFromResponses
+    {
+        if let Some(request) = context_management.compact_request() {
+            log::info!(
+                "event=gateway_claude_compact_triggered trace_id={} current_tokens={} trigger_tokens={}",
+                trace_id,
+                request.current_tokens,
+                request.trigger_tokens
+            );
+        }
+        let mut summarized = None;
+        let summary_model = super::super::current_claude_compact_summary_model()
+            .or_else(|| account_model_override_for_request(&storage, model_for_log.as_deref()))
+            .or_else(|| model_for_log.clone());
+        for (account, token) in candidates.iter_mut().take(2) {
+            let Some(request) = context_management.compact_request() else {
+                break;
+            };
+            match super::context_summarizer::summarize_compact_request(
+                request,
+                summary_model.as_deref(),
+                account,
+                token,
+                &incoming_headers,
+                setup.upstream_base.as_str(),
+                setup.upstream_fallback_base.as_deref(),
+                request_deadline,
+            ) {
+                Ok(result) => {
+                    summarized = Some(result);
+                    break;
+                }
+                Err(err) => {
+                    log::warn!(
+                        "event=gateway_claude_compact_summary_failed trace_id={} account_id={} error={}",
+                        trace_id,
+                        account.id,
+                        err
+                    );
+                }
+            }
+        }
+        match summarized {
+            Some(result) => {
+                let summary = result.summary.clone();
+                context_management.record_compaction(result);
+                body = super::super::anthropic_context_management::apply_summary_to_responses_body(
+                    body.as_ref(),
+                    summary.as_str(),
+                )
+                .into();
+            }
+            None => context_management.record_compaction_error(if summary_model.is_none() {
+                "summary_model_not_configured"
+            } else {
+                "summary_call_failed"
+            }),
+        }
+    }
+    let context_enrichment = context_management
+        .response_enrichment()
+        .map(std::sync::Arc::new);
     let base = setup.upstream_base.as_str();
     if should_fallback_to_aggregate_after_account_exhaustion(
         execution_plan,
@@ -1212,6 +1368,27 @@ pub(in super::super) fn proxy_validated_request(
     let disable_challenge_stateless_retry = !(protocol_type == PROTOCOL_ANTHROPIC_NATIVE
         && body.len() <= 2 * 1024)
         && !path.starts_with("/v1/responses");
+    let _key_concurrency_guard = if context.is_control_request() {
+        None
+    } else {
+        let max_active = if context.is_ultra_request() { 2 } else { 1 };
+        match crate::gateway::key_gate::acquire_key_concurrency(
+            key_id.as_str(),
+            max_active,
+            std::time::Duration::from_secs(30),
+        ) {
+            Some(guard) => Some(guard),
+            None => {
+                let response = super::super::error_response::terminal_text_response(
+                    429,
+                    "API Key 并发请求已达上限，请稍后重试",
+                    Some(trace_id.as_str()),
+                );
+                let _ = request.respond(response);
+                return Ok(());
+            }
+        }
+    };
     let _request_gate_guard = acquire_request_gate(
         trace_id.as_str(),
         key_id.as_str(),
@@ -1244,6 +1421,8 @@ pub(in super::super) fn proxy_validated_request(
             debug,
             allow_openai_fallback,
             disable_challenge_stateless_retry,
+            has_anthropic_safeguards,
+            context_enrichment,
         },
     )? {
         CandidateExecutionResult::Handled => return Ok(()),
@@ -1254,6 +1433,7 @@ pub(in super::super) fn proxy_validated_request(
             skipped_inflight,
             last_attempt_url,
             last_attempt_error,
+            temporary_unavailable,
         } => (
             *request,
             attempted_account_ids,
@@ -1261,6 +1441,7 @@ pub(in super::super) fn proxy_validated_request(
             skipped_inflight,
             last_attempt_url,
             last_attempt_error,
+            temporary_unavailable,
         ),
     };
     let (
@@ -1270,13 +1451,68 @@ pub(in super::super) fn proxy_validated_request(
         skipped_inflight,
         last_attempt_url,
         last_attempt_error,
+        temporary_unavailable,
     ) = exhausted;
-    let final_error = exhausted_gateway_error_for_log(
+    let exhausted_error = exhausted_gateway_error_for_log(
         attempted_account_ids.as_slice(),
         skipped_cooldown,
         skipped_inflight,
         last_attempt_error.as_deref(),
     );
+    if let Some(temporary) = temporary_unavailable
+        .as_ref()
+        .filter(|_| attempted_account_ids.is_empty())
+    {
+        if temporary.reason == "bound_account_low_quota" {
+            let reset_at = temporary
+                .low_quota_reset_at
+                .and_then(|timestamp| chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0))
+                .map(|timestamp| timestamp.to_rfc3339())
+                .unwrap_or_else(|| "unknown".to_string());
+            let final_error = format!(
+                "conversation_rebind_required; reason=bound_account_low_quota; account_id={}; quota_reset_at={reset_at}",
+                temporary.account_id
+            );
+            context.log_final_result(
+                Some(temporary.account_id.as_str()),
+                Some(base),
+                409,
+                RequestLogUsage::default(),
+                Some(final_error.as_str()),
+                started_at.elapsed().as_millis(),
+                None,
+            );
+            let message = crate::gateway::bilingual_error(
+                format!(
+                    "当前会话绑定的上游账号额度不足，无法安全切换；请新建会话继续，额度预计恢复时间：{reset_at}"
+                ),
+                format!(
+                    "conversation_rebind_required: the bound upstream account has insufficient quota; start a new conversation; quota resets at {reset_at}"
+                ),
+            );
+            return respond_conversation_rebind_required(request, message, Some(trace_id.as_str()));
+        }
+        let final_error = format!(
+            "account temporarily unavailable; kind={}; retry_after={}s; account_id={}",
+            temporary.reason, temporary.retry_after_secs, temporary.account_id
+        );
+        context.log_final_result(
+            Some(temporary.account_id.as_str()),
+            Some(base),
+            429,
+            RequestLogUsage::default(),
+            Some(final_error.as_str()),
+            started_at.elapsed().as_millis(),
+            None,
+        );
+        return respond_temporary_unavailable(
+            request,
+            crate::gateway::bilingual_error("账号临时不可用", "account temporarily unavailable"),
+            temporary.retry_after_secs,
+            Some(trace_id.as_str()),
+        );
+    }
+    let final_error = exhausted_error;
     if should_fallback_to_aggregate_after_account_exhaustion(
         execution_plan,
         configured_model.as_ref(),
