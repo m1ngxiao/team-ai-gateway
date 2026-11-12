@@ -21,6 +21,22 @@ pub(in super::super) enum CandidateSkipReason {
 ///
 /// # 返回
 /// 返回函数执行结果
+fn filter_account_weekly_quota(
+    storage: &Storage,
+    candidates: Vec<(Account, Token)>,
+) -> Vec<(Account, Token)> {
+    let now = codexmanager_core::storage::now_ts();
+    candidates
+        .into_iter()
+        .filter(|(account, _)| {
+            storage
+                .account_usage_cents_rolling_7d(&account.id, now)
+                .map(|used| used < codexmanager_core::storage::DEFAULT_ACCOUNT_WEEKLY_LIMIT_CENTS)
+                .unwrap_or(true)
+        })
+        .collect()
+}
+
 pub(crate) fn prepare_gateway_candidates(
     storage: &Storage,
     request_model: Option<&str>,
@@ -44,10 +60,11 @@ pub(crate) fn prepare_gateway_candidates(
         && !exclude_free_accounts
         && !reserve_model
     {
-        return super::super::super::collect_gateway_candidates_with_low_quota_mode(
+        let candidates = super::super::super::collect_gateway_candidates_with_low_quota_mode(
             storage,
             low_quota_mode,
-        );
+        )?;
+        return Ok(filter_account_weekly_quota(storage, candidates));
     }
 
     let mut authorized_candidates = if reserve_model {
@@ -111,11 +128,13 @@ pub(crate) fn prepare_gateway_candidates(
     if reserve_model {
         return collect_luna_reserve_candidates(storage, &authorized_account_ids, &snapshots);
     }
-    super::super::super::collect_gateway_candidates_for_account_ids_with_low_quota_mode(
-        storage,
-        &authorized_account_ids,
-        low_quota_mode,
-    )
+    let candidates =
+        super::super::super::collect_gateway_candidates_for_account_ids_with_low_quota_mode(
+            storage,
+            &authorized_account_ids,
+            low_quota_mode,
+        )?;
+    Ok(filter_account_weekly_quota(storage, candidates))
 }
 
 fn collect_luna_reserve_candidates(

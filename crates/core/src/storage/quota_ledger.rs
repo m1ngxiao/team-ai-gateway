@@ -162,6 +162,18 @@ impl Storage {
         self.key_usage_cents_since(key_id, since)
     }
 
+    /// Rolling seven-day account usage derived from durable request cost stats.
+    pub fn account_usage_cents_rolling_7d(&self, account_id: &str, now: i64) -> Result<i64> {
+        let since = now.saturating_sub(SECONDS_PER_WEEK);
+        self.conn.query_row(
+            "SELECT COALESCE(SUM(CAST(ROUND(estimated_cost_usd * 100.0) AS INTEGER)), 0)
+             FROM request_token_stats
+             WHERE account_id = ?1 AND created_at >= ?2",
+            params![account_id, since],
+            |row| row.get(0),
+        )
+    }
+
     pub fn ensure_account_weekly_usage(
         &self,
         account_id: &str,

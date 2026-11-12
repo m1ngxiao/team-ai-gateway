@@ -46,3 +46,19 @@ CREATE TABLE IF NOT EXISTS quota_reset_events (
 
 CREATE INDEX IF NOT EXISTS idx_quota_reset_events_occurred_at
   ON quota_reset_events(occurred_at);
+
+-- Backfill the rolling seven-day key ledger from durable request cost stats so
+-- the first deploy does not grant every key a fresh weekly budget.
+INSERT OR REPLACE INTO key_usage_hourly (
+  key_id, hour_start, cost_cents, request_count, updated_at
+)
+SELECT
+  key_id,
+  (created_at / 3600) * 3600,
+  CAST(ROUND(SUM(estimated_cost_usd) * 100.0) AS INTEGER),
+  COUNT(*),
+  CAST(strftime('%s', 'now') AS INTEGER)
+FROM request_token_stats
+WHERE created_at >= CAST(strftime('%s', 'now') AS INTEGER) - 604800
+  AND estimated_cost_usd IS NOT NULL
+GROUP BY key_id, created_at / 3600;
