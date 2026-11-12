@@ -107,7 +107,9 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         idx + 1 < self.candidate_count
     }
 
-    pub(in super::super) fn key_id(&self) -> &str { self.key_id }
+    pub(in super::super) fn key_id(&self) -> &str {
+        self.key_id
+    }
 
     pub(in super::super) fn protocol_type(&self) -> &str {
         self.protocol_type
@@ -124,6 +126,27 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
     ///
     /// # 返回
     /// 返回函数执行结果
+    /// Control-plane requests get the reserved account slot, while ordinary
+    /// user requests are capped at `limit - 1`. This keeps the account-wide
+    /// hard cap at 5 (4 user + 1 control) without a second counter.
+    pub(in super::super) fn is_control_request(&self) -> bool {
+        let model = self
+            .client_model_for_log
+            .or(self.model_for_log)
+            .unwrap_or_default();
+        model.eq_ignore_ascii_case("codex-auto-review")
+            || self.path.contains("/responses/compact")
+            || self.original_path.contains("/responses/compact")
+    }
+
+    pub(in super::super) fn effective_account_inflight_limit(&self) -> usize {
+        if self.account_max_inflight == 0 || self.is_control_request() {
+            self.account_max_inflight
+        } else {
+            self.account_max_inflight.saturating_sub(1).max(1)
+        }
+    }
+
     pub(in super::super) fn should_skip_candidate(
         &self,
         account_id: &str,
@@ -133,7 +156,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             account_id,
             idx,
             self.candidate_count,
-            self.account_max_inflight,
+            self.effective_account_inflight_limit(),
             self.protocol_type == crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE,
         )
     }

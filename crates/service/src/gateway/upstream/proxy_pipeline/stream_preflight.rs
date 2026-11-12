@@ -7,7 +7,11 @@ use super::super::GatewayUpstreamResponse;
 #[path = "stream_overload.rs"]
 mod stream_overload;
 
-const STREAM_PREFLIGHT_MAX_BYTES: usize = 64 * 1024;
+// Codex echoes its tools/instructions in the first `response.created` frame.
+// That frame is routinely ~80 KB, so a 64 KB cap truncated it, forced the
+// missing-SSE-header fallback to commit, and made `server_is_overloaded`
+// arrive after the stream was already delivered (no backup was ever tried).
+const STREAM_PREFLIGHT_MAX_BYTES: usize = 256 * 1024;
 // Keep response headers below the default 15-second SSE keepalive window. A longer
 // transparent failover window requires moving candidate coordination into the body.
 const STREAM_PREFLIGHT_WALL_CLOCK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -32,7 +36,10 @@ enum PrefixDecision {
 pub(in super::super) enum StreamPreflightOutcome {
     Ready(GatewayUpstreamResponse),
     Failover(String),
-    StatusFailover { status_code: u16, message: String },
+    StatusFailover {
+        status_code: u16,
+        message: String,
+    },
     RetryUsageNotice(String),
     TransportFailover(String),
     OverloadFailover {
@@ -220,11 +227,18 @@ enum SniffedFraming {
 /// the capacity recognizer. A JSON object/array or ordinary text is committed
 /// unchanged, including when it happens to contain an overload error string.
 fn sniff_sse_framing(prefix: &[u8]) -> SniffedFraming {
-    let skip_space = |bytes: &[u8]| bytes.iter().take_while(|byte| byte.is_ascii_whitespace()).count();
+    let skip_space = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .take_while(|byte| byte.is_ascii_whitespace())
+            .count()
+    };
     let mut start = skip_space(prefix);
     let remaining = &prefix[start..];
     const BOM: &[u8] = &[0xef, 0xbb, 0xbf];
-    if remaining.is_empty() { return SniffedFraming::NeedMore; }
+    if remaining.is_empty() {
+        return SniffedFraming::NeedMore;
+    }
     if remaining.starts_with(BOM) {
         start += BOM.len();
         start += skip_space(&prefix[start..]);
@@ -232,7 +246,9 @@ fn sniff_sse_framing(prefix: &[u8]) -> SniffedFraming {
         return SniffedFraming::NeedMore;
     }
     let remaining = &prefix[start..];
-    if remaining.is_empty() { return SniffedFraming::NeedMore; }
+    if remaining.is_empty() {
+        return SniffedFraming::NeedMore;
+    }
     const FIELDS: [&[u8]; 5] = [b"data:", b"event:", b"id:", b"retry:", b":"];
     // Qualify the whole observed prefix, not only its first line: a comment
     // followed by ordinary body text must not hide that text from the existing
@@ -240,7 +256,9 @@ fn sniff_sse_framing(prefix: &[u8]) -> SniffedFraming {
     // dynamic path, even though a general SSE client may ignore them.
     let mut line_start = 0;
     for (index, byte) in remaining.iter().enumerate() {
-        if *byte != b'\n' { continue; }
+        if *byte != b'\n' {
+            continue;
+        }
         let line = &remaining[line_start..index];
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         if !line.is_empty() && !FIELDS.iter().any(|field| line.starts_with(field)) {
@@ -253,8 +271,11 @@ fn sniff_sse_framing(prefix: &[u8]) -> SniffedFraming {
     if tail.is_empty() || FIELDS.iter().any(|field| tail.starts_with(field)) {
         return SniffedFraming::Sse(start);
     }
-    if FIELDS.iter().any(|field| field.starts_with(tail)) { SniffedFraming::NeedMore }
-    else { SniffedFraming::Other }
+    if FIELDS.iter().any(|field| field.starts_with(tail)) {
+        SniffedFraming::NeedMore
+    } else {
+        SniffedFraming::Other
+    }
 }
 
 fn classify_preflight_prefix(
@@ -270,7 +291,9 @@ fn classify_preflight_prefix(
         SniffedFraming::NeedMore => PrefixDecision::NeedMore,
         SniffedFraming::Other => PrefixDecision::Deliver,
         SniffedFraming::Sse(start) => classify_prefix(
-            &prefix[start..], include_incomplete_frame, allow_overload_failover,
+            &prefix[start..],
+            include_incomplete_frame,
+            allow_overload_failover,
         ),
     }
 }
@@ -322,22 +345,21 @@ fn classify_prefix(
 
         // A retry must not consume tool starts or populated content disguised as
         // an item/part-added event. Only genuinely empty metadata may be held.
-        if event_type.as_deref().is_some_and(|kind| {
-            stream_overload::is_content_boundary(kind, parsed.as_ref())
-        }) {
+        if event_type
+            .as_deref()
+            .is_some_and(|kind| stream_overload::is_content_boundary(kind, parsed.as_ref()))
+        {
             return PrefixDecision::Deliver;
         }
 
         if allow_overload_failover
             && event_type.as_deref().is_some_and(is_error_event)
-            && parsed
-                .as_ref()
-                .is_some_and(|value| {
-                    stream_overload::is_structured_overload(
-                        value,
-                        event_type.as_deref().unwrap_or_default(),
-                    )
-                })
+            && parsed.as_ref().is_some_and(|value| {
+                stream_overload::is_structured_overload(
+                    value,
+                    event_type.as_deref().unwrap_or_default(),
+                )
+            })
         {
             // The existing quota-notice recognizer can temporarily hold a text
             // delta. That exception must not expand the new overload replay
@@ -414,7 +436,9 @@ fn classify_prefix(
 }
 
 pub(super) fn retry_after_for_health(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    stream_overload::retry_after_delay(headers, chrono::Utc::now()).ok().flatten()
+    stream_overload::retry_after_delay(headers, chrono::Utc::now())
+        .ok()
+        .flatten()
 }
 
 pub(in super::super) fn preflight_stream_response(
@@ -441,8 +465,14 @@ pub(in super::super) fn preflight_stream_response_with_overload_failover(
     has_more_candidates: bool,
     allow_overload_failover: bool,
 ) -> StreamPreflightOutcome {
-    preflight_stream_response_with_dynamic_failover(response, request_path, upstream_is_stream,
-        has_more_candidates, allow_overload_failover, false)
+    preflight_stream_response_with_dynamic_failover(
+        response,
+        request_path,
+        upstream_is_stream,
+        has_more_candidates,
+        allow_overload_failover,
+        false,
+    )
 }
 
 pub(in super::super) fn preflight_stream_response_with_dynamic_failover(
@@ -454,8 +484,12 @@ pub(in super::super) fn preflight_stream_response_with_dynamic_failover(
     dynamic_selection: bool,
 ) -> StreamPreflightOutcome {
     preflight_stream_response_with_dynamic_timeouts(
-        response, request_path, upstream_is_stream, has_more_candidates,
-        crate::gateway::upstream_stream_timeout(), Some(STREAM_PREFLIGHT_WALL_CLOCK_TIMEOUT),
+        response,
+        request_path,
+        upstream_is_stream,
+        has_more_candidates,
+        crate::gateway::upstream_stream_timeout(),
+        Some(STREAM_PREFLIGHT_WALL_CLOCK_TIMEOUT),
         allow_overload_failover && (has_more_candidates || dynamic_selection),
         dynamic_selection,
     )
@@ -490,8 +524,14 @@ fn preflight_stream_response_with_timeouts(
     allow_overload_failover: bool,
 ) -> StreamPreflightOutcome {
     preflight_stream_response_with_dynamic_timeouts(
-        response, request_path, upstream_is_stream, has_more_candidates,
-        idle_timeout, wall_clock_timeout, allow_overload_failover, false,
+        response,
+        request_path,
+        upstream_is_stream,
+        has_more_candidates,
+        idle_timeout,
+        wall_clock_timeout,
+        allow_overload_failover,
+        false,
     )
 }
 
@@ -568,7 +608,12 @@ fn preflight_stream_response_with_dynamic_timeouts(
             | GatewayStreamPrefetchTerminal::Error(_)
             | GatewayStreamPrefetchTerminal::Disconnected
     );
-    let decision = classify_preflight_prefix(prefix.as_ref(), include_incomplete_frame, allow_overload_failover, sniff_framing);
+    let decision = classify_preflight_prefix(
+        prefix.as_ref(),
+        include_incomplete_frame,
+        allow_overload_failover,
+        sniff_framing,
+    );
     if sniff_framing && !matches!(sniff_sse_framing(prefix.as_ref()), SniffedFraming::Sse(_)) {
         return StreamPreflightOutcome::Ready(response);
     }
@@ -588,7 +633,8 @@ fn preflight_stream_response_with_dynamic_timeouts(
         }
         PrefixDecision::Overload => StreamPreflightOutcome::OverloadFailover {
             // Do not record arbitrary upstream error text as part of retry logs.
-            message: "upstream model temporarily overloaded (code=server_is_overloaded)".to_string(),
+            message: "upstream model temporarily overloaded (code=server_is_overloaded)"
+                .to_string(),
             retry_after: retry_after.ok().flatten(),
             response,
         },

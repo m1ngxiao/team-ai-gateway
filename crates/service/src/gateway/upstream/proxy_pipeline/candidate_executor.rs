@@ -1,8 +1,9 @@
+use super::dynamic_failover::DynamicRequestPolicy;
+use crate::gateway::dynamic_pool;
 use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token, UsageSnapshotRecord};
 use std::collections::{HashMap, VecDeque};
-use crate::gateway::dynamic_pool;
-use super::dynamic_failover::DynamicRequestPolicy;
+use std::sync::Arc;
 use std::time::Instant;
 use tiny_http::Request;
 
@@ -15,7 +16,9 @@ use super::candidate_attempt::{
 };
 use super::candidate_state::CandidateExecutionState;
 use super::execution_context::GatewayUpstreamExecutionContext;
-use super::overload_retry::{request_is_portable, retry_delay, OverloadRetryBudget};
+use super::overload_retry::{
+    aggressive_retry_enabled, request_is_portable, retry_delay, OverloadRetryBudget,
+};
 use super::request_setup::UpstreamRequestSetup;
 use super::response_finalize::{
     finalize_terminal_candidate, finalize_upstream_response, respond_total_timeout,
@@ -87,7 +90,21 @@ pub(in super::super) enum CandidateExecutionResult {
         skipped_inflight: usize,
         last_attempt_url: Option<String>,
         last_attempt_error: Option<String>,
+        temporary_unavailable: Option<CandidateTemporaryUnavailable>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in super::super) struct CandidateTemporaryUnavailable {
+    pub(in super::super) account_id: String,
+    pub(in super::super) retry_after_secs: u64,
+    pub(in super::super) reason: &'static str,
+    pub(in super::super) low_quota_reset_at: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BoundAccountQuotaUnavailable {
+    reset_at: Option<i64>,
 }
 
 pub(in super::super) struct CandidateExecutorParams<'a> {
@@ -113,6 +130,9 @@ pub(in super::super) struct CandidateExecutorParams<'a> {
     pub(in super::super) debug: bool,
     pub(in super::super) allow_openai_fallback: bool,
     pub(in super::super) disable_challenge_stateless_retry: bool,
+    pub(in super::super) has_anthropic_safeguards: bool,
+    pub(in super::super) context_enrichment:
+        Option<Arc<super::super::super::anthropic_context_management::AnthropicContextEnrichment>>,
 }
 
 fn record_failover_attempt(
@@ -169,7 +189,162 @@ fn should_retry_same_account_after_failover(retry_count: u8) -> bool {
     retry_count == 0
 }
 
-fn account_model_override_for_request(
+fn account_has_inflight_capacity(account_id: &str, account_max_inflight: usize) -> bool {
+    account_max_inflight == 0
+        || super::super::super::account_inflight_count(account_id) < account_max_inflight
+}
+
+/// Keeps the one-send safety rule for non-replayable requests without treating
+/// cooldown or preflight capacity failures as an attempted upstream request.
+fn prepare_initial_candidates(
+    candidates: Vec<(Account, Token)>,
+    single_send_mode: bool,
+    bound_account_id: Option<&str>,
+    bound_account_quota: Option<BoundAccountQuotaUnavailable>,
+    account_max_inflight: usize,
+) -> (
+    VecDeque<(Account, Token)>,
+    Option<CandidateTemporaryUnavailable>,
+) {
+    if !single_send_mode {
+        return (VecDeque::from(candidates), None);
+    }
+
+    if let Some(bound_account_id) = bound_account_id {
+        let Some(bound_index) = candidates
+            .iter()
+            .position(|(account, _)| account.id == bound_account_id)
+        else {
+            let (reason, retry_after_secs, low_quota_reset_at) = bound_account_quota
+                .map(|quota| {
+                    (
+                        "bound_account_low_quota",
+                        quota
+                            .reset_at
+                            .map(|reset_at| {
+                                reset_at
+                                    .saturating_sub(codexmanager_core::storage::now_ts())
+                                    .max(1) as u64
+                            })
+                            .unwrap_or(1),
+                        quota.reset_at,
+                    )
+                })
+                .unwrap_or(("bound_account_unavailable", 1, None));
+            return (
+                VecDeque::new(),
+                Some(CandidateTemporaryUnavailable {
+                    account_id: bound_account_id.to_string(),
+                    retry_after_secs,
+                    reason,
+                    low_quota_reset_at,
+                }),
+            );
+        };
+        if let Some(retry_after_secs) =
+            super::super::super::account_cooldown_remaining_secs(bound_account_id)
+        {
+            return (
+                VecDeque::new(),
+                Some(CandidateTemporaryUnavailable {
+                    account_id: bound_account_id.to_string(),
+                    retry_after_secs,
+                    reason: "bound_account_cooldown",
+                    low_quota_reset_at: None,
+                }),
+            );
+        }
+        if !account_has_inflight_capacity(bound_account_id, account_max_inflight) {
+            return (
+                VecDeque::new(),
+                Some(CandidateTemporaryUnavailable {
+                    account_id: bound_account_id.to_string(),
+                    retry_after_secs: 5,
+                    reason: "bound_account_inflight",
+                    low_quota_reset_at: None,
+                }),
+            );
+        }
+
+        let mut remaining = VecDeque::from(candidates);
+        remaining.rotate_left(bound_index);
+        return (remaining, None);
+    }
+
+    let mut ranked = candidates
+        .into_iter()
+        .map(|candidate| {
+            let cooldown =
+                super::super::super::account_cooldown_remaining_secs(candidate.0.id.as_str());
+            let ready =
+                account_has_inflight_capacity(candidate.0.id.as_str(), account_max_inflight);
+            (candidate, cooldown, ready)
+        })
+        .collect::<Vec<_>>();
+    let first_ready = ranked
+        .iter()
+        .any(|(_, cooldown, ready)| cooldown.is_none() && *ready);
+    if !first_ready {
+        let cooldown = ranked
+            .iter()
+            .filter_map(|(_, remaining, _)| *remaining)
+            .min();
+        let account_id = ranked
+            .iter()
+            .find(|(_, remaining, _)| remaining.is_some())
+            .or_else(|| ranked.first())
+            .map(|((account, _), _, _)| account.id.clone())
+            .unwrap_or_default();
+        return (
+            VecDeque::new(),
+            Some(CandidateTemporaryUnavailable {
+                account_id,
+                retry_after_secs: cooldown.unwrap_or(1),
+                reason: if cooldown.is_some() {
+                    "account_pool_cooldown"
+                } else {
+                    "account_pool_inflight"
+                },
+                low_quota_reset_at: None,
+            }),
+        );
+    }
+
+    // Cooldown and hard in-flight checks are safe before the first upstream
+    // send. Preserve routing order among ready accounts, while de-prioritizing
+    // unavailable ones so a single-send request still targets a healthy account.
+    ranked.sort_by_key(|(_, cooldown, ready)| (cooldown.is_some() || !*ready, *cooldown));
+    (
+        ranked
+            .into_iter()
+            .map(|(candidate, _, _)| candidate)
+            .collect(),
+        None,
+    )
+}
+
+fn note_temporary_unavailable(
+    temporary: &mut Option<CandidateTemporaryUnavailable>,
+    account_id: &str,
+    reason: &'static str,
+) {
+    if temporary.is_some() {
+        return;
+    }
+    let mut retry_after_secs =
+        super::super::super::account_cooldown_remaining_secs(account_id).unwrap_or(1);
+    if reason == "bound_account_inflight" {
+        retry_after_secs = retry_after_secs.max(5);
+    }
+    *temporary = Some(CandidateTemporaryUnavailable {
+        account_id: account_id.to_string(),
+        retry_after_secs,
+        reason,
+        low_quota_reset_at: None,
+    });
+}
+
+pub(in super::super) fn account_model_override_for_request(
     storage: &Storage,
     model_for_log: Option<&str>,
 ) -> Option<String> {
@@ -286,6 +461,8 @@ pub(in super::super) fn execute_candidate_sequence(
         debug,
         allow_openai_fallback,
         disable_challenge_stateless_retry,
+        has_anthropic_safeguards,
+        context_enrichment,
     } = params;
     let mut request = Some(request);
     let mut state = CandidateExecutionState::default();
@@ -295,45 +472,136 @@ pub(in super::super) fn execute_candidate_sequence(
     let mut last_attempt_url = None;
     let mut last_attempt_error = None;
     let mut force_strip_session_affinity_after_challenge = false;
-    let mut overload_budget = OverloadRetryBudget::default();
-    // Official upstream normalization may remove stored-history references. Check
-    // the client payload as well so normalization cannot accidentally enable replay.
-    let portable_for_overload_retry =
-        request_is_portable(original_body) && request_is_portable(body);
     let account_model_override = account_model_override_for_request(storage, model_for_log);
     let usage_snapshots = usage_snapshots_for_candidate_plans(storage, &candidates);
-    let dynamic_enabled = dynamic_pool::enabled() && path.split('?').next() == Some("/v1/responses");
+    let dynamic_enabled =
+        dynamic_pool::enabled() && path.split('?').next() == Some("/v1/responses");
+    let aggressive_overload_failover = dynamic_enabled && aggressive_retry_enabled();
+    let mut overload_budget =
+        OverloadRetryBudget::with_max_backups(if aggressive_overload_failover { 2 } else { 1 });
+    // Official upstream normalization may remove stored-history references. Check
+    // the client payload as well so normalization cannot accidentally enable replay.
+    // Aggressive mode is intentionally lossy for account-scoped state: the backup
+    // body is rebased to stateless history before it is sent.
+    let portable_for_overload_retry = aggressive_overload_failover
+        || (request_is_portable(original_body) && request_is_portable(body));
+    let single_send_mode = dynamic_enabled && !portable_for_overload_retry;
     let dynamic_policy = if dynamic_enabled {
         match DynamicRequestPolicy::load(storage, context.key_id()) {
             Ok(policy) => Some(policy),
-            Err(err) => { log::warn!("event=gateway_dynamic_authorization_failed trace_id={} reason={}", trace_id, err); None }
+            Err(err) => {
+                log::warn!(
+                    "event=gateway_dynamic_authorization_failed trace_id={} reason={}",
+                    trace_id,
+                    err
+                );
+                None
+            }
         }
-    } else { None };
-    let effective_model = account_model_override.as_deref().or(model_for_log).unwrap_or("unknown");
+    } else {
+        None
+    };
+    let effective_model = account_model_override
+        .as_deref()
+        .or(model_for_log)
+        .unwrap_or("unknown");
     let generation_scope = super::super::generation_budget::enter(
-        dynamic_enabled, dynamic_policy.as_ref().map(|p| p.pool.as_str()).unwrap_or("unavailable"),
-        effective_model, trace_id, request_deadline,
+        dynamic_enabled,
+        dynamic_policy
+            .as_ref()
+            .map(|p| p.pool.as_str())
+            .unwrap_or("unavailable"),
+        effective_model,
+        trace_id,
+        request_deadline,
     );
     let mut reserved_backup = None;
     let ordered_account_ids = candidates
         .iter()
         .map(|(account, _)| account.id.clone())
         .collect::<Vec<_>>();
-    let mut remaining: VecDeque<_> = candidates.into();
-    if dynamic_enabled && !portable_for_overload_retry { remaining.truncate(1); }
+    let bound_account_id = setup
+        .conversation_routing
+        .as_ref()
+        .and_then(|routing| routing.existing_binding.as_ref())
+        .map(|binding| binding.account_id.clone());
+    let bound_account_missing = bound_account_id.as_deref().is_some_and(|account_id| {
+        !candidates
+            .iter()
+            .any(|(account, _)| account.id.as_str() == account_id)
+    });
+    let bound_account_quota = if bound_account_missing {
+        bound_account_id
+            .as_deref()
+            .and_then(|account_id| {
+                storage
+                    .latest_usage_snapshot_for_account(account_id)
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|snapshot| {
+                crate::gateway::low_quota_recovery(&snapshot, codexmanager_core::storage::now_ts())
+            })
+            .map(|recovery| BoundAccountQuotaUnavailable {
+                reset_at: recovery.reset_at,
+            })
+    } else {
+        None
+    };
+    if portable_for_overload_retry && bound_account_quota.is_some() {
+        log::warn!(
+            "event=gateway_portable_bound_account_quota_rebind trace_id={} account_id={} model={}",
+            trace_id,
+            bound_account_id.as_deref().unwrap_or("-"),
+            effective_model
+        );
+    }
+    let (mut remaining, immediate_temporary_unavailable) = prepare_initial_candidates(
+        candidates,
+        single_send_mode,
+        bound_account_id.as_deref(),
+        single_send_mode.then_some(bound_account_quota).flatten(),
+        context.effective_account_inflight_limit(),
+    );
+    if let Some(temporary_unavailable) = immediate_temporary_unavailable {
+        let skipped_cooldown = usize::from(temporary_unavailable.reason.contains("cooldown"));
+        let skipped_inflight = usize::from(temporary_unavailable.reason.contains("inflight"));
+        return Ok(CandidateExecutionResult::Exhausted {
+            request: Box::new(
+                request
+                    .take()
+                    .ok_or_else(|| "request already consumed before preflight".to_string())?,
+            ),
+            attempted_account_ids,
+            skipped_cooldown,
+            skipped_inflight,
+            last_attempt_url: None,
+            last_attempt_error: None,
+            temporary_unavailable: Some(temporary_unavailable),
+        });
+    }
+    let mut temporary_unavailable = None;
     let mut candidate_idx = 0usize;
     while let Some((account, mut token)) = remaining.pop_front() {
         let idx = candidate_idx;
         candidate_idx += 1;
-        // Once overload has selected a backup, that attempt is terminal even if
-        // it fails differently (e.g. 429). Do not fan out to a third account.
-        if (overload_budget.used() || dynamic_enabled) && attempted_account_ids.len() >= 2 {
+        // Non-replayable requests still probe every candidate for preflight
+        // availability, but they may only send to the first one that reserves.
+        if single_send_mode && !attempted_account_ids.is_empty() {
             break;
         }
-        let has_more_candidates = overload_budget.has_more_candidates(
-            if dynamic_enabled { attempted_account_ids.len() < 1 && ordered_account_ids.len() > 1 }
-            else { context.has_more_candidates(idx) }
-        );
+        // Normal mode permits one backup. Aggressive mode may try every account
+        // once, but a non-overload backup failure still remains terminal below.
+        if attempted_account_ids.len() >= overload_budget.max_attempts() {
+            break;
+        }
+        let has_more_candidates = !single_send_mode
+            && overload_budget.has_more_candidates(if dynamic_enabled {
+                attempted_account_ids.len() < overload_budget.max_attempts()
+                    && ordered_account_ids.len() > attempted_account_ids.len()
+            } else {
+                context.has_more_candidates(idx)
+            });
         let disable_challenge_stateless_retry =
             disable_challenge_stateless_retry || overload_budget.used();
         if deadline::is_expired(request_deadline) {
@@ -375,6 +643,19 @@ pub(in super::super) fn execute_candidate_sequence(
                 usage_snapshots.get(account.id.as_str()),
             );
         let attempt_model_for_log = attempt_model_override.or(model_for_log);
+        let safeguards_evaluator = has_anthropic_safeguards
+            .then(|| {
+                super::super::safeguards_classifier::build_gateway_safeguards_evaluator(
+                    original_body,
+                    &account,
+                    &token,
+                    incoming_headers,
+                    setup.upstream_base.as_str(),
+                    setup.upstream_fallback_base.as_deref(),
+                    attempt_model_for_log,
+                )
+            })
+            .flatten();
         let attempt_prompt_cache_key =
             if should_forward_thread_anchor_as_prompt_cache_key(context.protocol_type()) {
                 attempt_thread
@@ -383,18 +664,31 @@ pub(in super::super) fn execute_candidate_sequence(
             } else {
                 None
             };
-        let body_for_attempt = state.body_for_attempt(
-            path,
-            body,
-            strip_session_affinity,
-            setup,
-            attempt_model_override,
-            attempt_prompt_cache_key,
-        );
+        let body_for_attempt = if aggressive_overload_failover && overload_budget.used() {
+            state.aggressive_body_for_attempt(
+                path,
+                body,
+                setup,
+                attempt_model_override,
+                attempt_prompt_cache_key,
+            )
+        } else {
+            state.body_for_attempt(
+                path,
+                body,
+                strip_session_affinity,
+                setup,
+                attempt_model_override,
+                attempt_prompt_cache_key,
+            )
+        };
         context.log_candidate_start(&account.id, idx, strip_session_affinity);
         // The legacy path may try a cooling final candidate. A new overload
         // retry only selects a healthy backup, even when it is last in the pool.
-        if overload_budget.used() && reserved_backup.is_none() && super::super::super::is_account_in_cooldown(&account.id) {
+        if overload_budget.used()
+            && reserved_backup.is_none()
+            && super::super::super::is_account_in_cooldown(&account.id)
+        {
             super::super::super::record_gateway_candidate_skip(
                 super::super::super::GatewayCandidateSkipReason::Cooldown,
             );
@@ -404,31 +698,96 @@ pub(in super::super) fn execute_candidate_sequence(
                 super::super::support::candidates::CandidateSkipReason::Cooldown,
             );
             skipped_cooldown += 1;
+            if attempted_account_ids.is_empty() {
+                let bound_account_unavailable =
+                    single_send_mode && bound_account_id.as_deref() == Some(account.id.as_str());
+                note_temporary_unavailable(
+                    &mut temporary_unavailable,
+                    account.id.as_str(),
+                    if bound_account_unavailable {
+                        "bound_account_cooldown"
+                    } else {
+                        "account_pool_cooldown"
+                    },
+                );
+                if bound_account_unavailable {
+                    break;
+                }
+            }
             continue;
         }
-        if let Some(skip_reason) = if reserved_backup.is_some() { None } else { context.should_skip_candidate(&account.id, idx) } {
+        if let Some(skip_reason) = if reserved_backup.is_some() {
+            None
+        } else {
+            context.should_skip_candidate(&account.id, idx)
+        } {
             context.log_candidate_skip(&account.id, idx, skip_reason);
             match skip_reason {
                 super::super::support::candidates::CandidateSkipReason::Cooldown => {
                     skipped_cooldown += 1;
+                    if attempted_account_ids.is_empty() {
+                        let bound_account_unavailable = single_send_mode
+                            && bound_account_id.as_deref() == Some(account.id.as_str());
+                        note_temporary_unavailable(
+                            &mut temporary_unavailable,
+                            account.id.as_str(),
+                            if bound_account_unavailable {
+                                "bound_account_cooldown"
+                            } else {
+                                "account_pool_cooldown"
+                            },
+                        );
+                        if bound_account_unavailable {
+                            break;
+                        }
+                    }
                 }
                 super::super::support::candidates::CandidateSkipReason::Inflight => {
                     skipped_inflight += 1;
+                    if attempted_account_ids.is_empty() {
+                        let bound_account_unavailable = single_send_mode
+                            && bound_account_id.as_deref() == Some(account.id.as_str());
+                        note_temporary_unavailable(
+                            &mut temporary_unavailable,
+                            account.id.as_str(),
+                            if bound_account_unavailable {
+                                "bound_account_inflight"
+                            } else {
+                                "account_pool_inflight"
+                            },
+                        );
+                        if bound_account_unavailable {
+                            break;
+                        }
+                    }
                 }
             }
             continue;
         }
         let mut dynamic_permit = if dynamic_enabled {
             reserved_backup.take().or_else(|| {
-                dynamic_policy.as_ref().and_then(|policy| dynamic_pool::reserve_account(
-                    &policy.pool, effective_model, &account.id, setup.account_max_inflight, true,
-                ))
+                dynamic_policy.as_ref().and_then(|policy| {
+                    dynamic_pool::reserve_account(
+                        &policy.pool,
+                        effective_model,
+                        &account.id,
+                        context.effective_account_inflight_limit(),
+                        true,
+                    )
+                })
             })
-        } else { None };
-        let account_guard = if dynamic_enabled {
-            dynamic_permit.as_mut().map(|permit| permit.take_inflight_guard())
         } else {
-            super::super::super::try_acquire_account_inflight(&account.id, setup.account_max_inflight)
+            None
+        };
+        let account_guard = if dynamic_enabled {
+            dynamic_permit
+                .as_mut()
+                .map(|permit| permit.take_inflight_guard())
+        } else {
+            super::super::super::try_acquire_account_inflight(
+                &account.id,
+                context.effective_account_inflight_limit(),
+            )
         };
         let Some(account_guard) = account_guard else {
             let reason = super::super::support::candidates::CandidateSkipReason::Inflight;
@@ -437,6 +796,25 @@ pub(in super::super) fn execute_candidate_sequence(
             );
             context.log_candidate_skip(&account.id, idx, reason);
             skipped_inflight += 1;
+            if attempted_account_ids.is_empty() {
+                let bound_account_unavailable =
+                    single_send_mode && bound_account_id.as_deref() == Some(account.id.as_str());
+                note_temporary_unavailable(
+                    &mut temporary_unavailable,
+                    account.id.as_str(),
+                    if bound_account_unavailable {
+                        "bound_account_inflight"
+                    } else {
+                        "account_pool_inflight"
+                    },
+                );
+                if bound_account_unavailable {
+                    if let Some(temporary) = temporary_unavailable.as_mut() {
+                        temporary.retry_after_secs = temporary.retry_after_secs.max(5);
+                    }
+                    break;
+                }
+            }
             continue;
         };
         let mut inflight_guard = Some(account_guard);
@@ -667,23 +1045,32 @@ pub(in super::super) fn execute_candidate_sequence(
                         }
                     }
                 }
-                let health_retry_after = super::stream_preflight::retry_after_for_health(resp.headers());
+                let health_retry_after =
+                    super::stream_preflight::retry_after_for_health(resp.headers());
                 let health_observer = if dynamic_enabled {
                     let (observed, observer) = resp.observe_health();
                     resp = observed;
                     Some(observer)
-                } else { None };
+                } else {
+                    None
+                };
                 let preflight = preflight_stream_response_with_dynamic_failover(
                     resp,
                     path,
                     upstream_is_stream,
                     has_more_candidates,
-                    overload_budget.permits(attempted_account_ids.len(), portable_for_overload_retry),
+                    overload_budget
+                        .permits(attempted_account_ids.len(), portable_for_overload_retry),
                     dynamic_enabled,
                 );
                 if !matches!(&preflight, StreamPreflightOutcome::OverloadFailover { .. })
-                    && health_observer.as_ref().is_some_and(|o| o.snapshot().overloaded) {
-                    if let Some(permit) = dynamic_permit.as_mut() { permit.record_overload(health_retry_after); }
+                    && health_observer
+                        .as_ref()
+                        .is_some_and(|o| o.snapshot().overloaded)
+                {
+                    if let Some(permit) = dynamic_permit.as_mut() {
+                        permit.record_overload(health_retry_after);
+                    }
                 }
                 match preflight {
                     StreamPreflightOutcome::Ready(response) => {
@@ -697,16 +1084,24 @@ pub(in super::super) fn execute_candidate_sequence(
                         if dynamic_enabled {
                             // Preserve the prefetched error if no live backup can be reserved.
                             let response = response.cancel_prefetched_stream();
-                            if let Some(permit) = dynamic_permit.as_mut() { permit.record_overload(retry_after); }
+                            if let Some(permit) = dynamic_permit.as_mut() {
+                                permit.record_overload(retry_after);
+                            }
                             drop(dynamic_permit.take());
-                            if let Some(guard) = inflight_guard.as_mut() { guard.release(); }
+                            if let Some(guard) = inflight_guard.as_mut() {
+                                guard.release();
+                            }
                             let mut selected = None;
                             if generation_scope.can_send() {
-                                if let Some(delay) = retry_delay(trace_id, retry_after, request_deadline) {
+                                if let Some(delay) =
+                                    retry_delay(trace_id, retry_after, request_deadline)
+                                {
                                     std::thread::sleep(delay);
-                                    if !deadline::is_expired(request_deadline) && generation_scope.can_send() {
+                                    if !deadline::is_expired(request_deadline)
+                                        && generation_scope.can_send()
+                                    {
                                         if let Some(policy) = dynamic_policy.as_ref() {
-                                            match policy.select_backup(storage, model_for_log, effective_model, &attempted_account_ids, setup.account_max_inflight) {
+                                            match policy.select_backup(storage, model_for_log, effective_model, &attempted_account_ids, context.effective_account_inflight_limit()) {
                                                 Ok(backup) => selected = backup,
                                                 Err(err) => log::warn!("event=gateway_dynamic_backup_unavailable trace_id={} reason={}", trace_id, err),
                                             }
@@ -714,7 +1109,9 @@ pub(in super::super) fn execute_candidate_sequence(
                                     }
                                 }
                             }
-                            if let Some((candidate, permit)) = selected.filter(|_| generation_scope.reserve_backup_send()) {
+                            if let Some((candidate, permit)) =
+                                selected.filter(|_| generation_scope.reserve_backup_send())
+                            {
                                 drop(response);
                                 drop(inflight_guard.take());
                                 drop(dynamic_permit.take());
@@ -723,22 +1120,35 @@ pub(in super::super) fn execute_candidate_sequence(
                                 reserved_backup = Some(permit);
                                 overload_budget.consume();
                                 attempt_trace.last_attempt_error = Some(message);
-                                record_failover_attempt(&mut attempt_trace, &mut last_attempt_url, &mut last_attempt_error);
+                                record_failover_attempt(
+                                    &mut attempt_trace,
+                                    &mut last_attempt_url,
+                                    &mut last_attempt_error,
+                                );
                                 log::warn!("event=gateway_overload_failover trace_id={} account_id={} retry=1 max_retries=1 selection=dynamic code=server_is_overloaded", trace_id, account.id);
                                 continue;
                             }
                             resp = response;
                         } else {
-                            if let Some(delay) = retry_delay(trace_id, retry_after, request_deadline) {
+                            if let Some(delay) =
+                                retry_delay(trace_id, retry_after, request_deadline)
+                            {
                                 std::thread::sleep(delay);
                                 if !deadline::is_expired(request_deadline) {
                                     drop(response);
                                     drop(inflight_guard.take());
                                     overload_budget.consume();
-                                    super::super::super::mark_account_cooldown_for_status(&account.id, 503);
+                                    super::super::super::mark_account_cooldown_for_status(
+                                        &account.id,
+                                        503,
+                                    );
                                     super::super::super::record_route_quality(&account.id, 503);
                                     attempt_trace.last_attempt_error = Some(message);
-                                    record_failover_attempt(&mut attempt_trace, &mut last_attempt_url, &mut last_attempt_error);
+                                    record_failover_attempt(
+                                        &mut attempt_trace,
+                                        &mut last_attempt_url,
+                                        &mut last_attempt_error,
+                                    );
                                     log::warn!("event=gateway_overload_failover trace_id={} account_id={} retry=1 max_retries=1 backoff_ms={} code=server_is_overloaded", trace_id, account.id, delay.as_millis());
                                     continue;
                                 }
@@ -853,6 +1263,8 @@ pub(in super::super) fn execute_candidate_sequence(
                     dynamic_permit,
                     health_observer,
                     health_retry_after,
+                    safeguards_evaluator,
+                    context_enrichment.clone(),
                 )? {
                     FinalizeUpstreamResponseOutcome::Handled { final_status } => {
                         match super::super::super::conversation_binding::record_conversation_binding_terminal_response(
@@ -878,6 +1290,7 @@ pub(in super::super) fn execute_candidate_sequence(
         skipped_inflight,
         last_attempt_url,
         last_attempt_error,
+        temporary_unavailable,
     })
 }
 
