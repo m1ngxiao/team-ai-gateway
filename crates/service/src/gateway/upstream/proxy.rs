@@ -1,7 +1,7 @@
 use crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE;
 use crate::gateway::request_log::RequestLogUsage;
 use codexmanager_core::storage::{ManagedModelV2, UpstreamProvider};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tiny_http::Request;
 
 use super::super::local_validation::LocalValidationResult;
@@ -35,6 +35,32 @@ use super::support::precheck::{prepare_candidates_for_proxy, CandidatePrecheckRe
 ///
 /// # 返回
 /// 返回函数执行结果
+fn wait_for_account_capacity(
+    account_ids: &[String],
+    limit: usize,
+    request_deadline: Option<Instant>,
+    max_wait: Duration,
+) -> bool {
+    if limit == 0 || account_ids.is_empty() {
+        return true;
+    }
+    let started = Instant::now();
+    loop {
+        if account_ids
+            .iter()
+            .any(|account_id| super::super::account_inflight_count(account_id) < limit)
+        {
+            return true;
+        }
+        if started.elapsed() >= max_wait
+            || request_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn exhausted_gateway_error_for_log(
     attempted_account_ids: &[String],
     skipped_cooldown: usize,
@@ -1392,6 +1418,25 @@ pub(in super::super) fn proxy_validated_request(
             }
         }
     };
+    if !context.is_control_request()
+        && !wait_for_account_capacity(
+            &setup.candidate_account_ids,
+            context.effective_account_inflight_limit(),
+            request_deadline,
+            Duration::from_secs(30),
+        )
+    {
+        let mut response = super::super::error_response::terminal_text_response(
+            429,
+            "账号并发已满，请稍后重试",
+            Some(trace_id.as_str()),
+        );
+        if let Ok(header) = tiny_http::Header::from_bytes(b"Retry-After", b"30") {
+            response.add_header(header);
+        }
+        let _ = request.respond(response);
+        return Ok(());
+    }
     let _request_gate_guard = acquire_request_gate(
         trace_id.as_str(),
         key_id.as_str(),

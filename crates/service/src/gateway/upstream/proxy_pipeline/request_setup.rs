@@ -10,6 +10,7 @@ pub(in super::super) struct UpstreamRequestSetup {
     pub(in super::super) url: String,
     pub(in super::super) url_alt: Option<String>,
     pub(in super::super) candidate_count: usize,
+    pub(in super::super) candidate_account_ids: Vec<String>,
     pub(in super::super) account_max_inflight: usize,
     pub(in super::super) anthropic_has_thread_anchor: bool,
     pub(in super::super) has_sticky_fallback_session: bool,
@@ -76,15 +77,22 @@ pub(in super::super) fn prepare_request_setup(
     } else {
         None
     };
+    let quota_snapshot = super::super::super::load_quota_aware_snapshot_if_enabled(
+        storage,
+        platform_key_hash,
+        candidates.as_slice(),
+    );
     let anthropic_has_thread_anchor = protocol_type == PROTOCOL_ANTHROPIC_NATIVE
         && (has_prompt_cache_key || conversation_routing.is_some());
-    let mut rotation_plan = super::super::super::conversation_binding::apply_candidate_rotation(
-        candidates,
-        conversation_routing.as_ref(),
-        key_id,
-        model_for_log,
-        account_binding_counts.as_ref(),
-    );
+    let mut rotation_plan =
+        super::super::super::conversation_binding::apply_candidate_rotation_with_quota(
+            candidates,
+            conversation_routing.as_ref(),
+            key_id,
+            model_for_log,
+            account_binding_counts.as_ref(),
+            quota_snapshot.as_ref(),
+        );
     match super::super::super::conversation_binding::claim_initial_conversation_binding(
         storage,
         conversation_routing.as_mut(),
@@ -127,6 +135,10 @@ pub(in super::super) fn prepare_request_setup(
         url,
         url_alt,
         candidate_count,
+        candidate_account_ids: candidates
+            .iter()
+            .map(|(account, _)| account.id.clone())
+            .collect(),
         account_max_inflight,
         anthropic_has_thread_anchor,
         has_sticky_fallback_session: false,
