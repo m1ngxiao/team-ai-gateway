@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension, Result};
 
-use super::{now_ts, Storage};
+use super::{now_ts, Storage, UsageSnapshotRecord};
 
 pub const SECONDS_PER_HOUR: i64 = 60 * 60;
 pub const SECONDS_PER_WEEK: i64 = 7 * 24 * SECONDS_PER_HOUR;
@@ -163,8 +163,34 @@ impl Storage {
     }
 
     /// Rolling seven-day account usage derived from durable request cost stats.
+    /// The latest upstream weekly window end for an account. `usage_snapshots`
+    /// stores the reset instant of the 7-day window, so the window start is
+    /// `reset_at - 7d`; do not count usage from the previous window.
+    pub fn latest_account_weekly_reset_at(&self, account_id: &str) -> Result<Option<i64>> {
+        self.conn
+            .query_row(
+                "SELECT resets_at
+                 FROM usage_snapshots
+                 WHERE account_id = ?1
+                   AND window_minutes >= 10080
+                   AND resets_at IS NOT NULL
+                 ORDER BY captured_at DESC, id DESC
+                 LIMIT 1",
+                params![account_id],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
     pub fn account_usage_cents_rolling_7d(&self, account_id: &str, now: i64) -> Result<i64> {
-        let since = now.saturating_sub(SECONDS_PER_WEEK);
+        let reset_at = self.latest_account_weekly_reset_at(account_id)?;
+        let since = reset_at
+            .map(|reset| {
+                reset
+                    .saturating_sub(SECONDS_PER_WEEK)
+                    .max(now.saturating_sub(SECONDS_PER_WEEK))
+            })
+            .unwrap_or_else(|| now.saturating_sub(SECONDS_PER_WEEK));
         self.conn.query_row(
             "SELECT COALESCE(SUM(CAST(ROUND(estimated_cost_usd * 100.0) AS INTEGER)), 0)
              FROM request_token_stats
@@ -370,6 +396,31 @@ mod tests {
             .expect("usage row");
         assert_eq!(usage.used_cents, 0);
         assert_eq!(usage.window_start, now + week);
+    }
+
+    #[test]
+    fn latest_account_weekly_reset_uses_seven_day_window() {
+        let storage = open_storage();
+        let now = 1_700_000_000_i64;
+        storage
+            .insert_usage_snapshot(&UsageSnapshotRecord {
+                account_id: "acct-reset".to_string(),
+                used_percent: Some(10.0),
+                window_minutes: Some(10080),
+                resets_at: Some(now + 3 * 24 * 3600),
+                secondary_used_percent: None,
+                secondary_window_minutes: None,
+                secondary_resets_at: None,
+                credits_json: None,
+                captured_at: now,
+            })
+            .expect("snapshot");
+        assert_eq!(
+            storage
+                .latest_account_weekly_reset_at("acct-reset")
+                .expect("reset"),
+            Some(now + 3 * 24 * 3600)
+        );
     }
 
     #[test]
