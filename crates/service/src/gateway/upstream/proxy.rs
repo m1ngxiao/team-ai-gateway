@@ -35,6 +35,29 @@ use super::support::precheck::{prepare_candidates_for_proxy, CandidatePrecheckRe
 ///
 /// # 返回
 /// 返回函数执行结果
+struct AccountCapacityQueue {
+    next_ticket: std::sync::atomic::AtomicU64,
+    waiters: std::sync::Mutex<std::collections::VecDeque<u64>>,
+    wake: std::sync::Condvar,
+}
+
+static ACCOUNT_CAPACITY_QUEUE: std::sync::OnceLock<AccountCapacityQueue> =
+    std::sync::OnceLock::new();
+
+fn account_capacity_queue() -> &'static AccountCapacityQueue {
+    ACCOUNT_CAPACITY_QUEUE.get_or_init(|| AccountCapacityQueue {
+        next_ticket: std::sync::atomic::AtomicU64::new(1),
+        waiters: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        wake: std::sync::Condvar::new(),
+    })
+}
+
+fn account_has_capacity(account_ids: &[String], limit: usize) -> bool {
+    account_ids
+        .iter()
+        .any(|account_id| super::super::account_inflight_count(account_id) < limit)
+}
+
 fn wait_for_account_capacity(
     account_ids: &[String],
     limit: usize,
@@ -44,20 +67,38 @@ fn wait_for_account_capacity(
     if limit == 0 || account_ids.is_empty() {
         return true;
     }
+
+    let queue = account_capacity_queue();
+    let ticket = queue
+        .next_ticket
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut waiters = queue.waiters.lock().unwrap_or_else(|err| err.into_inner());
+        waiters.push_back(ticket);
+    }
+
     let started = Instant::now();
     loop {
-        if account_ids
-            .iter()
-            .any(|account_id| super::super::account_inflight_count(account_id) < limit)
-        {
+        let mut waiters = queue.waiters.lock().unwrap_or_else(|err| err.into_inner());
+        if waiters.front() == Some(&ticket) && account_has_capacity(account_ids, limit) {
+            waiters.pop_front();
+            queue.wake.notify_all();
             return true;
         }
         if started.elapsed() >= max_wait
             || request_deadline.is_some_and(|deadline| Instant::now() >= deadline)
         {
+            if let Some(position) = waiters.iter().position(|queued| *queued == ticket) {
+                waiters.remove(position);
+            }
+            queue.wake.notify_all();
             return false;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        let (guard, _) = queue
+            .wake
+            .wait_timeout(waiters, Duration::from_millis(50))
+            .unwrap_or_else(|err| err.into_inner());
+        drop(guard);
     }
 }
 
