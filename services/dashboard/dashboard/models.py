@@ -55,6 +55,10 @@ class Account(ClosedModel):
     spark_secondary: Window = Field(default_factory=Window)
     reset_available_count: int | None = Field(default=None, ge=0, le=9007199254740991)
     reset_next_expires_at: int | None = Field(default=None, gt=0)
+    weekly_used_cents: int = Field(default=0, ge=0, le=9007199254740991)
+    weekly_limit_cents: int = Field(default=120000, ge=0, le=9007199254740991)
+    weekly_remaining_cents: int = Field(default=120000, ge=0, le=9007199254740991)
+    weekly_reset_at: int | None = Field(default=None, ge=0)
 
 
 class ClaudeAccount(ClosedModel):
@@ -73,6 +77,17 @@ class ClaudeAccount(ClosedModel):
     last_error: Literal["rate_limited", "auth_error", "timeout", "network_error", "invalid_response", "upstream_error", "query_failed"] | None = None
 
 
+class FailureLog(ClosedModel):
+    occurred_at: int = Field(ge=0)
+    status_code: int = Field(ge=100, le=599)
+    category: str = Field(min_length=1, max_length=32)
+    model: str | None = Field(default=None, max_length=64)
+    key_label: str | None = Field(default=None, max_length=128)
+    account_label: str | None = Field(default=None, max_length=32)
+    duration_ms: int | None = Field(default=None, ge=0)
+    message: str = Field(default="", max_length=500)
+
+
 class Key(ClosedModel):
     id: str = Field(pattern=r"^key-[a-f0-9]{12}$")
     label: str = Field(min_length=1, max_length=128)
@@ -87,6 +102,9 @@ class Key(ClosedModel):
     bound_model: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
     quota_limit_tokens: int | None = Field(default=None, gt=0, le=9007199254740991)
     quota_config_known: bool = False
+    weekly_used_cents: int = Field(default=0, ge=0, le=9007199254740991)
+    weekly_limit_cents: int = Field(default=24000, ge=0, le=9007199254740991)
+    weekly_remaining_cents: int = Field(default=24000, ge=0, le=9007199254740991)
     is_historical: bool = False
     upstream_provider: Literal["openai", "claude", "unknown"] = "unknown"
 
@@ -126,6 +144,52 @@ class ModelUsage(ClosedModel):
     usage: Usage
 
 
+class ErrorCategoryCount(ClosedModel):
+    kind: Literal[
+        "no_available_account",
+        "rate_limited",
+        "auth_error",
+        "timeout",
+        "client_cancelled",
+        "network_error",
+        "upstream_overloaded",
+        "invalid_request",
+        "upstream_error",
+        "unknown_error",
+    ]
+    count: int = Field(ge=0)
+
+
+class FailureStatusCount(ClosedModel):
+    status_code: int = Field(ge=100, le=599)
+    count: int = Field(ge=0)
+
+
+class RequestHealthSummary(ClosedModel):
+    requests: int = Field(ge=0)
+    success: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    success_rate: float = Field(ge=0, le=100)
+    error_categories: list[ErrorCategoryCount] = Field(max_length=10)
+    failure_statuses: list[FailureStatusCount] = Field(max_length=500)
+    average_duration_ms: float | None = Field(default=None, ge=0)
+    average_first_response_ms: float | None = Field(default=None, ge=0)
+    last_success_at: int | None = Field(default=None, ge=0)
+    last_failure_at: int | None = Field(default=None, ge=0)
+
+
+class DailyRequestHealth(RequestHealthSummary):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class RequestHealth(ClosedModel):
+    today: RequestHealthSummary
+    week: RequestHealthSummary
+    recorded: RequestHealthSummary
+    days: list[DailyRequestHealth] = Field(max_length=31)
+    history_days: int = Field(ge=1, le=31)
+
+
 class Snapshot(ClosedModel):
     schema_version: Literal[1]
     generated_at: int = Field(ge=0)
@@ -139,3 +203,5 @@ class Snapshot(ClosedModel):
     models_week: list[ModelUsage] = Field(max_length=50)
     model_catalog: list[CatalogModel] = Field(default_factory=list, max_length=500)
     catalog_unlisted_count: int = Field(default=0, ge=0)
+    request_health: RequestHealth | None = None
+    recent_failures: list[FailureLog] = Field(default_factory=list, max_length=50)

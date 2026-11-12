@@ -1,7 +1,7 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 let csrf = "", snapshot = null, period = "today", view = "overview", fetching = false, sessionVersion = 0;
-let countdowns = [];
+let countdowns = [], failureFilter = "all";
 const fmt = new Intl.NumberFormat("zh-CN");
 const CLAUDE_QUOTA_MAX_AGE_SECONDS = 3600;
 const number = (value) => fmt.format(value || 0);
@@ -9,6 +9,12 @@ const compact = (value) => new Intl.NumberFormat("en", { notation: "compact", ma
 const money = (value) => "$" + Number(value || 0).toFixed(3);
 const moneyFine = (value) => "$" + Number(value || 0).toFixed(4);
 const date = (value) => value ? new Date(value * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "暂无记录";
+const healthDuration = (value) => !Number.isFinite(value) ? "—" : value >= 1000 ? (value / 1000).toFixed(2) + " 秒" : Math.round(value) + " ms";
+const HEALTH_ERROR_LABELS = {
+  no_available_account: "无可用账号", rate_limited: "限流 / 账号繁忙", auth_error: "鉴权失败",
+  timeout: "请求超时", client_cancelled: "客户端取消", network_error: "网络中断",
+  upstream_overloaded: "上游过载", invalid_request: "请求无效", upstream_error: "上游错误", unknown_error: "未知错误"
+};
 // Fixed interface geometry only. No server-provided SVG or HTML is accepted.
 const ICONS = {
   home: ["m3 10 9-7 9 7", "M5 9v12h14V9", "M9 21v-8h6v8"],
@@ -49,7 +55,8 @@ function navigate(next, changeHash = true) {
 function showLogin(message = "") {
   sessionVersion++; csrf = ""; snapshot = null; countdowns = []; $("dashboard").hidden = true; $("login-panel").hidden = false;
   $("login-error").textContent = message;
-  for (const id of ["accounts", "claude-accounts", "overview-accounts", "keys", "key-groups", "models", "catalog-rows"]) $(id).replaceChildren();
+  for (const id of ["accounts", "claude-accounts", "overview-accounts", "keys", "key-groups", "health-days",
+    "health-errors", "health-statuses", "recent-failures", "models", "catalog-rows"]) $(id).replaceChildren();
 }
 async function api(path, options = {}) {
   const response = await fetch(path, { cache: "no-store", credentials: "same-origin", ...options });
@@ -129,6 +136,18 @@ function accountStatus(account) {
   else if (short.remaining_percent == null && long.remaining_percent == null) { badge.textContent = "额度未知"; badge.className = "status unknown"; }
   return badge;
 }
+function accountWeekly(account) {
+  if (account.weekly_limit_cents == null) return null;
+  const weeklyUsed = Math.max(0, account.weekly_used_cents || 0);
+  const weeklyLimit = Math.max(1, account.weekly_limit_cents);
+  const weekly = node("div", undefined, "account-weekly");
+  weekly.append(node("span", "本周 API 等值"), node("strong", moneyFine(weeklyUsed / 100) + " / $" + (weeklyLimit / 100).toFixed(0)));
+  const bar = node("progress"); bar.max = weeklyLimit; bar.value = Math.min(weeklyLimit, weeklyUsed);
+  bar.setAttribute("aria-label", "账号周额度已用 " + moneyFine(weeklyUsed / 100));
+  weekly.append(bar);
+  return weekly;
+}
+
 function accountCard(account) {
   const card = node("article", undefined, "account"), head = node("div", undefined, "account-head"), title = node("div", undefined, "account-title");
   const avatar = node("span", undefined, "account-avatar"); avatar.append(icon("users"));
@@ -136,7 +155,10 @@ function accountCard(account) {
   label.append(node("span", account.plan === "unknown" ? "套餐未知" : account.plan.toUpperCase(), "account-plan"));
   label.append(node("span", account.group_name || "未分组", "group-badge"));
   title.append(avatar, label); head.append(title, accountStatus(account)); card.append(head);
-  card.append(accountWindows(account), node("p", "最近更新：" + date(account.captured_at), "account-time")); return card;
+  card.append(accountWindows(account));
+  const weekly = accountWeekly(account);
+  if (weekly) card.append(weekly);
+  card.append(node("p", "最近更新：" + date(account.captured_at), "account-time")); return card;
 }
 function claudeQuotaFresh(account, now = Date.now() / 1000) {
   return Number.isFinite(account.captured_at) && account.captured_at > 0 &&
@@ -210,6 +232,8 @@ function renderAccounts() {
       node("div", "订阅到期：" + (account.subscription_expires_at ? date(account.subscription_expires_at) : "未提供"), "account-detail"));
     if (account.subscription_renews_at) name.append(node("div", "续订时间：" + date(account.subscription_renews_at), "account-detail"));
     quota.append(accountWindows(account, true));
+    const weekly = accountWeekly(account);
+    if (weekly) quota.append(weekly);
     const badges = node("div", undefined, "quota-badges");
     if (account.capacity_override) {
       const capacity = node("span", "自定义容量", "quota-badge");
@@ -267,8 +291,106 @@ function renderGroupUsage() {
     row.append(cost); body.append(row);
   }
 }
+function healthDayLabel(value) {
+  const parsed = new Date(value + "T00:00:00+08:00");
+  return parsed.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", weekday: "short" });
+}
+function renderHealth() {
+  const labels = { today: "今日", week: "近 7 天", recorded: "累计记录" };
+  const health = snapshot.request_health;
+  $("health-period-note").textContent = labels[period] + " · HTTP 2xx 计为成功";
+  if (!health || !health[period]) {
+    $("health-success-rate").textContent = $("health-success-count").textContent = $("health-failure-count").textContent = "—";
+    $("health-first-response").textContent = "—";
+    $("health-volume").textContent = "等待新版采集器统计";
+    $("health-last-failure").textContent = "统计待更新";
+    $("health-days").replaceChildren(node("div", "运行状况统计待更新，请稍后刷新。", "empty"));
+    $("health-errors").replaceChildren(node("div", "错误分类待更新。", "health-status-empty"));
+    $("health-statuses").replaceChildren(node("span", "失败状态码待更新", "health-status-empty"));
+    return;
+  }
+  const summary = health[period];
+  $("health-success-rate").textContent = summary.requests ? summary.success_rate.toFixed(1) + "%" : "—";
+  $("health-success-count").textContent = number(summary.success);
+  $("health-failure-count").textContent = number(summary.failed);
+  $("health-first-response").textContent = healthDuration(summary.average_first_response_ms);
+  $("health-volume").textContent = number(summary.requests) + " 个请求 · 平均耗时 " + healthDuration(summary.average_duration_ms);
+  $("health-last-failure").textContent = summary.last_failure_at ? "最近失败：" + date(summary.last_failure_at) : "本时段无失败";
+
+  $("health-errors").replaceChildren();
+  const failures = (summary.error_categories || []).filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count);
+  if (!failures.length) $("health-errors").append(node("div", "本时段没有失败请求。", "health-status-empty"));
+  for (const item of failures) {
+    const row = node("div", undefined, "health-error-row"), bar = node("progress");
+    row.append(node("span", HEALTH_ERROR_LABELS[item.kind] || "其他错误"), node("strong", number(item.count)));
+    bar.max = Math.max(1, summary.failed); bar.value = item.count; bar.setAttribute("aria-label", (HEALTH_ERROR_LABELS[item.kind] || "其他错误") + " " + item.count + " 次");
+    row.append(bar); $("health-errors").append(row);
+  }
+
+  $("health-statuses").replaceChildren();
+  const statuses = summary.failure_statuses || [];
+  if (!statuses.length) $("health-statuses").append(node("span", "本时段没有失败状态码", "health-status-empty"));
+  for (const item of statuses) {
+    const badge = node("span", "HTTP " + item.status_code, "health-status");
+    badge.append(node("b", "× " + number(item.count))); $("health-statuses").append(badge);
+  }
+
+  $("health-days").replaceChildren();
+  const days = [...(health.days || [])].sort((a, b) => b.date.localeCompare(a.date));
+  if (!days.length) $("health-days").append(node("div", "暂无按日运行记录。", "empty"));
+  for (const day of days) {
+    const row = node("div", undefined, "health-day"), head = node("div", undefined, "health-day-head");
+    head.append(node("span", healthDayLabel(day.date)), node("small", number(day.requests) + " 次请求"));
+    const main = node("div", undefined, "health-day-main"), stats = node("div", undefined, "health-day-stats");
+    const rate = day.requests ? day.success_rate.toFixed(1) + "%" : "—";
+    stats.append(node("span", "成功率 "), node("b", rate), node("span", "成功 "), node("b", number(day.success)),
+      node("span", "失败 "), node("b", number(day.failed)));
+    const bar = node("progress"); bar.max = 100; bar.value = day.success_rate; bar.setAttribute("aria-label", day.date + " 成功率 " + rate);
+    const errors = node("div", undefined, "health-day-errors");
+    const failed = day.error_categories.filter((item) => item.count > 0);
+    if (!failed.length) errors.append(node("span", day.requests ? "无失败" : "无请求", "health-no-errors"));
+    for (const item of failed) errors.append(node("span", (HEALTH_ERROR_LABELS[item.kind] || "其他错误") + " " + number(item.count), "health-error-chip"));
+    main.append(stats, bar, errors); row.append(head, main); $("health-days").append(row);
+  }
+}
+function renderFailures() {
+  const all = Array.isArray(snapshot.recent_failures) ? snapshot.recent_failures : [];
+  const groups = {
+    upstream: new Set(["upstream_overloaded", "upstream_error", "no_available_account", "network_error", "timeout"]),
+    rate: new Set(["rate_limited"]),
+    client: new Set(["client_cancelled"]),
+    auth: new Set(["auth_error"])
+  };
+  const visible = all.filter((item) => failureFilter === "all" ||
+    (groups[failureFilter] && groups[failureFilter].has(item.category)) ||
+    (failureFilter === "upstream" && item.status_code >= 500));
+  $("failure-count").textContent = visible.length
+    ? "最近 " + visible.length + " 条失败请求"
+    : "当前筛选下没有失败请求";
+  const body = $("recent-failures");
+  body.replaceChildren();
+  if (!visible.length) {
+    body.append(node("div", all.length ? "当前筛选下没有异常，切换筛选查看其他类型。" : "最近没有失败请求，链路保持干净。", "failure-empty"));
+    return;
+  }
+  for (const item of visible) {
+    const row = node("article", undefined, "failure-item");
+    const head = node("div", undefined, "failure-head");
+    const code = node("span", "HTTP " + item.status_code, "failure-code");
+    code.classList.add(item.status_code >= 500 ? "is-5xx" : item.status_code === 429 ? "is-429" : item.status_code >= 400 ? "is-4xx" : "is-other");
+    const meta = node("div", undefined, "failure-meta");
+    meta.append(node("strong", HEALTH_ERROR_LABELS[item.category] || item.category || "未知错误"));
+    meta.append(node("span", [item.model || "未知模型", item.account_label || "未归属账号", item.key_label || "未归属 Key"].join(" · ")));
+    head.append(code, meta, node("time", date(item.occurred_at), "failure-time"));
+    row.append(head, node("p", item.message || "无错误摘要", "failure-message"));
+    if (item.duration_ms != null) row.append(node("small", "耗时 " + healthDuration(item.duration_ms), "failure-duration"));
+    body.append(row);
+  }
+}
 function renderPoolUsage() {
   const pool = snapshot.pool_usage;
+  const periodTotalTokens = snapshot.totals[period].total_tokens || 0;
   for (const [name, overviewId, usageId, requestsId] of [
     ["openai", "overview-openai-tokens", "openai-pool-usage", "openai-pool-requests"],
     ["claude", "overview-claude-tokens", "claude-pool-usage", "claude-pool-requests"],
@@ -279,14 +401,26 @@ function renderPoolUsage() {
     $(overviewId).title = value ? number(value.total_tokens) + " Token" : "等待新版采集器统计";
     if (usageId) $(usageId).textContent = value ? number(value.total_tokens) + " Token" : "统计待更新";
     if (requestsId) $(requestsId).textContent = value ? number(value.requests) + " 次请求 · 参考金额 " + money(value.estimated_usd) : "等待新版采集器统计";
+    const share = value && periodTotalTokens ? value.total_tokens / periodTotalTokens * 100 : 0;
+    const bar = $("pool-" + name + "-bar"), label = $("pool-" + name + "-share");
+    if (bar) bar.value = Math.max(0, Math.min(100, share));
+    if (label) label.textContent = value
+      ? (share > 0 && share < .1 ? "<0.1%" : share.toFixed(1) + "%") + " 的当前用量"
+      : "暂无归因数据";
   }
 }
 function renderUsage() {
   const total = snapshot.totals[period];
+  renderHealth();
+  renderFailures();
   for (const [id, field] of [["total-tokens", "total_tokens"], ["total-cached", "cached_tokens"], ["total-output", "output_tokens"]]) {
     $(id).textContent = compact(total[field]); $(id).title = number(total[field]);
   }
   $("total-requests").textContent = number(total.requests); $("total-cost").textContent = money(total.estimated_usd);
+  const cacheShare = total.input_tokens > 0 ? Math.min(100, total.cached_tokens / total.input_tokens * 100) : 0;
+  const outputShare = total.total_tokens > 0 ? Math.min(100, total.output_tokens / total.total_tokens * 100) : 0;
+  $("cache-share").textContent = cacheShare.toFixed(1) + "%";
+  $("output-share").textContent = outputShare.toFixed(1) + "%";
   $("keys-total-tokens").textContent = compact(total.total_tokens); $("keys-total-tokens").title = number(total.total_tokens);
   $("keys-total-cost").textContent = money(total.estimated_usd);
   renderPoolUsage();
@@ -313,9 +447,20 @@ function renderUsage() {
     tokens.append(node("small", "今日"), node("div", compact(today.total_tokens) + " · " + moneyFine(today.estimated_usd)));
     if (period === "week") tokens.append(node("small", "近 7 天"), node("div", compact(key.usage.week.total_tokens) + " · " + moneyFine(key.usage.week.estimated_usd)));
     tokens.append(node("small", "累计"), node("div", compact(recorded.total_tokens), "key-cumulative"));
-    const quotaText = key.quota_limit_tokens == null ? (key.quota_config_known ? "不限额" : "限额未知") : "限额 " + compact(key.quota_limit_tokens) + " Token";
-    tokens.append(node("small", "约 " + moneyFine(recorded.estimated_usd) + " · " + quotaText));
-    if (key.quota_limit_tokens != null) tokens.append(node("small", "剩余 " + compact(Math.max(0, key.quota_limit_tokens - recorded.total_tokens)) + " Token", recorded.total_tokens >= key.quota_limit_tokens ? "limit-exhausted" : ""));
+    const weeklyLimit = key.weekly_limit_cents;
+    if (weeklyLimit != null) {
+      const weeklyUsed = Math.max(0, key.weekly_used_cents || 0);
+      const weeklyRemaining = Math.max(0, key.weekly_remaining_cents == null ? weeklyLimit - weeklyUsed : key.weekly_remaining_cents);
+      tokens.append(node("small", "周额度 " + moneyFine(weeklyUsed / 100) + " / $" + (weeklyLimit / 100).toFixed(0)));
+      const bar = node("progress"); bar.max = Math.max(1, weeklyLimit); bar.value = Math.min(weeklyLimit, weeklyUsed);
+      bar.setAttribute("aria-label", "周额度已用 " + moneyFine(weeklyUsed / 100));
+      tokens.append(bar);
+      tokens.append(node("small", "剩余 " + moneyFine(weeklyRemaining / 100), weeklyRemaining <= 0 ? "limit-exhausted" : ""));
+    } else {
+      const quotaText = key.quota_limit_tokens == null ? (key.quota_config_known ? "不限额" : "限额未知") : "限额 " + compact(key.quota_limit_tokens) + " Token";
+      tokens.append(node("small", "约 " + moneyFine(recorded.estimated_usd) + " · " + quotaText));
+      if (key.quota_limit_tokens != null) tokens.append(node("small", "剩余 " + compact(Math.max(0, key.quota_limit_tokens - recorded.total_tokens)) + " Token", recorded.total_tokens >= key.quota_limit_tokens ? "limit-exhausted" : ""));
+    }
     const details = node("details", undefined, "usage-details");
     details.append(node("summary", "用量明细 · " + ({ today: "今日", week: "近 7 天", recorded: "累计" })[period]),
       node("div", "请求 " + number(usage.requests) + " · 输入 " + number(usage.input_tokens) + " · 缓存 " + number(usage.cached_tokens) + " · 输出 " + number(usage.output_tokens)));
@@ -411,6 +556,11 @@ $("refresh").addEventListener("click", refresh);
 $("catalog-search").addEventListener("input", () => { if (snapshot) renderCatalog(); });
 $("catalog-status").addEventListener("change", () => { if (snapshot) renderCatalog(); });
 document.querySelectorAll("[data-period]").forEach((button) => button.addEventListener("click", () => { period = button.dataset.period; if (snapshot) renderUsage(); }));
+document.querySelectorAll("[data-failure-filter]").forEach((button) => button.addEventListener("click", () => {
+  failureFilter = button.dataset.failureFilter;
+  document.querySelectorAll("[data-failure-filter]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+  if (snapshot) renderFailures();
+}));
 document.querySelectorAll("[data-view]").forEach((link) => link.addEventListener("click", (event) => {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
   event.preventDefault(); navigate(link.dataset.view);
