@@ -17,8 +17,8 @@ mod aggregate_apis;
 mod aggregate_apis_sql;
 mod api_key_quota_limits;
 mod api_keys;
-mod codex_skill_repositories;
 mod claude_subscription_accounts;
+mod codex_skill_repositories;
 mod conversation_bindings;
 mod events;
 mod key_id_filters;
@@ -31,6 +31,7 @@ mod model_sources;
 mod plugins;
 mod proxy_profiles;
 mod proxy_tests;
+mod quota_ledger;
 mod quota_pools;
 mod request_log_filters;
 mod request_log_query;
@@ -49,6 +50,10 @@ pub use model_catalog_v2::{
     ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
 };
 pub use proxy_profiles::derive_proxy_profile_url_metadata;
+pub use quota_ledger::{
+    AccountWeeklyUsage, KeyQuotaState, QuotaResetEvent, DEFAULT_ACCOUNT_WEEKLY_LIMIT_CENTS,
+    DEFAULT_KEY_WEEKLY_LIMIT_CENTS, SECONDS_PER_HOUR, SECONDS_PER_WEEK,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -2374,6 +2379,10 @@ impl Storage {
             include_str!("../../migrations/137_claude_subscription_usage.sql"),
         )?;
         self.apply_model_catalog_gpt6_new_models_migration()?;
+        self.apply_sql_migration(
+            "139_quota_ledger",
+            include_str!("../../migrations/139_quota_ledger.sql"),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;

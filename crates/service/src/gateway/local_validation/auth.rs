@@ -147,5 +147,39 @@ fn ensure_active_api_key(
         }
     }
 
+    let now = codexmanager_core::storage::now_ts();
+    let used_cents = storage
+        .key_usage_cents_rolling_7d(&api_key.id, now)
+        .map_err(|err| {
+            super::LocalValidationError::new(
+                500,
+                crate::gateway::bilingual_error(
+                    "读取用量失败",
+                    format!("read api key weekly usage failed: {err}"),
+                ),
+            )
+        })?;
+    let limit_cents = codexmanager_core::storage::DEFAULT_KEY_WEEKLY_LIMIT_CENTS;
+    if used_cents >= limit_cents {
+        if debug {
+            log::warn!(
+                "event=gateway_auth_weekly_quota_exhausted path={} status=429 key_id={} used_cents={} limit_cents={}",
+                request_url,
+                api_key.id,
+                used_cents,
+                limit_cents
+            );
+        }
+        return Err(super::LocalValidationError::new(
+            429,
+            crate::gateway::bilingual_error(
+                "API Key 周额度已用尽（滚动 7 天）",
+                format!(
+                    "api key weekly quota exhausted: used {used_cents} cents, limit {limit_cents} cents"
+                ),
+            ),
+        ));
+    }
+
     Ok(api_key)
 }

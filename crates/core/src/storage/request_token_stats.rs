@@ -702,6 +702,25 @@ impl Storage {
                 stat.created_at,
             ),
         )?;
+
+        let cost_cents = (stat.estimated_cost_usd.unwrap_or(0.0).max(0.0) * 100.0).round() as i64;
+        if cost_cents > 0 {
+            if let Some(key_id) = stat.key_id.as_deref() {
+                self.add_key_usage_hourly(key_id, stat.created_at, cost_cents, 1)?;
+            }
+            if let Some(account_id) = stat.account_id.as_deref() {
+                let window_end = stat
+                    .created_at
+                    .saturating_add(super::quota_ledger::SECONDS_PER_WEEK);
+                self.add_account_usage_cents(
+                    account_id,
+                    stat.created_at,
+                    window_end,
+                    window_end,
+                    cost_cents,
+                )?;
+            }
+        }
         Ok(())
     }
 
