@@ -357,7 +357,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::UsageSnapshotRecord;
+    use crate::storage::{ApiKey, UpstreamProvider, UsageSnapshotRecord};
 
     fn open_storage() -> Storage {
         let storage = Storage::open_in_memory().expect("open");
@@ -461,4 +461,55 @@ mod tests {
         assert_eq!(events[0].source, "official");
         assert_eq!(events[0].confirmed_by.as_deref(), Some("admin"));
     }
+    #[test]
+    fn reset_all_key_quota_epochs_zeroes_active_keys() {
+        let storage = open_storage();
+        let now = 1_700_000_000_i64;
+        for id in ["key-a", "key-b"] {
+            storage
+                .insert_api_key(&ApiKey {
+                    id: id.to_string(),
+                    name: Some(id.to_string()),
+                    model_slug: None,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    rotation_strategy: "account_rotation".to_string(),
+                    upstream_provider: UpstreamProvider::Openai,
+                    aggregate_api_id: None,
+                    account_plan_filter: None,
+                    aggregate_api_url: None,
+                    client_type: "codex".to_string(),
+                    protocol_type: "openai_compat".to_string(),
+                    auth_scheme: "authorization_bearer".to_string(),
+                    upstream_base_url: None,
+                    static_headers_json: None,
+                    key_hash: format!("hash-{id}"),
+                    status: "active".to_string(),
+                    created_at: now,
+                    last_used_at: None,
+                })
+                .expect("api key");
+            storage
+                .add_key_usage_hourly(id, now - 3600, 1_000, 1)
+                .expect("usage");
+            assert_eq!(
+                storage.key_usage_cents_rolling_7d(id, now).expect("usage"),
+                1_000
+            );
+        }
+
+        let reset = storage
+            .reset_all_key_quota_epochs(now + 10)
+            .expect("reset all");
+        assert_eq!(reset, 2);
+        for id in ["key-a", "key-b"] {
+            assert_eq!(
+                storage
+                    .key_usage_cents_rolling_7d(id, now + 10)
+                    .expect("usage after reset"),
+                0
+            );
+        }
+    }
+
 }
