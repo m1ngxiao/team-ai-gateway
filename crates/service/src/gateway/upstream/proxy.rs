@@ -1379,11 +1379,14 @@ pub(in super::super) fn proxy_validated_request(
         ) {
             Some(guard) => Some(guard),
             None => {
-                let response = super::super::error_response::terminal_text_response(
+                let mut response = super::super::error_response::terminal_text_response(
                     429,
                     "API Key 并发请求已达上限，请稍后重试",
                     Some(trace_id.as_str()),
                 );
+                if let Ok(header) = tiny_http::Header::from_bytes(b"Retry-After", b"30") {
+                    response.add_header(header);
+                }
                 let _ = request.respond(response);
                 return Ok(());
             }
