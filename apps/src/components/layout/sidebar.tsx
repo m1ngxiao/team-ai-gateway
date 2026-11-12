@@ -18,6 +18,7 @@ import {
   Route,
   Settings,
   Globe,
+  Gauge,
   ChevronLeft,
   ChevronRight,
   type LucideIcon,
@@ -49,6 +50,7 @@ const NAV_ITEM_BY_PATH = new Map<TopLevelRoutePath, { icon: LucideIcon }>([
   ["/account-manager", { icon: UserCog }],
   ["/aggregate-api", { icon: Database }],
   ["/apikeys", { icon: Key }],
+  ["/quota", { icon: Gauge }],
   ["/platform-mode", { icon: Cable }],
   ["/projects", { icon: FolderKanban }],
   ["/models", { icon: Boxes }],
@@ -85,21 +87,19 @@ const NavItem = memo(({
     aria-label={itemName}
     title={itemName}
     className={cn(
-      "group/nav relative flex min-h-10 items-center gap-3 overflow-hidden rounded-xl px-3.5 py-1.5 text-dense font-medium transition-[background-color,color] duration-300 ease-out hover:bg-primary/6 hover:text-primary xl:min-h-11 xl:gap-3.5 xl:rounded-xl xl:px-4 xl:py-2 [@media(max-height:800px)]:min-h-9 [@media(max-height:800px)]:gap-2.5 [@media(max-height:800px)]:px-3.5 [@media(max-height:800px)]:py-1",
+      "group/nav relative flex min-h-10 items-center gap-3 overflow-hidden rounded-[12px] px-3.5 py-1.5 text-dense font-medium transition-[background-color,color] duration-200 ease-out hover:bg-foreground/[0.045] hover:text-foreground xl:min-h-11 xl:gap-3.5 xl:px-3.5 xl:py-2 [@media(max-height:800px)]:min-h-9 [@media(max-height:800px)]:gap-2.5 [@media(max-height:800px)]:px-3 [@media(max-height:800px)]:py-1",
       !isSidebarOpen && "justify-center px-0",
       isActive
-        ? "min-h-12 bg-primary/10 text-primary shadow-none xl:min-h-[52px] [@media(max-height:800px)]:min-h-11"
+        ? "bg-foreground/[0.06] text-foreground shadow-[inset_0_0_0_1px_rgb(var(--foreground-rgb)/0.035)] [@media(max-height:800px)]:min-h-11"
         : "text-muted-foreground",
     )}
   >
-    {isActive ? (
-      <>
-        <span className="absolute inset-y-3 left-0 w-[3px] rounded-full bg-primary" />
-      </>
-    ) : null}
-    <item.icon className="h-[18px] w-[18px] shrink-0 xl:h-[22px] xl:w-[22px]" />
+    <item.icon className={cn("h-[17px] w-[17px] shrink-0 xl:h-[18px] xl:w-[18px]", isActive && "text-primary")} />
     {isSidebarOpen && (
-      <span className="min-w-0 truncate">{itemName}</span>
+      <>
+        <span className="min-w-0 truncate">{itemName}</span>
+        {isActive ? <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" /> : null}
+      </>
     )}
   </a>
 ));
@@ -201,7 +201,7 @@ export function Sidebar() {
       data-slot="app-sidebar"
       className={cn(
         "relative z-20 flex shrink-0 flex-col glass-sidebar",
-        isSidebarOpen ? "w-[220px] xl:w-[280px]" : "w-[60px] xl:w-[72px]"
+        isSidebarOpen ? "w-[224px] xl:w-[252px]" : "w-[64px] xl:w-[68px]"
       )}
     >
       <div
@@ -210,14 +210,14 @@ export function Sidebar() {
         className={cn(
           "pointer-events-none absolute inset-y-0 left-0 z-20 w-px bg-border/70 transition-transform duration-300 ease-out will-change-transform motion-reduce:transition-none",
           isSidebarOpen
-            ? "translate-x-[calc(220px-1px)] xl:translate-x-[calc(280px-1px)]"
-            : "translate-x-[calc(60px-1px)] xl:translate-x-[calc(72px-1px)]",
+            ? "translate-x-[calc(224px-1px)] xl:translate-x-[calc(252px-1px)]"
+            : "translate-x-[calc(64px-1px)] xl:translate-x-[calc(68px-1px)]",
         )}
       />
       <div
         className={cn(
-          "flex h-[68px] items-center border-b border-border/55 shrink-0 xl:h-[96px] [@media(max-height:800px)]:h-[68px]",
-          isSidebarOpen ? "px-4 xl:px-6" : "px-2 xl:px-2.5"
+          "flex h-[72px] shrink-0 items-center border-b border-border/45 xl:h-[84px] [@media(max-height:800px)]:h-[68px]",
+          isSidebarOpen ? "px-4 xl:px-5" : "px-2 xl:px-2.5"
         )}
       >
         <Button
@@ -227,11 +227,11 @@ export function Sidebar() {
           title={brandTitle}
           aria-label={brandTitle}
           className={cn(
-            "flex h-auto w-full items-center gap-2.5 overflow-hidden rounded-xl px-0 py-1.5 transition-colors duration-200 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 xl:gap-3.5 xl:py-2",
+            "flex h-auto w-full items-center gap-2.5 overflow-hidden rounded-xl px-0 py-1.5 transition-colors duration-200 hover:bg-foreground/[0.035] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 xl:gap-3 xl:py-2",
             isSidebarOpen ? "justify-start text-left" : "justify-center"
           )}
         >
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-primary/20 bg-card text-primary shadow-[0_12px_24px_-18px_rgb(var(--primary-rgb)/0.8)] xl:h-12 xl:w-12 xl:rounded-xl [@media(max-height:800px)]:h-9 [@media(max-height:800px)]:w-9 [@media(max-height:800px)]:rounded-[10px]">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[11px] border border-border/70 bg-card text-primary shadow-[0_10px_24px_-20px_rgb(40_30_20/0.7)] xl:h-10 xl:w-10 [@media(max-height:800px)]:h-9 [@media(max-height:800px)]:w-9">
             {logoFailed ? (
               <span className="text-sm font-bold">T</span>
             ) : (
@@ -247,8 +247,8 @@ export function Sidebar() {
           </div>
           {isSidebarOpen && (
             <div className="flex flex-col overflow-hidden animate-in fade-in slide-in-from-left-1 duration-200 motion-reduce:animate-none">
-              <span className="truncate text-lg font-semibold tracking-[-0.02em] text-foreground">{APP_DISPLAY_NAME}</span>
-              <span className="truncate text-compact text-muted-foreground xl:mt-0.5">
+              <span className="truncate text-[17px] font-semibold tracking-[-0.025em] text-foreground">{APP_DISPLAY_NAME}</span>
+              <span className="truncate text-[12px] text-muted-foreground xl:mt-0.5">
                 {t("账号池 · 路由管理")}
               </span>
             </div>
@@ -256,15 +256,15 @@ export function Sidebar() {
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-3 no-scrollbar xl:py-4 [@media(max-height:800px)]:py-2.5">
-        <nav className="px-2.5 xl:px-3.5">
+      <div className="flex-1 overflow-y-auto py-4 no-scrollbar xl:py-5 [@media(max-height:800px)]:py-2.5">
+        <nav className="px-2.5 xl:px-3">
           {renderedItems}
         </nav>
       </div>
 
       <div
         className={cn(
-          "shrink-0 border-t border-border/55 p-2.5",
+          "shrink-0 border-t border-border/45 p-2.5",
           !isSidebarOpen && "flex justify-center",
         )}
       >
@@ -272,7 +272,7 @@ export function Sidebar() {
           variant="ghost"
           size="icon"
           className={cn(
-            "h-9 rounded-md border border-transparent text-muted-foreground hover:border-primary/20 hover:text-primary",
+            "h-9 rounded-lg border border-transparent text-muted-foreground hover:border-border/70 hover:bg-foreground/[0.035] hover:text-foreground",
             isSidebarOpen
               ? "w-full justify-start gap-3 px-3"
               : "w-9 justify-center px-0",

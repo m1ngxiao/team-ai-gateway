@@ -41,6 +41,7 @@ const LAZY_PAGE_COMPONENTS: Record<
   "/account-manager": lazy(() => import("@/app/account-manager/page")),
   "/aggregate-api": lazy(() => import("@/app/aggregate-api/page")),
   "/apikeys": lazy(() => import("@/app/apikeys/page")),
+  "/quota": lazy(() => import("@/app/quota/page")),
   "/platform-mode": lazy(() => import("@/app/platform-mode/page")),
   "/projects": lazy(() => import("@/app/projects/page")),
   "/models": lazy(() => import("@/app/models/page")),
@@ -62,7 +63,7 @@ function PagePanelFallback({ title }: { title: string }) {
     <div
       className={cn(
         "fixed inset-y-0 right-0 z-40 overflow-hidden bg-background/70",
-        isSidebarOpen ? "left-[220px] xl:left-[280px]" : "left-[60px] xl:left-[72px]",
+        isSidebarOpen ? "left-[224px] xl:left-[252px]" : "left-[64px] xl:left-[68px]",
       )}
     >
       <div className="relative flex h-full w-full items-start justify-center px-8 pt-[31vh]">

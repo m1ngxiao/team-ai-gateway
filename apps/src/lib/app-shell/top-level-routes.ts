@@ -99,6 +99,14 @@ export const TOP_LEVEL_ROUTE_CONFIG = [
     roles: ["system_admin", "admin", "member"],
   },
   {
+    path: "/quota",
+    label: "额度",
+    memberLabel: "我的额度",
+    section: "platform-config",
+    memberSection: "member-usage",
+    roles: ["system_admin", "admin", "member"],
+  },
+  {
     path: "/models",
     label: "模型与路由",
     memberLabel: "可用模型",
