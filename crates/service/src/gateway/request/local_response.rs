@@ -109,6 +109,29 @@ pub(super) fn respond_local_json_with_headers(
     Ok(())
 }
 
+pub(super) fn respond_local_text(
+    request: Request,
+    ctx: &LocalResponseContext<'_>,
+    body: String,
+    usage: super::request_log::RequestLogUsage,
+) -> Result<(), String> {
+    record_local_result(ctx, 200, usage, None);
+    let response = super::error_response::with_trace_id_header(
+        Response::from_string(body)
+            .with_status_code(200)
+            .with_header(
+                tiny_http::Header::from_bytes(
+                    b"content-type".as_slice(),
+                    b"text/plain; charset=utf-8".as_slice(),
+                )
+                .map_err(|_| "build content-type header failed".to_string())?,
+            ),
+        Some(ctx.trace_id),
+    );
+    let _ = request.respond(response);
+    Ok(())
+}
+
 /// 函数 `respond_local_terminal_error`
 ///
 /// 作者: gaohongshun
