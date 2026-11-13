@@ -4,207 +4,328 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
-  <meta name="theme-color" content="#070809">
-  <title>Team AI Gateway · Signal Room</title>
+  <meta name="theme-color" content="#0B0E11">
+  <title>Team AI Gateway · 资源与额度</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <section id="login-panel" class="login-panel">
-    <div class="login-shell">
-      <div class="login-story">
-        <div class="login-brand"><span class="brand-icon">AI</span><strong>Team AI Gateway</strong></div>
-        <p class="eyebrow">TEAM INTELLIGENCE / PRIVATE</p>
-        <h1>让团队用量，<br><em>一目了然。</em></h1>
-        <p class="login-lede">从账号容量到模型偏好，用一张安静、清晰的工作面看见团队如何使用 AI。</p>
-        <div class="login-proof">
-          <span>只读访问</span>
-          <span>端到端私有</span>
-          <span>自动同步</span>
+  <section id="login-panel" class="login-page">
+    <div class="login-grid">
+      <div class="login-brand-panel">
+        <div class="brand-lockup">
+          <span class="brand-mark">AI</span>
+          <div><strong>Team AI Gateway</strong><span>团队 AI 资源台</span></div>
+        </div>
+        <div class="login-copy">
+          <p class="kicker">CONTROL ROOM / 2026</p>
+          <h1>把额度、容量与异常，<br><em>放在同一张桌面上。</em></h1>
+          <p class="lede">一个给团队内部使用的安静工作界面。先看自己还能用多少，再看共享池是否通畅，最后才看趋势。</p>
+        </div>
+        <div class="login-facts">
+          <span>团队内部访问</span>
+          <span>只读视图</span>
+          <span>时间统一 UTC+8</span>
         </div>
       </div>
-      <div class="glass-card login-card">
-        <span class="badge">团队 AI 用量</span>
-        <h2>登录看板</h2>
-        <p class="muted">使用团队看板账号继续。</p>
-        <form id="login-form">
-          <label for="username">账号</label>
-          <input id="username" name="username" autocomplete="username" maxlength="64" required>
-          <label for="password">密码</label>
-          <input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
-          <button type="submit" class="primary login-submit" id="login-button">进入看板</button>
-          <p id="login-error" class="error" role="alert"></p>
-        </form>
-        <div class="login-note"><span class="icon" data-icon="lock" aria-hidden="true"></span>使用看板账号登录，不需要平台 API Key。</div>
+      <div class="login-form-panel">
+        <div class="login-card">
+          <p class="kicker">SECURE ACCESS</p>
+          <h2>登录看板</h2>
+          <p class="muted">使用团队看板账号继续。这里不保存平台 API Key。</p>
+          <form id="login-form" autocomplete="on">
+            <label for="username">账号</label>
+            <input id="username" name="username" autocomplete="username" maxlength="64" required>
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+            <button type="submit" class="button primary login-button" id="login-button">进入看板</button>
+            <p id="login-error" class="form-error" role="alert"></p>
+          </form>
+          <p class="login-note">仅限内部同事查看，不构成对外服务承诺。</p>
+        </div>
       </div>
     </div>
   </section>
 
-  <div id="dashboard" class="app-shell" hidden>
-    <aside class="glass-sidebar">
-      <div class="sidebar-brand">
-        <span class="brand-icon">AI</span>
-        <div><strong>Team AI Gateway</strong><span>团队 AI 用量</span></div>
+  <div id="dashboard" class="app" hidden>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand-lockup">
+        <span class="brand-mark">AI</span>
+        <div><strong>Team AI Gateway</strong><span>资源与额度</span></div>
       </div>
-      <p class="sidebar-label">WORKSPACE</p>
-      <nav aria-label="看板导航">
-        <a href="#overview" data-view="overview" aria-current="page"><span class="icon" data-icon="home" aria-hidden="true"></span><span>仪表盘</span></a>
-        <a href="#accounts" data-view="accounts"><span class="icon" data-icon="users" aria-hidden="true"></span><span>OpenAI 账号池</span><span class="nav-readonly">只读</span></a>
-        <a href="#claude-accounts" data-view="claude-accounts"><span class="icon" data-icon="users" aria-hidden="true"></span><span>Claude 账号池</span><span class="nav-readonly">只读</span></a>
-        <a href="#apikeys" data-view="apikeys"><span class="icon" data-icon="key" aria-hidden="true"></span><span>平台密钥</span><span class="nav-readonly">只读</span></a>
-        <a href="#models" data-view="models"><span class="icon" data-icon="cube" aria-hidden="true"></span><span>模型目录</span><span class="nav-readonly">只读</span></a>
+      <p class="nav-label">WORKSPACE</p>
+      <nav class="nav" aria-label="看板导航">
+        <a href="#overview" data-view="overview" aria-current="page"><span class="nav-icon" data-icon="grid"></span><span>概览</span></a>
+        <a href="#accounts" data-view="accounts"><span class="nav-icon" data-icon="layers"></span><span>上游账号</span></a>
+        <a href="#keys" data-view="keys"><span class="nav-icon" data-icon="key"></span><span>成员与 Key</span><span id="nav-key-count" class="nav-count"></span></a>
+        <a href="#usage" data-view="usage"><span class="nav-icon" data-icon="chart"></span><span>用量分析</span></a>
+        <a href="#speed" data-view="speed"><span class="nav-icon" data-icon="zap"></span><span>测速</span></a>
+        <a href="#errors" data-view="errors"><span class="nav-icon" data-icon="alert"></span><span>错误中心</span></a>
+        <a href="#models" data-view="models"><span class="nav-icon" data-icon="cube"></span><span>模型目录</span></a>
       </nav>
-      <div class="sidebar-footer"><span class="icon" data-icon="lock" aria-hidden="true"></span><div><strong>团队看板</strong><span>仅供查看 · 自动刷新</span></div></div>
+      <div class="sidebar-foot">
+        <div><span class="live-dot"></span><span>数据自动同步</span></div>
+        <p>只读视图 · 团队内部</p>
+      </div>
     </aside>
 
-    <div class="workspace">
-      <header class="glass-header">
-        <div class="header-title"><h1 id="page-title">仪表盘</h1><span id="sync-badge" class="badge">正在读取统计</span></div>
-        <div class="header-actions">
-          <span class="readonly-badge"><span class="icon" data-icon="lock" aria-hidden="true"></span>只读模式</span>
-          <button id="refresh"><span class="icon" data-icon="refresh" aria-hidden="true"></span>刷新统计</button>
-          <button id="logout" class="quiet">退出登录</button>
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="icon-button menu-button" id="menu" aria-label="打开导航"><span data-icon="menu"></span></button>
+          <div>
+            <p class="kicker" id="page-kicker">CONTROL ROOM</p>
+            <h1 id="page-title">概览</h1>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <span id="sync-badge" class="sync-badge"><span class="live-dot"></span>正在读取</span>
+          <button class="icon-button" id="refresh" aria-label="刷新数据" title="刷新数据"><span data-icon="refresh"></span></button>
+          <button class="button quiet" id="logout">退出</button>
         </div>
       </header>
 
-      <main>
+      <main class="content">
         <div id="notice" class="notice" role="status" hidden></div>
-        <div class="page-meta"><p id="updated" class="muted">正在读取统计…</p><div id="period-controls" class="periods" aria-label="统计范围"><button data-period="today" aria-pressed="true">今日 · UTC+8</button><button data-period="week" aria-pressed="false">近 7 天</button><button data-period="recorded" aria-pressed="false">累计记录</button></div></div>
 
-        <section id="view-overview" class="view" aria-label="仪表盘">
-          <div class="overview-intro">
+        <section id="view-overview" class="view" aria-label="概览">
+          <div class="page-heading">
             <div>
-              <p class="eyebrow">TEAM OVERVIEW</p>
-              <h2>今天，团队如何使用 AI？</h2>
-              <p>把请求、成本和容量放在同一张图上，让异常和趋势自然浮现。</p>
+              <p class="kicker">OVERVIEW / 5 秒判断</p>
+              <h2>还能用多少，<span>现在能不能开始。</span></h2>
+              <p class="page-lede">先看个人额度，再看三个上游账号；趋势和异常只保留必要摘要。</p>
             </div>
-            <div class="overview-note"><span class="live-dot"></span><span>数据由网关自动同步</span></div>
+            <p class="updated" id="updated">正在读取统计…</p>
           </div>
 
           <div class="hero-grid">
-            <article class="glass-card overview-hero-card">
-              <div class="metric-label"><span>请求次数</span><span class="icon" data-icon="activity" aria-hidden="true"></span></div>
-              <strong id="total-requests">—</strong>
-              <p>当前统计范围内完成的模型调用总量</p>
-              <div class="hero-foot"><span><b id="overview-account-count">—</b> 总账号</span><span><b id="overview-enabled-count">—</b> 启用账号</span><span><b id="overview-key-count">—</b> 平台密钥</span></div>
+            <article class="card quota-card">
+              <div class="card-head">
+                <div><p class="kicker">MY ALLOWANCE</p><h3>我的额度</h3></div>
+                <label class="select-wrap"><span>查看成员</span><select id="member-select"></select></label>
+              </div>
+              <div class="quota-number">
+                <span id="my-available">—</span>
+                <small>当前可用</small>
+              </div>
+              <div class="quota-row">
+                <span>近 7 天已用</span>
+                <strong id="my-used">—</strong>
+              </div>
+              <progress id="my-progress" max="24000" value="0" aria-label="个人周额度已用比例"></progress>
+              <div class="quota-foot">
+                <span id="my-release">滚动 7 天 · 逐笔释放</span>
+                <span id="my-limit">上限 $240</span>
+              </div>
+              <p class="fineprint">个人使用上限，实际调用仍受共享资源池限制。额度不是保底资源。</p>
             </article>
-            <div class="metric-grid">
-              <article class="glass-card metric"><div class="metric-label"><span>总 Token</span><span class="icon amber" data-icon="bolt" aria-hidden="true"></span></div><strong id="total-tokens">—</strong><small>输入与输出合计</small></article>
-              <article class="glass-card metric"><div class="metric-label"><span>缓存输入</span><span class="icon blue" data-icon="database" aria-hidden="true"></span></div><strong id="total-cached">—</strong><small><span id="cache-share">—</span> 的输入来自缓存</small></article>
-              <article class="glass-card metric"><div class="metric-label"><span>输出 Token</span><span class="icon violet" data-icon="activity" aria-hidden="true"></span></div><strong id="total-output">—</strong><small><span id="output-share">—</span> 为模型生成内容</small></article>
-              <article class="glass-card metric"><div class="metric-label"><span>参考金额（美元）</span><span class="icon green" data-icon="dollar" aria-hidden="true"></span></div><strong id="total-cost">—</strong><small>按当前价格目录估算</small></article>
-            </div>
+
+            <article class="card status-card">
+              <div class="card-head">
+                <div><p class="kicker">ADMISSION</p><h3>当前状态</h3></div>
+                <span class="status-chip" id="my-state-chip"><span class="dot"></span><span id="my-state">—</span></span>
+              </div>
+              <p class="status-note" id="my-state-note">正在检查额度与共享池。</p>
+              <dl class="status-facts">
+                <div><dt>个人并发</dt><dd>1 路</dd></div>
+                <div><dt>共享池</dt><dd id="pool-capacity">—</dd></div>
+                <div><dt>排队规则</dt><dd>30 秒 FIFO</dd></div>
+              </dl>
+              <p class="last-use" id="my-last-use">最近使用：—</p>
+            </article>
           </div>
 
-          <section class="glass-card section-card health-panel" aria-labelledby="health-title">
-            <div class="section-title">
-              <div><p class="eyebrow">GATEWAY HEALTH</p><h2 id="health-title">中转站运行状况</h2></div>
-              <span id="health-period-note" class="muted">今日 · HTTP 2xx 计为成功</span>
+          <section class="section pool-section" aria-labelledby="pool-title">
+            <div class="section-head">
+              <div><p class="kicker">SHARED CAPACITY</p><h3 id="pool-title">共享资源池</h3></div>
+              <a href="#accounts" data-view="accounts" class="text-link">查看账号详情 <span aria-hidden="true">→</span></a>
             </div>
-            <div class="health-kpis">
-              <article class="health-kpi health-rate"><span>请求成功率</span><strong id="health-success-rate">—</strong><small id="health-volume">等待统计</small></article>
-              <article class="health-kpi health-success"><span>成功请求</span><strong id="health-success-count">—</strong><small>HTTP 2xx</small></article>
-              <article class="health-kpi health-failure"><span>失败请求</span><strong id="health-failure-count">—</strong><small id="health-last-failure">暂无失败</small></article>
-              <article class="health-kpi health-latency"><span>首响应均值</span><strong id="health-first-response">—</strong><small>仅统计成功且已记录延迟的请求</small></article>
-            </div>
-            <div class="health-layout">
-              <div class="health-daily">
-                <div class="health-subtitle"><h3>近 14 天</h3><span>每天按 UTC+8 汇总</span></div>
-                <div id="health-days" class="health-days" aria-live="polite"></div>
-              </div>
-              <div class="health-detail">
-                <div class="health-list-block">
-                  <div class="health-subtitle"><h3>错误分布</h3><span>按业务原因归类</span></div>
-                  <div id="health-errors" class="health-errors"></div>
-                </div>
-                <div class="health-list-block">
-                  <div class="health-subtitle"><h3>失败状态码</h3><span>保留原始 HTTP 结果</span></div>
-                  <div id="health-statuses" class="health-statuses"></div>
-                </div>
-              </div>
-            </div>
-            <details class="accounting-note"><summary>统计口径</summary><p class="footnote">成功仅表示中转站返回 HTTP 2xx；4xx、5xx、客户端取消和无状态码请求都计为失败。错误原因按状态码和脱敏后的错误类型归类，不展示原始错误内容。按日趋势使用主库当前保留的请求日志。</p></details>
+            <div id="pool-accounts" class="pool-grid"></div>
+            <p class="fineprint">上游原生剩余配额、站内 API 等值金额、个人 Key 上限是三套不同口径，不能直接互相换算。</p>
           </section>
 
-          <section class="glass-card section-card failure-panel" aria-labelledby="failure-title">
-            <div class="section-title">
-              <div><p class="eyebrow">INCIDENT STREAM</p><h2 id="failure-title">异常信号</h2></div>
-              <span id="failure-count" class="muted">最近 40 条失败请求</span>
-            </div>
-            <div class="failure-filters" role="group" aria-label="筛选异常">
-              <button data-failure-filter="all" aria-pressed="true">全部</button>
-              <button data-failure-filter="upstream" aria-pressed="false">上游 / 过载</button>
-              <button data-failure-filter="rate" aria-pressed="false">限流</button>
-              <button data-failure-filter="client" aria-pressed="false">客户端</button>
-              <button data-failure-filter="auth" aria-pressed="false">鉴权</button>
-            </div>
-            <div id="recent-failures" class="failure-list" aria-live="polite"></div>
-            <p class="footnote">仅保留最近失败请求的脱敏摘要，不包含 API Key、完整 URL 或上游凭据；用于定位账号、模型和错误类型。</p>
-          </section>
+          <div class="stat-strip" aria-label="今日关键指标">
+            <article><span>今日请求</span><strong id="stat-requests">—</strong><small>HTTP 请求</small></article>
+            <article><span>HTTP 成功率</span><strong id="stat-success">—</strong><small>2xx 口径</small></article>
+            <article><span>失败</span><strong id="stat-failures">—</strong><small>含取消</small></article>
+            <article><span>首响应均值</span><strong id="stat-first">—</strong><small>成功请求</small></article>
+          </div>
 
-          <section class="glass-card section-card pool-breakdown" aria-labelledby="pool-usage-title">
-            <div class="section-title">
-              <div><p class="eyebrow">SOURCE ATTRIBUTION</p><h2 id="pool-usage-title">上游池用量</h2></div>
-              <span class="muted">按请求记录中的实际上游来源归因</span>
-            </div>
-            <div class="pool-breakdown-grid">
-              <div class="pool-source openai-source"><div><span>OpenAI 账号池</span><strong id="overview-openai-tokens">—</strong></div><progress id="pool-openai-bar" max="100" value="0"></progress><small id="pool-openai-share">—</small></div>
-              <div class="pool-source claude-source"><div><span>Claude 账号池</span><strong id="overview-claude-tokens">—</strong></div><progress id="pool-claude-bar" max="100" value="0"></progress><small id="pool-claude-share">—</small></div>
-              <div class="pool-source neutral-source"><div><span>未归属</span><strong id="overview-unattributed-tokens">—</strong></div><progress id="pool-unattributed-bar" max="100" value="0"></progress><small id="pool-unattributed-share">—</small></div>
-            </div>
-            <details class="accounting-note"><summary>统计口径</summary><p class="footnote">账号池仅统计实际路由到订阅账号的请求；聚合 API、旧记录及无法区分来源的历史汇总计入未归属。三项合计为全站总 Token，不按 Key 当前厂商回填历史。</p></details>
-          </section>
-
-          <div class="overview-columns">
-            <section class="glass-card section-card">
-              <div class="section-title"><div><p class="eyebrow">ACCOUNT HEALTH</p><h2>账号概览</h2></div><div class="account-links"><a href="#accounts" data-view="accounts" class="text-link">OpenAI <span aria-hidden="true">→</span></a><a href="#claude-accounts" data-view="claude-accounts" class="text-link">Claude <span aria-hidden="true">→</span></a></div></div>
-              <div id="overview-accounts" class="accounts"></div>
+          <div class="split-grid">
+            <section class="card" aria-labelledby="trend-title">
+              <div class="card-head"><div><p class="kicker">LAST 14 DAYS</p><h3 id="trend-title">请求量趋势</h3></div><span class="muted">UTC+8 · 按日</span></div>
+              <div id="trend-chart" class="trend-chart" aria-live="polite"></div>
+              <div class="legend"><span><i class="legend-ok"></i>完成</span><span><i class="legend-bad"></i>失败 / 取消</span></div>
             </section>
-            <section class="glass-card section-card">
-              <div class="section-title"><div><p class="eyebrow">MODEL MIX</p><h2>模型使用情况</h2></div><span class="muted">近 7 天</span></div>
-              <div id="models" class="models"></div>
+            <section class="card" aria-labelledby="error-summary-title">
+              <div class="card-head"><div><p class="kicker">SIGNALS</p><h3 id="error-summary-title">异常摘要</h3></div><a href="#errors" data-view="errors" class="text-link">错误中心 <span aria-hidden="true">→</span></a></div>
+              <div id="error-summary" class="error-summary"></div>
+            </section>
+          </div>
+
+          <div class="split-grid">
+            <section class="card" aria-labelledby="model-mix-title">
+              <div class="card-head"><div><p class="kicker">MODEL MIX / 7D</p><h3 id="model-mix-title">模型费用分布</h3></div><span class="muted">API 参考金额</span></div>
+              <div id="model-mix" class="model-mix"></div>
+            </section>
+            <section class="card definition-card" aria-labelledby="definitions-title">
+              <div class="card-head"><div><p class="kicker">READ ME</p><h3 id="definitions-title">三个口径</h3></div></div>
+              <dl class="definitions">
+                <div><dt>上游原生配额</dt><dd>账号自己返回的周剩余百分比，重置时间各自独立。</dd></div>
+                <div><dt>我的 Key 额度</dt><dd>站内实际执行的滚动 7 天计数器，当前可用 = $240 减去已用。</dd></div>
+                <div><dt>API 参考金额</dt><dd>按模型价格目录估算的等值消耗，不代表账单或上游余额。</dd></div>
+              </dl>
             </section>
           </div>
         </section>
 
-        <section id="view-accounts" class="view" aria-labelledby="accounts-title" hidden>
-          <div class="page-heading"><div><p class="eyebrow">OPENAI POOL</p><h2 id="accounts-title">OpenAI 账号池</h2><p class="muted">账号分组、套餐与剩余额度</p></div><div class="actions"><button disabled title="仅管理员可以导入账号">导入账号</button><button disabled class="primary" title="仅管理员可以添加账号"><span aria-hidden="true">＋</span> 添加账号</button></div></div>
-          <div class="pool-page-usage glass-card"><span>当前时段已归因至 OpenAI 账号池</span><strong id="openai-pool-usage">—</strong><small id="openai-pool-requests">—</small></div>
-          <div class="glass-card table-card"><div class="section-title table-title"><h3>账号列表</h3><span id="account-count" class="muted"></span></div><div class="table-frame"><table class="account-table"><thead><tr><th scope="col">账号信息</th><th scope="col">额度详情</th><th scope="col">顺序</th><th scope="col">账号代理</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody id="accounts"></tbody></table></div></div>
-        </section>
-
-        <section id="view-claude-accounts" class="view" aria-labelledby="claude-accounts-title" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CLAUDE POOL</p><h2 id="claude-accounts-title">Claude 账号池</h2><p class="muted">Claude.ai 订阅账号、最近采集的额度与已归因用量</p></div><span class="readonly-badge"><span class="icon" data-icon="lock" aria-hidden="true"></span>仅查看</span></div>
-          <div class="pool-page-usage glass-card"><span>当前时段已归因至 Claude 账号池</span><strong id="claude-pool-usage">—</strong><small id="claude-pool-requests">—</small></div>
-          <div class="glass-card table-card"><div class="section-title table-title"><h3>账号列表</h3><span id="claude-account-count" class="muted"></span></div><div class="table-frame"><table class="account-table claude-account-table"><thead><tr><th scope="col">账号信息</th><th scope="col">套餐</th><th scope="col">顺序</th><th scope="col">状态</th><th scope="col">采集 / 查询</th><th scope="col">订阅额度</th></tr></thead><tbody id="claude-accounts"></tbody></table></div></div>
-          <p class="footnote">额度来自 Claude 账号最近成功采集的 5 小时和 7 天用量百分比；超过 60 分钟或重置时间已过的数据显示“未知”。本站 Token 用量按实际请求来源归因，不能换算为订阅剩余额度。</p>
-        </section>
-
-        <section id="view-apikeys" class="view" aria-labelledby="keys-title" hidden>
-          <div class="page-heading"><div><p class="eyebrow">ACCESS KEYS</p><h2 id="keys-title">平台密钥</h2><p id="keys-sort-order" class="muted">按今日 Token 用量从高到低排列</p></div><button class="primary" disabled title="仅管理员可以创建密钥"><span aria-hidden="true">＋</span> 创建密钥</button></div>
-          <div class="key-summary"><article class="glass-card metric"><div class="metric-label"><span>总使用 Token</span><span class="icon blue" data-icon="bolt" aria-hidden="true"></span></div><strong id="keys-total-tokens">—</strong></article><article class="glass-card metric"><div class="metric-label"><span>参考金额（美元）</span><span class="icon green" data-icon="dollar" aria-hidden="true"></span></div><strong id="keys-total-cost">—</strong></article></div>
-          <section class="glass-card table-card group-summary" aria-labelledby="groups-title">
-            <div class="section-title table-title"><h3 id="groups-title">各组使用量</h3><span id="groups-period" class="muted" aria-live="polite"></span></div>
-            <p id="groups-note" class="footnote group-note">按 Key 当前所属分组汇总成员用量，历史用量随分组调整。组名对应 Key 的账号分组筛选。</p>
-            <div class="table-frame"><table class="group-table" aria-describedby="groups-note"><thead><tr><th scope="col">分组</th><th scope="col">Key 数</th><th scope="col">请求数</th><th scope="col">输入 Token</th><th scope="col">缓存 Token</th><th scope="col">输出 Token</th><th scope="col" aria-sort="descending" aria-describedby="groups-period">总 Token ↓</th><th scope="col">估算费用（美元）</th></tr></thead><tbody id="key-groups"></tbody></table></div>
-          </section>
-          <div class="glass-card table-card table-frame"><table class="key-table"><thead><tr><th scope="col">密钥名称</th><th scope="col">上游厂商</th><th scope="col">协议</th><th scope="col">轮转策略</th><th scope="col">绑定模型</th><th scope="col">最近调用</th><th scope="col" aria-sort="descending" aria-describedby="keys-sort-order">TOKEN / 金额 ↓</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody id="keys"></tbody></table></div>
-          <p class="footnote">显示名称和编号，不显示完整密钥。美元金额为估算，仅供参考。</p>
-        </section>
-
-        <section id="view-models" class="view" aria-labelledby="catalog-title" hidden>
-          <div class="page-heading"><div><p class="eyebrow">MODEL CATALOG</p><h2 id="catalog-title">模型目录</h2></div><button class="primary" disabled title="仅管理员可以添加模型">添加模型</button></div>
-          <div class="glass-card table-card">
-            <div class="catalog-toolbar"><div><h3>模型列表</h3><span id="catalog-count" class="muted" aria-live="polite"></span></div>
-              <div class="catalog-filters"><label class="sr-only" for="catalog-search">搜索模型</label><input id="catalog-search" type="search" placeholder="搜索模型名称或 ID" maxlength="128" autocomplete="off">
-                <label class="sr-only" for="catalog-status">模型状态</label><select id="catalog-status"><option value="all">全部模型</option><option value="enabled">已启用</option><option value="disabled">已禁用</option></select></div>
-            </div>
-            <div class="table-frame"><table class="catalog-table"><thead><tr><th scope="col">模型</th><th scope="col">来源</th><th scope="col">状态</th><th scope="col">价格（美元 / 百万 Token）<span class="price-legend">输入 / 缓存读 / 缓存写 / 输出</span></th><th scope="col">指令</th><th scope="col">路由</th><th scope="col">操作</th></tr></thead><tbody id="catalog-rows"></tbody></table></div>
+        <section id="view-accounts" class="view" aria-label="上游账号" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">UPSTREAM POOL</p><h2>上游账号</h2><p class="page-lede">三个 Pro 20X 账号各自有独立的重置时间。默认只看配额、重置与并发上限。</p></div>
+            <p class="updated" id="accounts-updated">—</p>
           </div>
-          <p id="catalog-unlisted" class="footnote" hidden></p>
+          <div id="account-cards" class="account-grid"></div>
+          <p class="fineprint">并发上限为网关配置值 5 路/账号；实际可调度容量还要排除停用、额度耗尽与冷却中的账号。</p>
+        </section>
+
+        <section id="view-keys" class="view" aria-label="成员与 Key" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">MEMBERS / KEYS</p><h2>成员与 Key</h2><p class="page-lede">每人 1 Key · 1 并发 · $240 / 滚动 7 天。只对例外逐行标注。</p></div>
+            <p class="updated" id="key-count-note">—</p>
+          </div>
+          <div class="toolbar">
+            <label class="search"><span data-icon="search"></span><input id="key-search" type="search" placeholder="搜索成员或 Key" maxlength="64" autocomplete="off"></label>
+            <label class="select-wrap compact"><span>状态</span><select id="key-status-filter"><option value="all">全部</option><option value="enabled">启用</option><option value="disabled">停用</option></select></label>
+          </div>
+          <section class="card table-card">
+            <div class="table-scroll">
+              <table class="data-table key-table">
+                <thead><tr><th>成员</th><th>当前可用</th><th>近 7 天已用</th><th>状态</th><th>最近使用</th></tr></thead>
+                <tbody id="keys-table"></tbody>
+              </table>
+            </div>
+            <p class="fineprint">点击任意行查看 Key 元数据与额度释放信息。金额为站内执行口径；停用 Key 保留历史但不再接流量。</p>
+          </section>
+        </section>
+
+        <section id="view-usage" class="view" aria-label="用量分析" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">USAGE / ANALYSIS</p><h2>用量分析</h2><p class="page-lede">费用、请求与 Token 分开看；缓存输入不重复计入总输入。</p></div>
+            <p class="updated" id="usage-updated">—</p>
+          </div>
+          <div id="usage-totals" class="usage-totals"></div>
+          <div class="split-grid wide-left">
+            <section class="card"><div class="card-head"><div><p class="kicker">DAILY REQUESTS</p><h3>每日请求</h3></div><span class="muted">近 14 天</span></div><div id="usage-chart" class="usage-chart"></div></section>
+            <section class="card"><div class="card-head"><div><p class="kicker">COST BY MODEL</p><h3>模型费用</h3></div><span class="muted">近 7 天</span></div><div id="usage-models" class="usage-models"></div></section>
+          </div>
+          <section class="card usage-members-card">
+            <div class="card-head"><div><p class="kicker">MEMBER USAGE</p><h3>成员用量</h3></div><span class="muted">近 7 天 · 按 API 参考金额</span></div>
+            <div class="table-scroll">
+              <table class="data-table usage-member-table">
+                <thead><tr><th>成员</th><th>近 7 天请求</th><th>API 参考金额</th><th>占成员总额</th><th>当前可用</th><th>状态</th></tr></thead>
+                <tbody id="usage-members"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="view-speed" class="view" aria-label="测速" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">SPEED LAB</p><h2>真实请求，<span>测一次生成速度。</span></h2><p class="page-lede">历史速度来自真实成功请求；主动测速会消耗你自己的平台 Key 额度，结果只留在当前页面。</p></div>
+            <p class="updated" id="speed-updated">—</p>
+          </div>
+
+          <section class="card speed-hero">
+            <div class="speed-hero-copy">
+              <p class="kicker">HISTORICAL / 7 DAYS</p>
+              <h3>历史解码速度</h3>
+              <p>首字之后可见输出的生成速度，不含排队与提示词处理。端到端速度另行标注。</p>
+              <dl class="speed-facts" id="speed-facts"></dl>
+            </div>
+            <div class="speed-big">
+              <strong id="speed-decode-p50">—</strong>
+              <span>tok/s</span>
+              <small>解码 p50 · 近 7 天</small>
+            </div>
+          </section>
+
+          <div class="split-grid wide-left speed-grid">
+            <section class="card">
+              <div class="card-head"><div><p class="kicker">MODEL SPEED</p><h3>按模型</h3></div><span class="muted">解码 p50 / 端到端 p50</span></div>
+              <div class="table-scroll">
+                <table class="data-table speed-model-table">
+                  <thead><tr><th>模型</th><th>样本</th><th>输出 tokens</th><th>解码 p50</th><th>端到端 p50</th></tr></thead>
+                  <tbody id="speed-model-body"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="card speed-test-card">
+              <div class="card-head"><div><p class="kicker">ACTIVE TEST</p><h3>主动测速</h3></div><span class="status-pill good">消耗额度</span></div>
+              <form id="speed-form" class="speed-form">
+                <label>平台 Key<input id="speed-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..."></label>
+                <label>模型<select id="speed-model"></select></label>
+                <label>Prompt<textarea id="speed-prompt" rows="3" maxlength="2000">用三句话解释什么是“共享资源池”，并举一个排队例子。</textarea></label>
+                <button class="button" id="speed-run" type="submit">开始测速</button>
+                <p class="fineprint" id="speed-note">Key 只用于这一次请求，不写入快照、不落日志。</p>
+              </form>
+              <div class="speed-result" id="speed-result" hidden>
+                <div class="speed-big"><strong id="speed-result-tps">—</strong><span>tok/s</span><small>解码速度</small></div>
+                <dl class="speed-facts" id="speed-result-facts"></dl>
+                <p class="speed-preview" id="speed-result-text"></p>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-errors" class="view" aria-label="错误中心" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">ERROR CENTER</p><h2>错误中心</h2><p class="page-lede">先分清策略容量、上游故障、配置请求与客户端取消，再决定要不要重试。</p></div>
+            <p class="updated" id="errors-updated">—</p>
+          </div>
+          <div id="error-summary-strip" class="error-summary-strip"></div>
+          <div class="toolbar">
+            <div id="error-filters" class="filter-chips" role="group" aria-label="筛选错误">
+              <button data-error-filter="all" aria-pressed="true">全部</button>
+              <button data-error-filter="capacity" aria-pressed="false">策略与容量</button>
+              <button data-error-filter="upstream" aria-pressed="false">上游故障</button>
+              <button data-error-filter="request" aria-pressed="false">配置与请求</button>
+              <button data-error-filter="client" aria-pressed="false">客户端取消</button>
+            </div>
+            <label class="search"><span data-icon="search"></span><input id="error-search" type="search" placeholder="搜索模型、成员、错误" maxlength="64" autocomplete="off"></label>
+          </div>
+          <div id="error-list" class="error-list"></div>
+        </section>
+
+        <section id="view-models" class="view" aria-label="模型目录" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">MODEL CATALOG</p><h2>模型目录</h2><p class="page-lede">价格按“美元 / 百万 Token”展示；输入、缓存、输出分列，不再用斜杠串。</p></div>
+            <p class="updated" id="models-updated">—</p>
+          </div>
+          <div class="toolbar">
+            <label class="search"><span data-icon="search"></span><input id="model-search" type="search" placeholder="搜索模型名称或 ID" maxlength="64" autocomplete="off"></label>
+            <label class="select-wrap compact"><span>状态</span><select id="model-status-filter"><option value="all">全部</option><option value="enabled">已启用</option><option value="disabled">已禁用</option></select></label>
+          </div>
+          <section class="card table-card">
+            <div class="table-scroll">
+              <table class="data-table model-table">
+                <thead><tr><th>模型</th><th>状态</th><th>输入</th><th>缓存读</th><th>输出</th><th>路由</th></tr></thead>
+                <tbody id="model-table"></tbody>
+              </table>
+            </div>
+            <p id="catalog-unlisted" class="fineprint" hidden></p>
+          </section>
         </section>
       </main>
     </div>
+  </div>
+
+  <div id="drawer-root" class="drawer-root" hidden>
+    <button id="drawer-backdrop" class="drawer-backdrop" aria-label="关闭详情"></button>
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <div class="drawer-head"><div><p class="kicker">DETAIL</p><h2 id="drawer-title">详情</h2></div><button class="icon-button" id="drawer-close" aria-label="关闭详情"><span data-icon="close"></span></button></div>
+      <div id="drawer-body" class="drawer-body"></div>
+    </aside>
   </div>
 </body>
 </html>
