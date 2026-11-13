@@ -10,33 +10,6 @@ pub(in super::super) enum CandidateSkipReason {
     Inflight,
 }
 
-/// 函数 `prepare_gateway_candidates`
-///
-/// 作者: gaohongshun
-///
-/// 时间: 2026-04-02
-///
-/// # 参数
-/// - crate: 参数 crate
-///
-/// # 返回
-/// 返回函数执行结果
-fn filter_account_weekly_quota(
-    storage: &Storage,
-    candidates: Vec<(Account, Token)>,
-) -> Vec<(Account, Token)> {
-    let now = codexmanager_core::storage::now_ts();
-    candidates
-        .into_iter()
-        .filter(|(account, _)| {
-            storage
-                .account_usage_cents_rolling_7d(&account.id, now)
-                .map(|used| used < codexmanager_core::storage::DEFAULT_ACCOUNT_WEEKLY_LIMIT_CENTS)
-                .unwrap_or(true)
-        })
-        .collect()
-}
-
 pub(crate) fn prepare_gateway_candidates(
     storage: &Storage,
     request_model: Option<&str>,
@@ -64,7 +37,7 @@ pub(crate) fn prepare_gateway_candidates(
             storage,
             low_quota_mode,
         )?;
-        return Ok(filter_account_weekly_quota(storage, candidates));
+        return Ok(candidates);
     }
 
     let mut authorized_candidates = if reserve_model {
@@ -134,7 +107,7 @@ pub(crate) fn prepare_gateway_candidates(
             &authorized_account_ids,
             low_quota_mode,
         )?;
-    Ok(filter_account_weekly_quota(storage, candidates))
+    Ok(candidates)
 }
 
 fn collect_luna_reserve_candidates(

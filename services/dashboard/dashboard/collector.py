@@ -734,8 +734,8 @@ def collect(config, now=None):
                          "capacity_override": bool(capacity_primary or capacity_secondary),
                          "capacity_primary_tokens": capacity_primary, "capacity_secondary_tokens": capacity_secondary,
                          "weekly_used_cents": account_weekly_cents.get(row["id"], 0),
-                         "weekly_limit_cents": 120000,
-                         "weekly_remaining_cents": max(0, 120000 - account_weekly_cents.get(row["id"], 0)),
+                         "weekly_limit_cents": None,
+                         "weekly_remaining_cents": None,
                          "weekly_reset_at": optional_timestamp(row["resets_at"]),
                          **credits_details(row["credits_json"], optional_timestamp(row["captured_at"]))})
     # The table stores one latest row per account. If an older installation has

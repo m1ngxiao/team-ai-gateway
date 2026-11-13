@@ -56,8 +56,8 @@ class Account(ClosedModel):
     reset_available_count: int | None = Field(default=None, ge=0, le=9007199254740991)
     reset_next_expires_at: int | None = Field(default=None, gt=0)
     weekly_used_cents: int = Field(default=0, ge=0, le=9007199254740991)
-    weekly_limit_cents: int = Field(default=120000, ge=0, le=9007199254740991)
-    weekly_remaining_cents: int = Field(default=120000, ge=0, le=9007199254740991)
+    weekly_limit_cents: int | None = Field(default=None, ge=0, le=9007199254740991)
+    weekly_remaining_cents: int | None = Field(default=None, ge=0, le=9007199254740991)
     weekly_reset_at: int | None = Field(default=None, ge=0)
 
 

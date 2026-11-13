@@ -422,7 +422,7 @@ function renderPool() {
     card.append(meta);
 
     const ref = node("div", undefined, "pool-ref");
-    ref.append(node("span", "站内 API 等值"), node("b", money(account.weekly_used_cents) + " / " + money(account.weekly_limit_cents, 0)));
+    ref.append(node("span", "站内 7 天用量"), node("b", money(account.weekly_used_cents)));
     card.append(ref);
     card.append(node("p", "采集于 " + dateShort(account.captured_at), "fineprint"));
     container.append(card);
@@ -600,7 +600,7 @@ function renderAccounts() {
     liveValue.dataset.inflight = account.id;
     liveRow.append(node("dt", "实时并发"), liveValue);
     facts.append(liveRow);
-    fact("站内 API 等值", money(account.weekly_used_cents) + " / " + money(account.weekly_limit_cents, 0));
+    fact("站内 7 天用量", money(account.weekly_used_cents));
     fact("数据采集", account.captured_at ? dateShort(account.captured_at) : "待更新");
     main.append(quota, facts);
     card.append(main);
