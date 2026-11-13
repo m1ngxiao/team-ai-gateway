@@ -716,6 +716,17 @@ fn overload_preflight_holds_empty_reasoning_metadata() {
 }
 
 #[test]
+fn overload_preflight_holds_empty_reasoning_part_placeholders() {
+    let body = format!(
+        "data: {{\"type\":\"response.output_item.added\",\"item\":{{\"type\":\"reasoning\",\"summary\":[{{\"type\":\"summary_text\",\"text\":\"\"}}]}}}}\n\n{OVERLOAD_EVENT}"
+    );
+    assert_eq!(
+        super::classify_prefix(body.as_bytes(), false, true),
+        PrefixDecision::Overload
+    );
+}
+
+#[test]
 fn overload_preflight_holds_only_empty_item_and_part_metadata() {
     let body = format!(
         "data: {{\"type\":\"response.output_item.added\",\"item\":{{\"type\":\"message\",\"content\":[]}}}}\n\ndata: {{\"type\":\"response.content_part.added\",\"part\":{{\"type\":\"output_text\",\"text\":\"\"}}}}\n\n{OVERLOAD_EVENT}"

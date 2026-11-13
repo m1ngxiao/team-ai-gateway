@@ -65,6 +65,22 @@ fn empty_string_or_absent(value: Option<&Value>) -> bool {
     value.is_none_or(|value| value.as_str().is_none_or(|text| text.is_empty()))
 }
 
+/// True for `[]`, missing arrays, and arrays whose entries carry no text.
+/// The upstream often emits placeholder parts with `{"type":"summary_text",
+/// "text":""}` before a capacity failure; those are metadata, not output.
+fn empty_text_parts(value: Option<&Value>) -> bool {
+    value.is_none_or(|value| {
+        value.as_array().is_some_and(|items| {
+            items.iter().all(|item| {
+                item.as_object().is_some_and(|object| {
+                    empty_string_or_absent(object.get("text"))
+                        && empty_array_or_absent(object.get("annotations"))
+                })
+            })
+        })
+    })
+}
+
 /// True only when an output item carries no user-visible or replay-sensitive
 /// payload. `reasoning` may appear before an overload with an empty summary;
 /// that is a placeholder, not generated content. Encrypted reasoning is always
@@ -75,11 +91,11 @@ fn content_free_output_item(item: &Value) -> bool {
     };
     match object.get("type").and_then(Value::as_str) {
         Some("reasoning") => {
-            empty_array_or_absent(object.get("summary"))
-                && empty_array_or_absent(object.get("content"))
+            empty_text_parts(object.get("summary"))
+                && empty_text_parts(object.get("content"))
                 && empty_string_or_absent(object.get("encrypted_content"))
         }
-        Some("message") => empty_array_or_absent(object.get("content")),
+        Some("message") => empty_text_parts(object.get("content")),
         _ => false,
     }
 }
