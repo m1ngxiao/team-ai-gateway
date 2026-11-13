@@ -26,6 +26,11 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
         return Ok(());
     }
 
+    request = match crate::gateway::artifacts::handle_request(request)? {
+        Some(request) => request,
+        None => return Ok(()),
+    };
+
     let _request_guard = super::begin_gateway_request();
     let trace_id = super::trace_log::next_trace_id();
     let request_path_for_log = super::normalize_models_path(request.url());
@@ -96,6 +101,23 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
                 return Ok(());
             }
         };
+
+    let request = match super::maybe_respond_local_usage(
+        request,
+        validated.trace_id.as_str(),
+        validated.key_id.as_str(),
+        validated.protocol_type.as_str(),
+        validated.original_path.as_str(),
+        validated.path.as_str(),
+        validated.response_adapter,
+        validated.request_method.as_str(),
+        validated.model_for_log.as_deref(),
+        validated.reasoning_for_log.as_deref(),
+        &validated.storage,
+    )? {
+        Some(request) => request,
+        None => return Ok(()),
+    };
 
     let request = match super::maybe_respond_local_models(
         request,

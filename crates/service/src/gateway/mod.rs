@@ -166,6 +166,8 @@ mod incoming_headers;
 mod local_count_tokens;
 #[path = "request/local_models.rs"]
 mod local_models;
+#[path = "request/local_usage.rs"]
+mod local_usage;
 pub(crate) use local_models::filter_managed_models_for_gateway_key;
 #[path = "routing/dynamic_pool.rs"]
 pub(crate) mod dynamic_pool;
@@ -486,6 +488,7 @@ pub(crate) use anthropic_safeguards::{
 pub(super) use incoming_headers::IncomingHeaderSnapshot;
 use local_count_tokens::maybe_respond_local_count_tokens;
 use local_models::maybe_respond_local_models;
+use local_usage::maybe_respond_local_usage;
 use openai_fallback::try_openai_fallback;
 pub(crate) use request_entry::handle_gateway_request;
 use request_gate::{request_gate_lock, RequestGateAcquireError};

@@ -192,6 +192,31 @@ impl Storage {
         self.key_usage_cents_since(key_id, since)
     }
 
+    /// Timestamp when the oldest still-billable charge leaves the rolling window.
+    pub fn key_next_release_at(&self, key_id: &str, now: i64) -> Result<Option<i64>> {
+        let state = self.ensure_key_quota_state(key_id)?;
+        let since = (now - SECONDS_PER_WEEK).max(state.epoch_at);
+        let oldest_stat: Option<i64> = self.conn.query_row(
+            "SELECT MIN(created_at)
+             FROM request_token_stats
+             WHERE key_id = ?1 AND created_at >= ?2 AND usage_included = 1
+               AND estimated_cost_usd IS NOT NULL AND estimated_cost_usd > 0",
+            params![key_id, since],
+            |row| row.get(0),
+        )?;
+        if let Some(created_at) = oldest_stat {
+            return Ok(Some(created_at + SECONDS_PER_WEEK));
+        }
+        let oldest_hour: Option<i64> = self.conn.query_row(
+            "SELECT MIN(hour_start)
+             FROM key_usage_hourly
+             WHERE key_id = ?1 AND hour_start >= ?2 AND cost_cents > 0",
+            params![key_id, since],
+            |row| row.get(0),
+        )?;
+        Ok(oldest_hour.map(|hour| hour + SECONDS_PER_WEEK))
+    }
+
     /// Rolling seven-day account usage derived from durable request cost stats.
     /// The latest upstream weekly window end for an account. `usage_snapshots`
     /// stores the reset instant of the 7-day window, so the window start is
@@ -582,6 +607,37 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn next_release_tracks_oldest_billable_request() {
+        let storage = open_storage();
+        let now = 1_700_000_000_i64;
+        for (idx, age) in [0_i64, 1_i64].into_iter().enumerate() {
+            storage
+                .insert_request_token_stat(&RequestTokenStat {
+                    request_log_id: 900 + idx as i64,
+                    key_id: Some("key-release".to_string()),
+                    account_id: None,
+                    model: Some("gpt-6-luna".to_string()),
+                    actual_source_kind: None,
+                    actual_source_id: None,
+                    input_tokens: Some(10),
+                    cached_input_tokens: Some(0),
+                    output_tokens: Some(5),
+                    total_tokens: Some(15),
+                    reasoning_output_tokens: Some(0),
+                    estimated_cost_usd: Some(0.01),
+                    created_at: now - 1_000 + age * 500,
+                })
+                .expect("token stat");
+        }
+        assert_eq!(
+            storage
+                .key_next_release_at("key-release", now)
+                .expect("release"),
+            Some(now - 1_000 + SECONDS_PER_WEEK)
+        );
     }
 
 }
