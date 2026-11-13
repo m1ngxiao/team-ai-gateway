@@ -121,15 +121,18 @@ def failure_message(status_code, error):
 def collect_key_weekly_cents(connection, end):
     try:
         rows = connection.execute("""
-          SELECT u.key_id, SUM(u.cost_cents) AS used_cents
-          FROM key_usage_hourly u
-          WHERE u.hour_start >= MAX(?, COALESCE(
-            (SELECT s.epoch_at FROM key_quota_state s WHERE s.key_id = u.key_id), 0))
-          GROUP BY u.key_id
+          SELECT t.key_id, SUM(COALESCE(t.estimated_cost_usd, 0)) AS used_usd
+          FROM request_token_stats t
+          WHERE t.usage_included = 1
+            AND t.key_id IS NOT NULL
+            AND t.created_at >= MAX(?, COALESCE(
+              (SELECT s.epoch_at FROM key_quota_state s WHERE s.key_id = t.key_id), 0))
+          GROUP BY t.key_id
         """, (end - 604800,)).fetchall()
     except sqlite3.OperationalError:
         return {}
-    return {row["key_id"]: max(0, safe_number(row["used_cents"])) for row in rows}
+    return {row["key_id"]: max(0, int(round(safe_number(row["used_usd"], floating=True) * 100)))
+            for row in rows}
 
 
 def collect_key_next_release(connection, end):

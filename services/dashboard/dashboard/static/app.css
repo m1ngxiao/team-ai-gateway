@@ -1546,3 +1546,12 @@ tbody tr:hover td { background: rgb(216 255 99 / .025); }
   mask-image: linear-gradient(180deg, #000 0%, transparent 78%);
 }
 .login-story { position: relative; overflow: hidden; }
+
+/* live inflight */
+.account-live { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.account-live::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+.account-live-label { letter-spacing: .02em; }
+.account-live-value { color: var(--accent); font-variant-numeric: tabular-nums; font-weight: 680; }
+.account-live-limit { color: var(--muted); font-variant-numeric: tabular-nums; }
+.account-live.busy .account-live-value { color: var(--danger); }
+.account-live.busy::before { background: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 14%, transparent); }

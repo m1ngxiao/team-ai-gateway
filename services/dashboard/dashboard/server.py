@@ -1,9 +1,13 @@
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import time
+import urllib.request
+import re
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -21,10 +25,42 @@ MAX_BODY = 2048
 MAX_SNAPSHOT = 4 * 1024 * 1024
 
 
+
+GATEWAY_METRICS_URL = os.environ.get("DASHBOARD_GATEWAY_METRICS_URL", "http://10.10.2.10:48760/metrics")
+_ACCOUNT_INFLIGHT_RE = re.compile(r'^codexmanager_gateway_account_inflight\{account_id="([^"]+)"\}\s+(\d+)')
+
+
+def _public_account_id(raw_id, secret):
+    digest = hmac.new(bytes.fromhex(secret), f"acct:{raw_id}".encode(), hashlib.sha256).hexdigest()
+    return f"acct-{digest[:12]}"
+
+
+def collect_live_inflight(id_secret=None):
+    try:
+        with urllib.request.urlopen(GATEWAY_METRICS_URL, timeout=1.5) as response:
+            text = response.read(1_000_000).decode("utf-8", "replace")
+    except Exception:
+        return {"accounts": {}, "total": 0, "available": False, "at": int(time.time())}
+    accounts = {}
+    for line in text.splitlines():
+        match = _ACCOUNT_INFLIGHT_RE.match(line.strip())
+        if match:
+            account_id = _public_account_id(match.group(1), id_secret) if id_secret else match.group(1)
+            accounts[account_id] = int(match.group(2))
+    return {"accounts": accounts, "total": sum(accounts.values()), "available": True, "at": int(time.time())}
+
 def create_app(config_path: Path | None = None, snapshot_path: Path | None = None) -> FastAPI:
     config_path = config_path or Path(os.environ.get("DASHBOARD_AUTH_FILE", "/run/dashboard/auth.json"))
     snapshot_path = snapshot_path or Path(os.environ.get("DASHBOARD_SNAPSHOT", "/data/snapshot.json"))
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    collector_config_path = Path(os.environ.get("DASHBOARD_COLLECTOR_CONFIG", "/run/dashboard/collector.json"))
+    try:
+        collector_config = json.loads(collector_config_path.read_text(encoding="utf-8"))
+        id_secret = collector_config.get("id_secret")
+        if not isinstance(id_secret, str) or not re.fullmatch(r"[a-f0-9]{64}", id_secret):
+            id_secret = None
+    except (OSError, ValueError):
+        id_secret = None
     origins = config.get("origins", [])
     if not origins or any(
         urlsplit(origin).scheme not in {"http", "https"}
@@ -52,6 +88,7 @@ def create_app(config_path: Path | None = None, snapshot_path: Path | None = Non
     allowed_hosts = {urlsplit(origin).netloc.lower() for origin in origins}
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth = auth
+    app.state.id_secret = id_secret
     kdf_slots = asyncio.Semaphore(2)
 
     def cookie_name(request):
@@ -185,6 +222,11 @@ def create_app(config_path: Path | None = None, snapshot_path: Path | None = Non
         response = JSONResponse({"ok": True})
         response.delete_cookie(cookie_name(request), path="/", secure=cookie_name(request).startswith("__Host-"), httponly=True, samesite="strict")
         return response
+
+    @app.get("/api/live")
+    def live(request: Request):
+        session(request)
+        return collect_live_inflight(app.state.id_secret)
 
     @app.get("/api/dashboard")
     def dashboard(request: Request):

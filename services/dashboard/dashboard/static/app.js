@@ -2,12 +2,14 @@
 const $ = (id) => document.getElementById(id);
 let csrf = "", snapshot = null, period = "today", view = "overview", fetching = false, sessionVersion = 0;
 let countdowns = [], failureFilter = "all";
+let live = { accounts: {}, total: 0, available: false }, liveTimer = null;
 const fmt = new Intl.NumberFormat("zh-CN");
 const CLAUDE_QUOTA_MAX_AGE_SECONDS = 3600;
 const number = (value) => fmt.format(value || 0);
 const compact = (value) => new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(value || 0);
 const money = (value) => "$" + Number(value || 0).toFixed(3);
 const moneyFine = (value) => "$" + Number(value || 0).toFixed(4);
+const money2 = (value) => "$" + Number(value || 0).toFixed(2);
 const date = (value) => value ? new Date(value * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) : "暂无记录";
 const healthDuration = (value) => !Number.isFinite(value) ? "—" : value >= 1000 ? (value / 1000).toFixed(2) + " 秒" : Math.round(value) + " ms";
 const HEALTH_ERROR_LABELS = {
@@ -53,7 +55,7 @@ function navigate(next, changeHash = true) {
   if (changeHash && location.hash !== "#" + view) history.replaceState(null, "", "#" + view);
 }
 function showLogin(message = "") {
-  sessionVersion++; csrf = ""; snapshot = null; countdowns = []; $("dashboard").hidden = true; $("login-panel").hidden = false;
+  sessionVersion++; csrf = ""; snapshot = null; countdowns = []; live = { accounts: {}, total: 0, available: false }; if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } $("dashboard").hidden = true; $("login-panel").hidden = false;
   $("login-error").textContent = message;
   for (const id of ["accounts", "claude-accounts", "overview-accounts", "keys", "key-groups", "health-days",
     "health-errors", "health-statuses", "recent-failures", "models", "catalog-rows"]) $(id).replaceChildren();
@@ -141,7 +143,7 @@ function accountWeekly(account) {
   const weeklyUsed = Math.max(0, account.weekly_used_cents || 0);
   const weeklyLimit = Math.max(1, account.weekly_limit_cents);
   const weekly = node("div", undefined, "account-weekly");
-  weekly.append(node("span", "本周 API 等值"), node("strong", moneyFine(weeklyUsed / 100) + " / $" + (weeklyLimit / 100).toFixed(0)));
+  weekly.append(node("span", "本周 API 等值"), node("strong", money2(weeklyUsed / 100) + " / $" + (weeklyLimit / 100).toFixed(0)));
   const bar = node("progress"); bar.max = weeklyLimit; bar.value = Math.min(weeklyLimit, weeklyUsed);
   bar.setAttribute("aria-label", "账号周额度已用 " + moneyFine(weeklyUsed / 100));
   weekly.append(bar);
@@ -158,6 +160,11 @@ function accountCard(account) {
   card.append(accountWindows(account));
   const weekly = accountWeekly(account);
   if (weekly) card.append(weekly);
+  const liveRow = node("div", undefined, "account-live");
+  liveRow.append(node("span", "实时并发", "account-live-label"));
+  const liveValue = node("b", "—", "account-live-value"); liveValue.dataset.inflight = account.id;
+  liveRow.append(liveValue, node("span", "/ 5", "account-live-limit"));
+  card.append(liveRow);
   card.append(node("p", "最近更新：" + date(account.captured_at), "account-time")); return card;
 }
 function claudeQuotaFresh(account, now = Date.now() / 1000) {
@@ -234,6 +241,11 @@ function renderAccounts() {
     quota.append(accountWindows(account, true));
     const weekly = accountWeekly(account);
     if (weekly) quota.append(weekly);
+    const liveRow = node("div", undefined, "account-live");
+    liveRow.append(node("span", "实时并发", "account-live-label"));
+    const liveValue = node("b", "—", "account-live-value"); liveValue.dataset.inflight = account.id;
+    liveRow.append(liveValue, node("span", "/ 5", "account-live-limit"));
+    quota.append(liveRow);
     const badges = node("div", undefined, "quota-badges");
     if (account.capacity_override) {
       const capacity = node("span", "自定义容量", "quota-badge");
@@ -501,6 +513,23 @@ function renderCatalog() {
     row.append(model, origin, state, price, instruction, route, operation); $("catalog-rows").append(row);
   }
 }
+function applyLive() {
+  document.querySelectorAll("[data-inflight]").forEach(function (el) {
+    const count = live.accounts[el.getAttribute("data-inflight")];
+    el.textContent = !live.available ? "—" : String(count || 0);
+    const box = el.closest(".account-live");
+    if (box) box.classList.toggle("busy", count >= 5);
+  });
+}
+async function refreshLive() {
+  if (!csrf || document.hidden) return;
+  try { live = await api("/api/live"); applyLive(); } catch (error) { /* keep last known counts */ }
+}
+function startLive() {
+  if (liveTimer) clearInterval(liveTimer);
+  refreshLive();
+  liveTimer = setInterval(refreshLive, 3000);
+}
 function renderModels() {
   $("models").replaceChildren();
   const modelTotal = snapshot.models_week.reduce((sum, item) => sum + item.usage.total_tokens, 0);
@@ -526,7 +555,7 @@ async function refresh() {
     $("sync-badge").className = result.stale ? "badge stale" : "badge";
     $("notice").hidden = !result.stale;
     $("notice").textContent = "更新有点慢，暂时显示上次的数据。";
-    renderAccounts(); renderUsage(); renderModels(); renderCatalog(); navigate(view, false);
+    renderAccounts(); renderUsage(); renderModels(); renderCatalog(); navigate(view, false); applyLive(); startLive();
   } catch (error) {
     if (generation !== sessionVersion) return;
     if (error.status === 401) showLogin("登录已过期，请重新登录。");

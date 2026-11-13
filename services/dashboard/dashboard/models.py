@@ -105,6 +105,8 @@ class Key(ClosedModel):
     weekly_used_cents: int = Field(default=0, ge=0, le=9007199254740991)
     weekly_limit_cents: int = Field(default=24000, ge=0, le=9007199254740991)
     weekly_remaining_cents: int = Field(default=24000, ge=0, le=9007199254740991)
+    next_release_at: int | None = Field(default=None, ge=0)
+    next_release_cents: int = Field(default=0, ge=0, le=9007199254740991)
     is_historical: bool = False
     upstream_provider: Literal["openai", "claude", "unknown"] = "unknown"
 
@@ -190,6 +192,23 @@ class RequestHealth(ClosedModel):
     history_days: int = Field(ge=1, le=31)
 
 
+class SpeedPoint(ClosedModel):
+    samples: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    e2e_p50: float | None = Field(default=None, ge=0)
+    e2e_p90: float | None = Field(default=None, ge=0)
+    decode_p50: float | None = Field(default=None, ge=0)
+    decode_p90: float | None = Field(default=None, ge=0)
+
+
+class ModelSpeed(SpeedPoint):
+    model: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
+
+
+class SpeedStats(SpeedPoint):
+    models: list[ModelSpeed] = Field(default_factory=list, max_length=50)
+
+
 class Snapshot(ClosedModel):
     schema_version: Literal[1]
     generated_at: int = Field(ge=0)
@@ -205,3 +224,4 @@ class Snapshot(ClosedModel):
     catalog_unlisted_count: int = Field(default=0, ge=0)
     request_health: RequestHealth | None = None
     recent_failures: list[FailureLog] = Field(default_factory=list, max_length=50)
+    speed: SpeedStats | None = None

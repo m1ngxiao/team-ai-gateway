@@ -661,3 +661,8 @@ progress.empty::-webkit-progress-value { background: var(--faint); }
 @media (max-width: 1180px) {
   .split-grid.speed-grid { grid-template-columns: 1fr; }
 }
+
+/* live account concurrency */
+[data-inflight] { font-variant-numeric: tabular-nums; }
+[data-inflight].busy { color: var(--danger, #ff6f6a); }
+.pool-meta [data-inflight] { color: var(--ink, #e8edf2); }

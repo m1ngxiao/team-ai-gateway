@@ -173,6 +173,29 @@ function startRefresh() {
   state.timer = setInterval(() => {
     if (!document.hidden && state.snapshot) loadSnapshot({ silent: true });
   }, 60_000);
+  if (state.liveTimer) clearInterval(state.liveTimer);
+  state.liveTimer = setInterval(refreshLive, 3_000);
+  refreshLive();
+}
+
+async function refreshLive() {
+  if (document.hidden || !state.snapshot) return;
+  try {
+    const payload = await request("/api/live");
+    if (!payload.available) return;
+    const counts = payload.accounts || {};
+    document.querySelectorAll("[data-inflight]").forEach((element) => {
+      const count = Number(counts[element.dataset.inflight] || 0);
+      element.textContent = `${count} / 5`;
+      element.classList.toggle("busy", count >= 5);
+    });
+    const total = Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0);
+    const capacity = (state.snapshot.accounts || []).filter((account) => account.status === "enabled").length * 5;
+    const node = $("pool-capacity");
+    if (node) node.textContent = capacity ? `${total} / ${capacity} 路` : "0 路";
+  } catch {
+    // Keep the last known values; the next poll retries.
+  }
 }
 
 function currentKeys() {
@@ -382,6 +405,9 @@ function renderPool() {
     const meta = node("div", undefined, "pool-meta");
     meta.append(node("span", "重置 " + (window?.resets_at ? dateShort(window.resets_at) : "待更新")));
     meta.append(node("span", "并发上限 "), node("b", "5"));
+    const live = node("b", "—");
+    live.dataset.inflight = account.id;
+    meta.append(node("span", "实时 "), live);
     card.append(meta);
 
     const ref = node("div", undefined, "pool-ref");
@@ -558,6 +584,11 @@ function renderAccounts() {
     };
     fact("重置时间", window?.resets_at ? dateShort(window.resets_at) : "待更新");
     fact("并发上限", "5 路");
+    const liveRow = node("div");
+    const liveValue = node("dd", "—");
+    liveValue.dataset.inflight = account.id;
+    liveRow.append(node("dt", "实时并发"), liveValue);
+    facts.append(liveRow);
     fact("站内 API 等值", money(account.weekly_used_cents) + " / " + money(account.weekly_limit_cents, 0));
     fact("数据采集", account.captured_at ? dateShort(account.captured_at) : "待更新");
     main.append(quota, facts);

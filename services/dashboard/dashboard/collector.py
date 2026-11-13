@@ -51,11 +51,12 @@ ALLOWED_COLUMNS = {
     "api_keys": {"id", "name", "status", "created_at", "last_used_at", "rotation_strategy", "model_slug", "account_group_filter", "upstream_provider"},
     "api_key_profiles": {"key_id", "protocol_type", "default_model"},
     "api_key_quota_limits": {"key_id", "quota_limit_tokens"},
-    "request_logs": {"key_id", "account_id", "model", "status_code", "error", "duration_ms", "first_response_ms", "created_at"},
+    "request_logs": {"id", "key_id", "account_id", "model", "status_code", "error", "duration_ms", "first_response_ms", "created_at"},
     "key_usage_hourly": {"key_id", "hour_start", "cost_cents"},
     "key_quota_state": {"key_id", "epoch_at"},
     "request_token_stats": {"request_log_id", "key_id", "account_id", "model", "usage_included", "created_at", "actual_source_kind",
-                            "input_tokens", "cached_input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd"},
+                            "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens",
+                            "total_tokens", "estimated_cost_usd"},
     "request_token_stat_hourly_rollups": {"key_id", "model", "bucket_start", "bucket_end", "request_count", "actual_source_kind",
                                           "input_tokens", "cached_input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd"},
     "request_token_stat_rollups": {"key_id", "model", "source_rows", "input_tokens",
@@ -120,15 +121,43 @@ def failure_message(status_code, error):
 def collect_key_weekly_cents(connection, end):
     try:
         rows = connection.execute("""
-          SELECT u.key_id, SUM(u.cost_cents) AS used_cents
+          SELECT t.key_id, SUM(COALESCE(t.estimated_cost_usd, 0)) AS used_usd
+          FROM request_token_stats t
+          WHERE t.usage_included = 1
+            AND t.key_id IS NOT NULL
+            AND t.created_at >= MAX(?, COALESCE(
+              (SELECT s.epoch_at FROM key_quota_state s WHERE s.key_id = t.key_id), 0))
+          GROUP BY t.key_id
+        """, (end - 604800,)).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {row["key_id"]: max(0, int(round(safe_number(row["used_usd"], floating=True) * 100)))
+            for row in rows}
+
+
+def collect_key_next_release(connection, end):
+    """Return the oldest still-charged hour per key and when it leaves the rolling window."""
+    try:
+        rows = connection.execute("""
+          SELECT u.key_id, MIN(u.hour_start) AS next_hour
           FROM key_usage_hourly u
           WHERE u.hour_start >= MAX(?, COALESCE(
             (SELECT s.epoch_at FROM key_quota_state s WHERE s.key_id = u.key_id), 0))
           GROUP BY u.key_id
         """, (end - 604800,)).fetchall()
+        result = {}
+        for row in rows:
+            hour_start = safe_number(row["next_hour"])
+            cost = connection.execute("""
+              SELECT cost_cents FROM key_usage_hourly
+              WHERE key_id = ? AND hour_start = ?
+            """, (row["key_id"], hour_start)).fetchone()
+            if hour_start <= 0:
+                continue
+            result[row["key_id"]] = (hour_start + 604800, max(0, safe_number(cost["cost_cents"]) if cost else 0))
+        return result
     except sqlite3.OperationalError:
         return {}
-    return {row["key_id"]: max(0, safe_number(row["used_cents"])) for row in rows}
 
 
 def collect_account_weekly_cents(connection, end):
@@ -173,6 +202,78 @@ def collect_recent_failures(connection, end):
             "message": failure_message(code, row["error"]),
         })
     return failures
+
+
+def _percentile(values, ratio):
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * ratio))))
+    return round(ordered[index], 1)
+
+
+def _speed_point(rows):
+    samples = len(rows)
+    output_tokens = sum(row["output_tokens"] for row in rows)
+    e2e = [row["e2e"] for row in rows if row["e2e"] is not None]
+    decode = [row["decode"] for row in rows if row["decode"] is not None]
+    return {
+        "samples": samples,
+        "output_tokens": output_tokens,
+        "e2e_p50": _percentile(e2e, 0.5),
+        "e2e_p90": _percentile(e2e, 0.9),
+        "decode_p50": _percentile(decode, 0.5),
+        "decode_p90": _percentile(decode, 0.9),
+    }
+
+
+def collect_speed(connection, end):
+    """Approximate generation speed from successful requests with recorded durations."""
+    try:
+        rows = connection.execute("""
+          SELECT t.model AS model, t.output_tokens AS output_tokens,
+                 COALESCE(t.reasoning_output_tokens, 0) AS reasoning_tokens,
+                 l.duration_ms AS duration_ms, l.first_response_ms AS first_response_ms
+          FROM request_token_stats t
+          JOIN request_logs l ON l.id = t.request_log_id
+          WHERE t.created_at < ? AND t.created_at >= ?
+            AND t.usage_included = 1 AND t.output_tokens > 0
+            AND t.model <> 'codex-auto-review'
+            AND l.status_code >= 200 AND l.status_code <= 299
+            AND l.duration_ms > 0
+        """, (end, end - 604800)).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    points = []
+    for row in rows:
+        output = max(0, int(safe_number(row["output_tokens"])))
+        if output <= 0:
+            continue
+        reasoning = min(output, max(0, int(safe_number(row["reasoning_tokens"]))))
+        visible = max(0, output - reasoning)
+        duration_ms = max(1, int(safe_number(row["duration_ms"])))
+        duration_s = duration_ms / 1000.0
+        first_ms = row["first_response_ms"]
+        first_ms = max(0, int(safe_number(first_ms))) if first_ms is not None else 0
+        decode_s = max(0.0, (duration_ms - first_ms) / 1000.0) if first_ms > 0 else 0.0
+        e2e = output / duration_s if duration_s > 0 else None
+        decode = visible / decode_s if decode_s > 0 and visible > 0 else None
+        points.append({
+            "model": public_text(row["model"], maximum=64),
+            "output_tokens": output,
+            "duration_s": duration_s,
+            "decode_s": decode_s if decode is not None else 0.0,
+            "e2e": e2e,
+            "decode": decode,
+        })
+    overall = _speed_point(points)
+    by_model = {}
+    for point in points:
+        by_model.setdefault(point["model"], []).append(point)
+    models = []
+    for model, items in sorted(by_model.items(), key=lambda pair: len(pair[1]), reverse=True)[:50]:
+        models.append({"model": model, **_speed_point(items)})
+    return {**overall, "models": models}
 
 
 def read_authorizer(action, table, column, database, trigger):
@@ -608,8 +709,10 @@ def collect(config, now=None):
         }
         request_health = collect_request_health(connection, today, end)
         key_weekly_cents = collect_key_weekly_cents(connection, end)
+        key_next_release = collect_key_next_release(connection, end)
         account_weekly_cents = collect_account_weekly_cents(connection, end)
         recent_failures = collect_recent_failures(connection, end)
+        speed = collect_speed(connection, end)
     accounts = []
     for row in raw_accounts:
         pid = public_id("acct", row["id"], secret)
@@ -671,6 +774,7 @@ def collect(config, now=None):
     for row in raw_keys:
         key_id = row["id"]
         pid = public_id("key", key_id, secret)
+        release = key_next_release.get(key_id)
         # Display the administrator's name, never credential-looking content.
         # Empty/invalid names retain the existing stable, non-secret code.
         keys.append({"id": pid, "label": public_text(row["name"], "Key " + pid[-6:]),
@@ -681,6 +785,8 @@ def collect(config, now=None):
                      "weekly_used_cents": key_weekly_cents.get(key_id, 0),
                      "weekly_limit_cents": 24000,
                      "weekly_remaining_cents": max(0, 24000 - key_weekly_cents.get(key_id, 0)),
+                     "next_release_at": release[0] if release else None,
+                     "next_release_cents": release[1] if release else 0,
                      **key_metadata(row, public_models)})
     models = sorted(periods["week"][1].items(), key=lambda pair: pair[1]["total_tokens"], reverse=True)
     # Keep the top 49 plus one explicit 'other' bucket rather than silently losing usage.
@@ -697,7 +803,8 @@ def collect(config, now=None):
                 "pool_usage": {pool: {name: data[3][pool] for name, data in periods.items()}
                                for pool in ("openai", "claude", "unattributed")},
                 "models_week": [{"model": model, "usage": item} for model, item in models],
-                "request_health": request_health, "recent_failures": recent_failures}
+                "request_health": request_health, "recent_failures": recent_failures,
+                "speed": speed}
     return Snapshot.model_validate(snapshot).model_dump()
 
 
