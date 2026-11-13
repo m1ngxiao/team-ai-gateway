@@ -369,3 +369,23 @@ fn official_usage_exhausted_does_not_override_401() {
     );
     assert!(matches!(decision, UpstreamOutcomeDecision::RespondUpstream));
 }
+
+
+#[test]
+fn official_bad_request_with_low_quota_snapshot_keeps_upstream_response() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    storage
+        .insert_usage_snapshot(&low_quota_usage_snapshot("acc-400-low"))
+        .expect("insert usage");
+    let decision = decide_upstream_outcome(
+        &storage,
+        "acc-400-low",
+        reqwest::StatusCode::BAD_REQUEST,
+        None,
+        "https://chatgpt.com/backend-api/codex/responses",
+        true,
+        |_, _, _| {},
+    );
+    assert!(matches!(decision, UpstreamOutcomeDecision::RespondUpstream));
+}

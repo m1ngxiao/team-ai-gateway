@@ -84,6 +84,13 @@ where
         return from_follow_up_action(follow_up_action(true, has_more_candidates));
     }
 
+    // 中文注释：400/422 是请求级错误，不是账号不可用；直接透传上游响应，
+    // 不换号、不冷却账号，避免把一个坏请求放大成 no_available_account。
+    if is_official_target && matches!(status.as_u16(), 400 | 422) {
+        log_gateway_result(Some(url), status.as_u16(), Some("upstream bad request"));
+        return UpstreamOutcomeDecision::RespondUpstream;
+    }
+
     if is_official_target && status.as_u16() == 429 {
         super::super::super::mark_account_cooldown_for_status(account_id, status.as_u16());
         let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(account_id);
