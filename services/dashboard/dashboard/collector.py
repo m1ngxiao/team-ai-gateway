@@ -121,37 +121,45 @@ def failure_message(status_code, error):
 def collect_key_weekly_cents(connection, end):
     try:
         rows = connection.execute("""
-          SELECT u.key_id, SUM(u.cost_cents) AS used_cents
-          FROM key_usage_hourly u
-          WHERE u.hour_start >= MAX(?, COALESCE(
-            (SELECT s.epoch_at FROM key_quota_state s WHERE s.key_id = u.key_id), 0))
-          GROUP BY u.key_id
+          SELECT t.key_id, SUM(COALESCE(t.estimated_cost_usd, 0)) AS used_usd
+          FROM request_token_stats t
+          LEFT JOIN key_quota_state s ON s.key_id = t.key_id
+          WHERE t.usage_included = 1
+            AND t.key_id IS NOT NULL
+            AND t.created_at >= MAX(?, COALESCE(s.epoch_at, 0))
+          GROUP BY t.key_id
         """, (end - 604800,)).fetchall()
     except sqlite3.OperationalError:
         return {}
-    return {row["key_id"]: max(0, safe_number(row["used_cents"])) for row in rows}
+    return {row["key_id"]: max(0, round(safe_number(row["used_usd"]) * 100)) for row in rows}
 
 
 def collect_key_next_release(connection, end):
-    """Return the oldest still-charged hour per key and when it leaves the rolling window."""
+    """Return the oldest still-charged request per key and when it leaves the window."""
     try:
         rows = connection.execute("""
-          SELECT u.key_id, MIN(u.hour_start) AS next_hour
-          FROM key_usage_hourly u
-          WHERE u.hour_start >= MAX(?, COALESCE(
-            (SELECT s.epoch_at FROM key_quota_state s WHERE s.key_id = u.key_id), 0))
-          GROUP BY u.key_id
+          SELECT t.key_id, MIN(t.created_at) AS next_ts
+          FROM request_token_stats t
+          LEFT JOIN key_quota_state s ON s.key_id = t.key_id
+          WHERE t.usage_included = 1
+            AND t.key_id IS NOT NULL
+            AND t.created_at >= MAX(?, COALESCE(s.epoch_at, 0))
+          GROUP BY t.key_id
         """, (end - 604800,)).fetchall()
         result = {}
         for row in rows:
-            hour_start = safe_number(row["next_hour"])
-            cost = connection.execute("""
-              SELECT cost_cents FROM key_usage_hourly
-              WHERE key_id = ? AND hour_start = ?
-            """, (row["key_id"], hour_start)).fetchone()
-            if hour_start <= 0:
+            next_ts = safe_number(row["next_ts"])
+            if next_ts <= 0:
                 continue
-            result[row["key_id"]] = (hour_start + 604800, max(0, safe_number(cost["cost_cents"]) if cost else 0))
+            cost = connection.execute("""
+              SELECT SUM(COALESCE(estimated_cost_usd, 0)) AS used_usd
+              FROM request_token_stats
+              WHERE key_id = ? AND created_at = ? AND usage_included = 1
+            """, (row["key_id"], next_ts)).fetchone()
+            result[row["key_id"]] = (
+                next_ts + 604800,
+                max(0, round(safe_number(cost["used_usd"]) * 100) if cost else 0),
+            )
         return result
     except sqlite3.OperationalError:
         return {}
@@ -280,7 +288,7 @@ def read_authorizer(action, table, column, database, trigger):
         return sqlite3.SQLITE_OK
     if action == sqlite3.SQLITE_FUNCTION:
         return sqlite3.SQLITE_OK if column.lower() in {
-            "sum", "count", "coalesce", "max", "request_error_category",
+            "sum", "count", "coalesce", "max", "min", "request_error_category",
         } else sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_DENY
 
