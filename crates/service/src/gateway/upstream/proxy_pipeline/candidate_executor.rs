@@ -978,73 +978,6 @@ pub(in super::super) fn execute_candidate_sequence(
                 );
             }
             CandidateUpstreamDecision::RespondUpstream(mut resp) => {
-                if resp.status().as_u16() == 400
-                    && !strip_session_affinity
-                    && (incoming_turn_state.is_some() || setup.has_body_encrypted_content)
-                {
-                    let retry_body = state.retry_body(
-                        path,
-                        body,
-                        setup,
-                        attempt_model_override,
-                        attempt_prompt_cache_key,
-                    );
-                    let retry_decision = run_candidate_attempt(CandidateAttemptParams {
-                        storage,
-                        method,
-                        request_ctx,
-                        incoming_headers: &attempt_headers,
-                        body: &retry_body,
-                        upstream_is_stream,
-                        path,
-                        request_deadline,
-                        account: &account,
-                        token: &mut token,
-                        strip_session_affinity: true,
-                        debug,
-                        allow_openai_fallback: attempt_allow_openai_fallback,
-                        disable_challenge_stateless_retry,
-                        has_more_candidates,
-                        context,
-                        setup,
-                        trace: &mut attempt_trace,
-                    });
-
-                    match retry_decision {
-                        CandidateUpstreamDecision::RespondUpstream(retry_resp) => {
-                            resp = retry_resp;
-                        }
-                        CandidateUpstreamDecision::Failover => {
-                            record_failover_attempt(
-                                &mut attempt_trace,
-                                &mut last_attempt_url,
-                                &mut last_attempt_error,
-                            );
-                            continue;
-                        }
-                        CandidateUpstreamDecision::Terminal {
-                            status_code,
-                            message,
-                        } => {
-                            let request = request.take().ok_or_else(|| {
-                                "request already consumed before retry terminal response"
-                                    .to_string()
-                            })?;
-                            return respond_terminal_attempt(
-                                request,
-                                context,
-                                &account.id,
-                                attempt_trace.last_attempt_url.as_deref(),
-                                status_code,
-                                message,
-                                trace_id,
-                                started_at,
-                                attempt_model_for_log,
-                                Some(attempted_account_ids.as_slice()),
-                            );
-                        }
-                    }
-                }
                 let health_retry_after =
                     super::stream_preflight::retry_after_for_health(resp.headers());
                 let health_observer = if dynamic_enabled {
@@ -1054,7 +987,10 @@ pub(in super::super) fn execute_candidate_sequence(
                 } else {
                     None
                 };
-                let preflight = preflight_stream_response_with_dynamic_failover(
+                let preflight = if matches!(resp.status().as_u16(), 400 | 422) {
+                    StreamPreflightOutcome::Ready(resp)
+                } else {
+                    preflight_stream_response_with_dynamic_failover(
                     resp,
                     path,
                     upstream_is_stream,
@@ -1062,7 +998,8 @@ pub(in super::super) fn execute_candidate_sequence(
                     overload_budget
                         .permits(attempted_account_ids.len(), portable_for_overload_retry),
                     dynamic_enabled,
-                );
+                    )
+                };
                 if !matches!(&preflight, StreamPreflightOutcome::OverloadFailover { .. })
                     && health_observer
                         .as_ref()

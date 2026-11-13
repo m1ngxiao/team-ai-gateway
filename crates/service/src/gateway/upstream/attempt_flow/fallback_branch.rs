@@ -18,6 +18,10 @@ pub(super) enum FallbackBranchResult {
     Terminal { status_code: u16, message: String },
 }
 
+fn is_request_level_error(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 400 | 422)
+}
+
 /// 函数 `should_failover_after_fallback_non_success`
 ///
 /// 作者: gaohongshun
@@ -341,6 +345,11 @@ pub(super) fn handle_openai_fallback_branch<F>(
 where
     F: FnMut(Option<&str>, u16, Option<&str>),
 {
+    // 400/422 是请求级错误，fallback 账号也不会接受；直接交给上层透传，避免放大成 503。
+    if is_request_level_error(status) {
+        return FallbackBranchResult::NotTriggered;
+    }
+
     if !allow_openai_fallback || fallback_base.is_none() {
         return FallbackBranchResult::NotTriggered;
     }

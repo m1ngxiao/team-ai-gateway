@@ -1,9 +1,10 @@
 use super::{
-    should_failover_after_fallback_non_success, summarize_fallback_non_success,
+    is_request_level_error, should_failover_after_fallback_non_success, summarize_fallback_non_success,
     summarize_fallback_non_success_headers_only,
 };
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
+use reqwest::StatusCode;
 
 /// 函数 `fallback_non_success_5xx_does_not_failover_even_with_more_candidates`
 ///
@@ -236,4 +237,12 @@ fn fallback_non_success_headers_only_summary_marks_server_error_without_debug_he
         message.contains("kind=server_error"),
         "unexpected summary: {message}"
     );
+}
+
+#[test]
+fn request_level_400_and_422_are_not_fallback_eligible() {
+    assert!(is_request_level_error(StatusCode::BAD_REQUEST));
+    assert!(is_request_level_error(StatusCode::UNPROCESSABLE_ENTITY));
+    assert!(!is_request_level_error(StatusCode::UNAUTHORIZED));
+    assert!(!is_request_level_error(StatusCode::INTERNAL_SERVER_ERROR));
 }

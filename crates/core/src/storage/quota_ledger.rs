@@ -175,6 +175,20 @@ impl Storage {
     pub fn key_usage_cents_rolling_7d(&self, key_id: &str, now: i64) -> Result<i64> {
         let state = self.ensure_key_quota_state(key_id)?;
         let since = (now - SECONDS_PER_WEEK).max(state.epoch_at);
+        // Billing is finalized after the token-stat row is inserted, so the
+        // incremental hourly ledger can be empty for successful requests. Derive
+        // the rolling total from the durable cost stats first; fall back to the
+        // hourly ledger for older rows/tests that predate cost snapshots.
+        let derived: i64 = self.conn.query_row(
+            "SELECT CAST(ROUND(COALESCE(SUM(estimated_cost_usd), 0) * 100.0) AS INTEGER)
+             FROM request_token_stats
+             WHERE key_id = ?1 AND created_at >= ?2 AND usage_included = 1",
+            params![key_id, since],
+            |row| row.get(0),
+        )?;
+        if derived > 0 {
+            return Ok(derived);
+        }
         self.key_usage_cents_since(key_id, since)
     }
 
@@ -357,7 +371,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{ApiKey, UpstreamProvider, UsageSnapshotRecord};
+    use crate::storage::{ApiKey, RequestTokenStat, UpstreamProvider, UsageSnapshotRecord};
 
     fn open_storage() -> Storage {
         let storage = Storage::open_in_memory().expect("open");
@@ -461,6 +475,64 @@ mod tests {
         assert_eq!(events[0].source, "official");
         assert_eq!(events[0].confirmed_by.as_deref(), Some("admin"));
     }
+    #[test]
+    fn key_usage_rolling_7d_prefers_cost_stats() {
+        let storage = open_storage();
+        let now = 1_700_000_000_i64;
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id: 0,
+                key_id: Some("key-stats".to_string()),
+                account_id: None,
+                model: Some("gpt-6-astra".to_string()),
+                actual_source_kind: None,
+                actual_source_id: None,
+                input_tokens: Some(1_000),
+                cached_input_tokens: Some(0),
+                output_tokens: Some(100),
+                total_tokens: Some(1_100),
+                reasoning_output_tokens: Some(0),
+                estimated_cost_usd: Some(1.25),
+                created_at: now - 12 * 3600,
+            })
+            .expect("token stat");
+        assert_eq!(
+            storage.key_usage_cents_rolling_7d("key-stats", now).expect("usage"),
+            125
+        );
+    }
+
+    #[test]
+    fn key_usage_accumulates_sub_cent_costs_before_rounding() {
+        let storage = open_storage();
+        let now = 1_700_000_000_i64;
+        for request_log_id in 0..2 {
+            storage
+                .insert_request_token_stat(&RequestTokenStat {
+                    request_log_id,
+                    key_id: Some("key-subcent".to_string()),
+                    account_id: None,
+                    model: Some("gpt-6-luna".to_string()),
+                    actual_source_kind: None,
+                    actual_source_id: None,
+                    input_tokens: Some(20),
+                    cached_input_tokens: Some(0),
+                    output_tokens: Some(5),
+                    total_tokens: Some(25),
+                    reasoning_output_tokens: Some(0),
+                    estimated_cost_usd: Some(0.004),
+                    created_at: now - 3600,
+                })
+                .expect("token stat");
+        }
+        assert_eq!(
+            storage
+                .key_usage_cents_rolling_7d("key-subcent", now)
+                .expect("usage"),
+            1
+        );
+    }
+
     #[test]
     fn reset_all_key_quota_epochs_zeroes_all_keys() {
         let storage = open_storage();
