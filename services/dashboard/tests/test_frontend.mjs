@@ -36,6 +36,17 @@ function setup(fetchImpl = () => { throw new Error("Unexpected network request")
 }
 const usage = (tokens) => ({ requests: 3, input_tokens: tokens, cached_tokens: 20, output_tokens: 30, total_tokens: tokens, estimated_usd: .2 });
 const blankUsage = () => ({ requests: 0, input_tokens: 0, cached_tokens: 0, output_tokens: 0, total_tokens: 0, estimated_usd: 0 });
+const healthSummary = (requests, success, failed, noAccount = 0) => ({
+  requests, success, failed, success_rate: requests ? success / requests * 100 : 0,
+  error_categories: [{ kind: "no_available_account", count: noAccount }, { kind: "rate_limited", count: failed - noAccount }],
+  failure_statuses: failed ? [{ status_code: noAccount ? 503 : 429, count: failed }] : [],
+  average_duration_ms: success ? 1500 : null, average_first_response_ms: success ? 420 : null,
+  last_success_at: success ? Math.floor(Date.now() / 1000) - 60 : null,
+  last_failure_at: failed ? Math.floor(Date.now() / 1000) - 30 : null
+});
+const todayHealth = healthSummary(10, 9, 1, 1);
+const weekHealth = healthSummary(30, 24, 6, 2);
+const recordedHealth = healthSummary(50, 45, 5, 3);
 const fixture = {
   generated_at: Math.floor(Date.now()/1000),
   accounts: [{ id: "acct-aaaaaaaaaaaa", label: "账号 01", plan: "pro", status: "enabled", captured_at: 1,
@@ -45,7 +56,9 @@ const fixture = {
   totals: { today: usage(100), week: usage(200), recorded: usage(300) }, models_week: [{ model: "gpt-6-astra", usage: usage(200) }],
   pool_usage: { openai: { today: usage(100), week: usage(200), recorded: usage(300) },
     claude: { today: blankUsage(), week: blankUsage(), recorded: blankUsage() },
-    unattributed: { today: blankUsage(), week: blankUsage(), recorded: blankUsage() } }
+    unattributed: { today: blankUsage(), week: blankUsage(), recorded: blankUsage() } },
+  request_health: { today: todayHealth, week: weekHealth, recorded: recordedHealth,
+    days: [{ ...structuredClone(todayHealth), date: "2026-11-05" }, { ...structuredClone(weekHealth), date: "2026-11-04" }], history_days: 14 }
 };
 
 function groupedFixture() {
@@ -137,6 +150,36 @@ test("refresh updates group membership and usage without changing the chosen per
   assert.equal(elements.get("groups-period").textContent, "近 7 天 · 按 Token 用量降序");
   vm.runInContext("showLogin()", context);
   assert.equal(elements.get("key-groups").children.length, 0);
+});
+
+test("request health shows success, failures, error causes and daily status by period", () => {
+  const { context, elements, periods } = setup();
+  vm.runInContext(`snapshot = ${JSON.stringify(fixture)}; renderUsage();`, context);
+  assert.equal(elements.get("health-success-rate").textContent, "90.0%");
+  assert.equal(elements.get("health-success-count").textContent, "9");
+  assert.equal(elements.get("health-failure-count").textContent, "1");
+  assert.equal(elements.get("health-first-response").textContent, "420 ms");
+  assert.match(elements.get("health-period-note").textContent, /今日.*HTTP 2xx/s);
+  assert.match(elements.get("health-errors").textContent, /无可用账号1/);
+  assert.match(elements.get("health-statuses").textContent, /HTTP 503.*1/s);
+  assert.equal(elements.get("health-days").children.length, 2);
+  assert.match(elements.get("health-days").textContent, /成功率 90\.0%.*成功 9.*失败 1/s);
+  periods[1].listeners.click();
+  assert.equal(elements.get("health-success-rate").textContent, "80.0%");
+  assert.equal(elements.get("health-failure-count").textContent, "6");
+  assert.match(elements.get("health-period-note").textContent, /近 7 天/);
+});
+
+test("old snapshots show health as pending and clear it on logout", () => {
+  const { context, elements } = setup();
+  const data = structuredClone(fixture);
+  delete data.request_health;
+  vm.runInContext(`snapshot = ${JSON.stringify(data)}; renderUsage();`, context);
+  assert.equal(elements.get("health-success-rate").textContent, "—");
+  assert.match(elements.get("health-days").textContent, /统计待更新/);
+  vm.runInContext("showLogin()", context);
+  assert.equal(elements.get("health-days").children.length, 0);
+  assert.equal(elements.get("health-errors").children.length, 0);
 });
 
 test("navigation switches account-pool and usage views without network calls", () => {

@@ -29,7 +29,8 @@ def sample(tmp_path):
           CREATE TABLE api_key_quota_limits(key_id TEXT PRIMARY KEY,quota_limit_tokens INT);
           CREATE TABLE api_key_secrets(key_id TEXT,key_value TEXT);
           CREATE TABLE tokens(account_id TEXT,access_token TEXT,refresh_token TEXT);
-          CREATE TABLE request_logs(id INTEGER PRIMARY KEY,error TEXT,upstream_url TEXT);
+          CREATE TABLE request_logs(id INTEGER PRIMARY KEY,error TEXT,upstream_url TEXT,status_code INT,
+            duration_ms INT,first_response_ms INT,created_at INT);
           CREATE TABLE request_token_stats(request_log_id INT UNIQUE,key_id TEXT,model TEXT,usage_included INT,created_at INT,
             input_tokens INT,cached_input_tokens INT,output_tokens INT,total_tokens INT,estimated_cost_usd REAL);
           CREATE TABLE request_token_stat_hourly_rollups(key_id TEXT,model TEXT,bucket_start INT,bucket_end INT,request_count INT,
@@ -58,6 +59,16 @@ def sample(tmp_path):
         db.executemany("INSERT INTO request_token_stats VALUES(?,?,?,?,?,?,?,?,?,?)", raw)
         db.execute("INSERT INTO request_token_stat_hourly_rollups VALUES('internal-key-a','gpt-6-astra',?,?,3,45,0,5,50,.05)", (day-2*86400,day-2*86400+3600))
         db.execute("INSERT INTO request_token_stat_rollups VALUES('internal-key-a','gpt-6-astra',4,360,0,40,400,.4)")
+        health_rows = [
+            (1, None, canary, 200, 1200, 300, day + 10),
+            (2, None, canary, 200, 1800, 500, day + 11),
+            (3, "无可用账号(no available account) " + canary, canary, 503, 80, None, day + 12),
+            (4, "缺少 API Key(missing api key)", canary, 401, 30, None, day + 13),
+            (5, "account temporarily unavailable; retry_after=5s", canary, 429, 50, None, day - 86380),
+            (6, "连接中断（可能是网络波动或客户端主动取消）", canary, 499, None, None, day - 2 * 86400 + 20),
+            (7, "upstream error", canary, 502, 90, None, day - 3 * 86400 + 20),
+        ]
+        db.executemany("INSERT INTO request_logs VALUES(?,?,?,?,?,?,?)", health_rows)
         db.execute("INSERT INTO models VALUES('model-astra','gpt-6-astra','GPT-6-Astra','Model description','builtin',1,'list',1,'passthrough',0,?)", (canary,))
         db.execute("INSERT INTO model_prices VALUES('model-astra','official',10000000,1000000,12500000,50000000,?)", (canary,))
         db.execute("INSERT INTO model_routes VALUES('model-astra',1,'account_pool',?,?)", (canary, canary))

@@ -35,7 +35,11 @@ def test_login_read_logout_and_session_invalidation(web_files):
     csrf = response.json()["csrf"]
     token = c.cookies.get("local_dashboard_session")
     assert "HttpOnly" in response.headers["set-cookie"] and "SameSite=strict" in response.headers["set-cookie"]
-    assert c.get("/api/dashboard").json()["data"]["totals"]["recorded"]["total_tokens"] == 750
+    dashboard = c.get("/api/dashboard").json()["data"]
+    assert dashboard["totals"]["recorded"]["total_tokens"] == 750
+    today_health = dashboard["request_health"]["today"]
+    latest_day = dashboard["request_health"]["days"][-1]
+    assert latest_day["date"] and {key: latest_day[key] for key in today_health} == today_health
     assert c.post("/api/logout", headers={"Origin": origin}).status_code == 403
     assert c.post("/api/logout", headers={"Origin": origin, "X-CSRF-Token": csrf}).status_code == 200
     c.cookies.set("local_dashboard_session", token)

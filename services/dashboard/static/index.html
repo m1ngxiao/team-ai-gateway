@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="signal">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="theme-color" content="#0B0E11">
+  <title>Team AI Gateway · 资源与额度</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="login-panel" class="login-page">
+    <div class="login-grid">
+      <div class="login-brand-panel">
+        <div class="brand-lockup">
+          <span class="brand-mark">AI</span>
+          <div><strong>Team AI Gateway</strong><span>团队 AI 资源台</span></div>
+        </div>
+        <div class="login-copy">
+          <p class="kicker">CONTROL ROOM / 2026</p>
+          <h1>把额度、容量与异常，<br><em>放在同一张桌面上。</em></h1>
+          <p class="lede">一个给团队内部使用的安静工作界面。先看自己还能用多少，再看共享池是否通畅，最后才看趋势。</p>
+        </div>
+        <div class="login-facts">
+          <span>团队内部访问</span>
+          <span>只读视图</span>
+          <span>时间统一 UTC+8</span>
+        </div>
+      </div>
+      <div class="login-form-panel">
+        <div class="login-card">
+          <p class="kicker">SECURE ACCESS</p>
+          <h2>登录看板</h2>
+          <p class="muted">使用团队看板账号继续。这里不保存平台 API Key。</p>
+          <form id="login-form" autocomplete="on">
+            <label for="username">账号</label>
+            <input id="username" name="username" autocomplete="username" maxlength="64" required>
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+            <button type="submit" class="button primary login-button" id="login-button">进入看板</button>
+            <p id="login-error" class="form-error" role="alert"></p>
+          </form>
+          <p class="login-note">仅限内部同事查看，不构成对外服务承诺。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div id="dashboard" class="app" hidden>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand-lockup">
+        <span class="brand-mark">AI</span>
+        <div><strong>Team AI Gateway</strong><span>资源与额度</span></div>
+      </div>
+      <p class="nav-label">WORKSPACE</p>
+      <nav class="nav" aria-label="看板导航">
+        <a href="#overview" data-view="overview" aria-current="page"><span class="nav-icon" data-icon="grid"></span><span>概览</span></a>
+        <a href="#accounts" data-view="accounts"><span class="nav-icon" data-icon="layers"></span><span>上游账号</span></a>
+        <a href="#keys" data-view="keys"><span class="nav-icon" data-icon="key"></span><span>成员与 Key</span><span id="nav-key-count" class="nav-count"></span></a>
+        <a href="#usage" data-view="usage"><span class="nav-icon" data-icon="chart"></span><span>用量分析</span></a>
+        <a href="#speed" data-view="speed"><span class="nav-icon" data-icon="zap"></span><span>测速</span></a>
+        <a href="#errors" data-view="errors"><span class="nav-icon" data-icon="alert"></span><span>错误中心</span></a>
+        <a href="#models" data-view="models"><span class="nav-icon" data-icon="cube"></span><span>模型目录</span></a>
+      </nav>
+      <div class="sidebar-foot">
+        <div><span class="live-dot"></span><span>数据自动同步</span></div>
+        <p>只读视图 · 团队内部</p>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="icon-button menu-button" id="menu" aria-label="打开导航"><span data-icon="menu"></span></button>
+          <div>
+            <p class="kicker" id="page-kicker">CONTROL ROOM</p>
+            <h1 id="page-title">概览</h1>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <span id="sync-badge" class="sync-badge"><span class="live-dot"></span>正在读取</span>
+          <button class="icon-button" id="refresh" aria-label="刷新数据" title="刷新数据"><span data-icon="refresh"></span></button>
+          <button class="button quiet" id="logout">退出</button>
+        </div>
+      </header>
+
+      <main class="content">
+        <div id="notice" class="notice" role="status" hidden></div>
+
+        <section id="view-overview" class="view" aria-label="概览">
+          <div class="page-heading">
+            <div>
+              <p class="kicker">OVERVIEW / 5 秒判断</p>
+              <h2>还能用多少，<span>现在能不能开始。</span></h2>
+              <p class="page-lede">先看个人额度，再看三个上游账号；趋势和异常只保留必要摘要。</p>
+            </div>
+            <p class="updated" id="updated">正在读取统计…</p>
+          </div>
+
+          <div class="hero-grid">
+            <article class="card quota-card">
+              <div class="card-head">
+                <div><p class="kicker">MY ALLOWANCE</p><h3>我的额度</h3></div>
+                <label class="select-wrap"><span>查看成员</span><select id="member-select"></select></label>
+              </div>
+              <div class="quota-number">
+                <span id="my-available">—</span>
+                <small>当前可用</small>
+              </div>
+              <div class="quota-row">
+                <span>近 7 天已用</span>
+                <strong id="my-used">—</strong>
+              </div>
+              <progress id="my-progress" max="24000" value="0" aria-label="个人周额度已用比例"></progress>
+              <div class="quota-foot">
+                <span id="my-release">滚动 7 天 · 逐笔释放</span>
+                <span id="my-limit">上限 $240</span>
+              </div>
+              <p class="fineprint">个人使用上限，实际调用仍受共享资源池限制。额度不是保底资源。</p>
+            </article>
+
+            <article class="card status-card">
+              <div class="card-head">
+                <div><p class="kicker">ADMISSION</p><h3>当前状态</h3></div>
+                <span class="status-chip" id="my-state-chip"><span class="dot"></span><span id="my-state">—</span></span>
+              </div>
+              <p class="status-note" id="my-state-note">正在检查额度与共享池。</p>
+              <dl class="status-facts">
+                <div><dt>个人并发</dt><dd>1 路</dd></div>
+                <div><dt>共享池</dt><dd id="pool-capacity">—</dd></div>
+                <div><dt>排队规则</dt><dd>30 秒 FIFO</dd></div>
+              </dl>
+              <p class="last-use" id="my-last-use">最近使用：—</p>
+            </article>
+          </div>
+
+          <section class="section pool-section" aria-labelledby="pool-title">
+            <div class="section-head">
+              <div><p class="kicker">SHARED CAPACITY</p><h3 id="pool-title">共享资源池</h3></div>
+              <a href="#accounts" data-view="accounts" class="text-link">查看账号详情 <span aria-hidden="true">→</span></a>
+            </div>
+            <div id="pool-accounts" class="pool-grid"></div>
+            <p class="fineprint">上游原生剩余配额、站内 API 等值金额、个人 Key 上限是三套不同口径，不能直接互相换算。</p>
+          </section>
+
+          <div class="stat-strip" aria-label="今日关键指标">
+            <article><span>今日请求</span><strong id="stat-requests">—</strong><small>HTTP 请求</small></article>
+            <article><span>HTTP 成功率</span><strong id="stat-success">—</strong><small>2xx 口径</small></article>
+            <article><span>失败</span><strong id="stat-failures">—</strong><small>含取消</small></article>
+            <article><span>首响应均值</span><strong id="stat-first">—</strong><small>成功请求</small></article>
+          </div>
+
+          <div class="split-grid">
+            <section class="card" aria-labelledby="trend-title">
+              <div class="card-head"><div><p class="kicker">LAST 14 DAYS</p><h3 id="trend-title">请求量趋势</h3></div><span class="muted">UTC+8 · 按日</span></div>
+              <div id="trend-chart" class="trend-chart" aria-live="polite"></div>
+              <div class="legend"><span><i class="legend-ok"></i>完成</span><span><i class="legend-bad"></i>失败 / 取消</span></div>
+            </section>
+            <section class="card" aria-labelledby="error-summary-title">
+              <div class="card-head"><div><p class="kicker">SIGNALS</p><h3 id="error-summary-title">异常摘要</h3></div><a href="#errors" data-view="errors" class="text-link">错误中心 <span aria-hidden="true">→</span></a></div>
+              <div id="error-summary" class="error-summary"></div>
+            </section>
+          </div>
+
+          <div class="split-grid">
+            <section class="card" aria-labelledby="model-mix-title">
+              <div class="card-head"><div><p class="kicker">MODEL MIX / 7D</p><h3 id="model-mix-title">模型费用分布</h3></div><span class="muted">API 参考金额</span></div>
+              <div id="model-mix" class="model-mix"></div>
+            </section>
+            <section class="card definition-card" aria-labelledby="definitions-title">
+              <div class="card-head"><div><p class="kicker">READ ME</p><h3 id="definitions-title">三个口径</h3></div></div>
+              <dl class="definitions">
+                <div><dt>上游原生配额</dt><dd>账号自己返回的周剩余百分比，重置时间各自独立。</dd></div>
+                <div><dt>我的 Key 额度</dt><dd>站内实际执行的滚动 7 天计数器，当前可用 = $240 减去已用。</dd></div>
+                <div><dt>API 参考金额</dt><dd>按模型价格目录估算的等值消耗，不代表账单或上游余额。</dd></div>
+              </dl>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-accounts" class="view" aria-label="上游账号" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">UPSTREAM POOL</p><h2>上游账号</h2><p class="page-lede">三个 Pro 20X 账号各自有独立的重置时间。默认只看配额、重置与并发上限。</p></div>
+            <p class="updated" id="accounts-updated">—</p>
+          </div>
+          <div id="account-cards" class="account-grid"></div>
+          <p class="fineprint">并发上限为网关配置值 5 路/账号；实际可调度容量还要排除停用、额度耗尽与冷却中的账号。</p>
+        </section>
+
+        <section id="view-keys" class="view" aria-label="成员与 Key" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">MEMBERS / KEYS</p><h2>成员与 Key</h2><p class="page-lede">每人 1 Key · 1 并发 · $240 / 滚动 7 天。只对例外逐行标注。</p></div>
+            <p class="updated" id="key-count-note">—</p>
+          </div>
+          <div class="toolbar">
+            <label class="search"><span data-icon="search"></span><input id="key-search" type="search" placeholder="搜索成员或 Key" maxlength="64" autocomplete="off"></label>
+            <label class="select-wrap compact"><span>状态</span><select id="key-status-filter"><option value="all">全部</option><option value="enabled">启用</option><option value="disabled">停用</option></select></label>
+          </div>
+          <section class="card table-card">
+            <div class="table-scroll">
+              <table class="data-table key-table">
+                <thead><tr><th>成员</th><th>当前可用</th><th>近 7 天已用</th><th>状态</th><th>最近使用</th></tr></thead>
+                <tbody id="keys-table"></tbody>
+              </table>
+            </div>
+            <p class="fineprint">点击任意行查看 Key 元数据与额度释放信息。金额为站内执行口径；停用 Key 保留历史但不再接流量。</p>
+          </section>
+        </section>
+
+        <section id="view-usage" class="view" aria-label="用量分析" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">USAGE / ANALYSIS</p><h2>用量分析</h2><p class="page-lede">费用、请求与 Token 分开看；缓存输入不重复计入总输入。</p></div>
+            <p class="updated" id="usage-updated">—</p>
+          </div>
+          <div id="usage-totals" class="usage-totals"></div>
+          <div class="split-grid wide-left">
+            <section class="card"><div class="card-head"><div><p class="kicker">DAILY REQUESTS</p><h3>每日请求</h3></div><span class="muted">近 14 天</span></div><div id="usage-chart" class="usage-chart"></div></section>
+            <section class="card"><div class="card-head"><div><p class="kicker">COST BY MODEL</p><h3>模型费用</h3></div><span class="muted">近 7 天</span></div><div id="usage-models" class="usage-models"></div></section>
+          </div>
+          <section class="card usage-members-card">
+            <div class="card-head"><div><p class="kicker">MEMBER USAGE</p><h3>成员用量</h3></div><span class="muted">近 7 天 · 按 API 参考金额</span></div>
+            <div class="table-scroll">
+              <table class="data-table usage-member-table">
+                <thead><tr><th>成员</th><th>近 7 天请求</th><th>API 参考金额</th><th>占成员总额</th><th>当前可用</th><th>状态</th></tr></thead>
+                <tbody id="usage-members"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="view-speed" class="view" aria-label="测速" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">SPEED LAB</p><h2>真实请求，<span>测一次生成速度。</span></h2><p class="page-lede">历史速度来自真实成功请求；主动测速会消耗你自己的平台 Key 额度，结果只留在当前页面。</p></div>
+            <p class="updated" id="speed-updated">—</p>
+          </div>
+
+          <section class="card speed-hero">
+            <div class="speed-hero-copy">
+              <p class="kicker">HISTORICAL / 7 DAYS</p>
+              <h3>历史解码速度</h3>
+              <p>首字之后可见输出的生成速度，不含排队与提示词处理。端到端速度另行标注。</p>
+              <dl class="speed-facts" id="speed-facts"></dl>
+            </div>
+            <div class="speed-big">
+              <strong id="speed-decode-p50">—</strong>
+              <span>tok/s</span>
+              <small>解码 p50 · 近 7 天</small>
+            </div>
+          </section>
+
+          <div class="split-grid wide-left speed-grid">
+            <section class="card">
+              <div class="card-head"><div><p class="kicker">MODEL SPEED</p><h3>按模型</h3></div><span class="muted">解码 p50 / 端到端 p50</span></div>
+              <div class="table-scroll">
+                <table class="data-table speed-model-table">
+                  <thead><tr><th>模型</th><th>样本</th><th>输出 tokens</th><th>解码 p50</th><th>端到端 p50</th></tr></thead>
+                  <tbody id="speed-model-body"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="card speed-test-card">
+              <div class="card-head"><div><p class="kicker">ACTIVE TEST</p><h3>主动测速</h3></div><span class="status-pill good">消耗额度</span></div>
+              <form id="speed-form" class="speed-form">
+                <label>平台 Key<input id="speed-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..."></label>
+                <label>模型<select id="speed-model"></select></label>
+                <label>Prompt<textarea id="speed-prompt" rows="3" maxlength="2000">用三句话解释什么是“共享资源池”，并举一个排队例子。</textarea></label>
+                <button class="button" id="speed-run" type="submit">开始测速</button>
+                <p class="fineprint" id="speed-note">Key 只用于这一次请求，不写入快照、不落日志。</p>
+              </form>
+              <div class="speed-result" id="speed-result" hidden>
+                <div class="speed-big"><strong id="speed-result-tps">—</strong><span>tok/s</span><small>解码速度</small></div>
+                <dl class="speed-facts" id="speed-result-facts"></dl>
+                <p class="speed-preview" id="speed-result-text"></p>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-errors" class="view" aria-label="错误中心" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">ERROR CENTER</p><h2>错误中心</h2><p class="page-lede">先分清策略容量、上游故障、配置请求与客户端取消，再决定要不要重试。</p></div>
+            <p class="updated" id="errors-updated">—</p>
+          </div>
+          <div id="error-summary-strip" class="error-summary-strip"></div>
+          <div class="toolbar">
+            <div id="error-filters" class="filter-chips" role="group" aria-label="筛选错误">
+              <button data-error-filter="all" aria-pressed="true">全部</button>
+              <button data-error-filter="capacity" aria-pressed="false">策略与容量</button>
+              <button data-error-filter="upstream" aria-pressed="false">上游故障</button>
+              <button data-error-filter="request" aria-pressed="false">配置与请求</button>
+              <button data-error-filter="client" aria-pressed="false">客户端取消</button>
+            </div>
+            <label class="search"><span data-icon="search"></span><input id="error-search" type="search" placeholder="搜索模型、成员、错误" maxlength="64" autocomplete="off"></label>
+          </div>
+          <div id="error-list" class="error-list"></div>
+        </section>
+
+        <section id="view-models" class="view" aria-label="模型目录" hidden>
+          <div class="page-heading">
+            <div><p class="kicker">MODEL CATALOG</p><h2>模型目录</h2><p class="page-lede">价格按“美元 / 百万 Token”展示；输入、缓存、输出分列，不再用斜杠串。</p></div>
+            <p class="updated" id="models-updated">—</p>
+          </div>
+          <div class="toolbar">
+            <label class="search"><span data-icon="search"></span><input id="model-search" type="search" placeholder="搜索模型名称或 ID" maxlength="64" autocomplete="off"></label>
+            <label class="select-wrap compact"><span>状态</span><select id="model-status-filter"><option value="all">全部</option><option value="enabled">已启用</option><option value="disabled">已禁用</option></select></label>
+          </div>
+          <section class="card table-card">
+            <div class="table-scroll">
+              <table class="data-table model-table">
+                <thead><tr><th>模型</th><th>状态</th><th>输入</th><th>缓存读</th><th>输出</th><th>路由</th></tr></thead>
+                <tbody id="model-table"></tbody>
+              </table>
+            </div>
+            <p id="catalog-unlisted" class="fineprint" hidden></p>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div id="drawer-root" class="drawer-root" hidden>
+    <button id="drawer-backdrop" class="drawer-backdrop" aria-label="关闭详情"></button>
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <div class="drawer-head"><div><p class="kicker">DETAIL</p><h2 id="drawer-title">详情</h2></div><button class="icon-button" id="drawer-close" aria-label="关闭详情"><span data-icon="close"></span></button></div>
+      <div id="drawer-body" class="drawer-body"></div>
+    </aside>
+  </div>
+</body>
+</html>

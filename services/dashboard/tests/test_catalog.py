@@ -115,11 +115,13 @@ def test_old_snapshot_remains_compatible(sample):
     data = collect(sample["config"], sample["now"])
     del data["model_catalog"]
     del data["catalog_unlisted_count"]
+    del data["request_health"]
     for key in data["keys"]:
         for name in ("display_id", "protocol", "rotation", "model_binding", "bound_model", "quota_limit_tokens", "quota_config_known", "is_historical"):
             del key[name]
     parsed = Snapshot.model_validate(data)
     assert parsed.model_catalog == [] and parsed.keys[0].quota_config_known is False
+    assert parsed.request_health is None
 
 
 @pytest.mark.parametrize("description", list(DESCRIPTION_ZH), ids=["astra", "gpt61-sol", "gpt6-luna", "gpt6-sol", "sol", "terra", "luna", "5.5", "5.4", "mini", "5.2", "image"])

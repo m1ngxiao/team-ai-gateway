@@ -2,10 +2,12 @@ import json
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime
 
 import pytest
 
-from dashboard.collector import collect, source_connection, write_snapshot, validate_output_path, public_id
+from dashboard.collector import (TZ, collect, source_connection, write_snapshot, validate_output_path,
+                                 public_id, request_error_category)
 
 
 def test_official_windows_and_whitelist(sample):
@@ -18,6 +20,53 @@ def test_official_windows_and_whitelist(sample):
     encoded = json.dumps(result)
     for forbidden in (sample["canary"], "internal-key", "internal-account", "key_value", "access_token", "credits_json"):
         assert forbidden not in encoded
+
+
+@pytest.mark.parametrize(("status_code", "error", "expected"), [
+    (200, None, "unknown_error"),
+    (401, None, "auth_error"),
+    (403, "forbidden", "auth_error"),
+    (429, "account temporarily unavailable", "rate_limited"),
+    (503, "no available account; skipped", "no_available_account"),
+    (504, None, "timeout"),
+    (499, "connection interrupted", "client_cancelled"),
+    (502, "Transport error: connection reset", "network_error"),
+    (502, "server_is_overloaded", "upstream_overloaded"),
+    (400, "invalid request", "invalid_request"),
+    (500, "upstream error", "upstream_error"),
+    (None, None, "unknown_error"),
+])
+def test_request_error_categories_are_safe_and_specific(status_code, error, expected):
+    assert request_error_category(status_code, error) == expected
+
+
+def test_request_health_counts_success_categories_and_daily_history_without_raw_errors(sample):
+    result = collect(sample["config"], sample["now"])
+    health = result["request_health"]
+    today = health["today"]
+    assert today["requests"] == 4
+    assert today["success"] == 2 and today["failed"] == 2
+    assert today["success_rate"] == 50.0
+    assert today["average_duration_ms"] == 1500.0
+    assert today["average_first_response_ms"] == 400.0
+    categories = {item["kind"]: item["count"] for item in today["error_categories"]}
+    assert categories["no_available_account"] == 1
+    assert categories["auth_error"] == 1
+    assert {item["status_code"]: item["count"] for item in today["failure_statuses"]} == {401: 1, 503: 1}
+    assert health["week"]["requests"] == 7
+    assert health["week"]["success"] == 2 and health["week"]["failed"] == 5
+    assert health["recorded"]["requests"] == 7
+    assert len(health["days"]) == health["history_days"] == 14
+    assert health["days"][-1]["date"] == datetime.fromtimestamp(sample["day"], TZ).date().isoformat()
+    assert sample["canary"] not in json.dumps(result, ensure_ascii=False)
+
+
+def test_request_health_is_optional_for_databases_without_log_table(sample):
+    with sqlite3.connect(sample["db"]) as db:
+        db.execute("DROP TABLE request_logs")
+    result = collect(sample["config"], sample["now"])
+    assert result["request_health"] is None
+    assert result["totals"]["recorded"]["total_tokens"] == 750
 
 
 def test_raw_hourly_legacy_and_failed_usage(sample):
@@ -157,7 +206,8 @@ def test_latest_snapshot_and_no_invented_reset(sample):
 @pytest.mark.parametrize("sql", ["DELETE FROM accounts", "CREATE TABLE injected(id INT)",
                                   "ATTACH DATABASE ':memory:' AS other", "SELECT key_value FROM api_key_secrets",
                                   "SELECT access_token FROM tokens", "SELECT proxy_url FROM account_proxy_settings",
-                                  "PRAGMA user_version=2", "SELECT load_extension('x')"])
+                                  "SELECT upstream_url FROM request_logs", "PRAGMA user_version=2",
+                                  "SELECT load_extension('x')"])
 def test_readonly_column_authorizer(sample, sql):
     with source_connection(sample["db"]) as db:
         with pytest.raises(sqlite3.DatabaseError):
