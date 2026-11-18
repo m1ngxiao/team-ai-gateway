@@ -19,7 +19,7 @@
 | `DYNAMIC_OVERLOAD_ENABLED` | 服务启动时 | 映射到 `CODEXMANAGER_DYNAMIC_OVERLOAD_ENABLED`，模板默认 true |
 | `COLLECTOR_CPUS` / `COLLECTOR_MEMORY` | 容器创建时 | collector 资源限制 |
 | `DASHBOARD_CPUS` / `DASHBOARD_MEMORY` | 容器创建时 | dashboard 资源限制 |
-| `TZ` | 运行时 | 容器系统时区；不会改变看板采集器当前 UTC+8 统计日界线 |
+| `TZ` | 运行时 | 容器系统日志时区；用量业务日固定为 `Asia/Shanghai`，管理端与看板一致 |
 | `SOURCE_REVISION` | 构建时 | 镜像来源标签；不决定源码从哪里获取 |
 
 三个默认 origin 分别是 `http://127.0.0.1:48760`、`http://127.0.0.1:48761`、`http://127.0.0.1:48763`。公网 origin 使用 HTTPS，不带路径、末尾 `/`、凭据、query 或 fragment。本地改端口应同步 origin；看板还需要同步私有 `auth.json` 中的允许 origin。
@@ -40,6 +40,12 @@
 | --- | --- |
 | `openai` | OpenAI 账号池及其现有的聚合 API 路由策略；不能绑定 Claude 聚合上游 |
 | `claude` | `account_rotation` 使用独立的 Claude.ai 订阅账号池；原有 `aggregate_api_rotation` 仍使用 Claude API Key 聚合上游。两种策略都不会回落到 OpenAI 账号池；不支持跨池混合轮转 |
+
+Auto Mode 的 `safeguards` 请求在 `upstreamProvider=claude` 时直接进入原生 Messages 路由。OpenAI/Codex 账号池默认启用仿真：网关剥离 `safeguards`、调用当前账号的分类模型，并按 Anthropic 格式注入 `safeguard_results`。仿真不是 Anthropic 原生 classifier，失败时只返回 `unavailable`。`CODEXMANAGER_CLAUDE_SAFEGUARDS_CLASSIFIER_MODEL` 可指定分类模型；为空时复用请求模型。`CODEXMANAGER_CLAUDE_SAFEGUARDS_EMULATION_ENABLED=0` 可关闭并在 OpenAI 路由返回 capability 错误。
+
+OpenAI-compatible 路由同样默认仿真 Claude Code 的 `context_management`。`clear_tool_uses_20250919` 在本地编辑历史；`compact_20260112` 超阈值时通过当前上游调用摘要模型，并在响应中返回 `compaction` 和 applied edits。摘要模型为空时复用请求模型；摘要失败不会伪造成功压缩。该兼容用于 API Key/中转 Key，不改变原生 Claude 的协议透传。
+
+自托管 Artifact 使用 `CODEXMANAGER_ARTIFACTS_DIR` 保存页面和元数据，使用 `CODEXMANAGER_ARTIFACTS_PUBLIC_BASE_URL` 生成分享链接。默认目录是数据库目录下的 `artifacts/`，公开地址由请求 Host 推导；反向代理部署应显式设置后者。
 
 Claude 订阅账号在后台「Claude 账号池」页面发起登录。管理员打开授权链接，使用 Claude.ai Pro、Max 或 Team 账号授权，再将网页显示的 `CODE#STATE` 一次性授权码粘贴回后台。登录后账号默认停用；先在模型目录中为 Claude 模型配置 `account_pool`、`source_id=claude` 路由，再启用账号并发送真实请求验证。若启用了分销计费，模型还须配置价格；该价格用于平台内部计量，不表示订阅账号按 API 价格结算。Claude 账号的授权令牌写入私有 SQLite 数据库，备份时须按凭据保护。
 
@@ -104,13 +110,26 @@ Claude 订阅账号池 Key 可使用 `POST /v1/messages`、`POST /v1/responses`�
 | `CODEXMANAGER_DB_PATH` | 数据库路径；模板固定 `/data/codexmanager.db` |
 | `CODEXMANAGER_RPC_TOKEN_FILE` | 内部 RPC token 路径；模板固定 `/data/codexmanager.rpc-token` |
 | `CODEXMANAGER_SERVICE_ADDR` / `CODEXMANAGER_WEB_ADDR` | 容器内部监听；模板通过宿主端口发布时限制为回环 |
-| `CODEXMANAGER_ROUTE_STRATEGY` | `ordered` 或 `balanced`；也可通过后台持久化设置 |
+| `CODEXMANAGER_ROUTE_STRATEGY` | `ordered`、`balanced` 或 `quota_aware`；也可通过后台持久化设置 |
+| `CODEXMANAGER_QUOTA_AWARE_RECENT_WINDOW_SECS` | 额度感知策略统计近期 Token 的窗口；默认 3600 秒 |
+| `CODEXMANAGER_QUOTA_AWARE_REBALANCE_IDLE_SECS` | 会话空闲多久后允许额度迁移；默认 1800 秒 |
+| `CODEXMANAGER_QUOTA_AWARE_REBALANCE_MIN_REMAINING_GAIN_PERCENT` | 触发额度迁移的最小剩余额度增益；默认 10 个百分点 |
+| `CODEXMANAGER_QUOTA_AWARE_REBALANCE_MIN_SCORE_GAIN` | 触发额度迁移的最小综合分增益；默认 0.08 |
+| `CODEXMANAGER_QUOTA_AWARE_SNAPSHOT_TTL_MS` | 进程内额度路由快照缓存时间；默认 3000 毫秒 |
 | `CODEXMANAGER_ACCOUNT_MAX_INFLIGHT` | 所有账号共同使用的单账号总在途上限；源码默认 0 |
 | `CODEXMANAGER_REQUEST_GATE_WAIT_TIMEOUT_MS` | 请求门等待限制；0 表示不额外配置该等待超时 |
 | `CODEXMANAGER_UPSTREAM_CONNECT_TIMEOUT_SECS` | 上游连接超时；源码默认 15 秒 |
 | `CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS` | 整次上游请求总超时；源码默认 0，重试共享该期限 |
 | `CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS` | 上游流处理超时；源码默认 300000 毫秒 |
 | `CODEXMANAGER_DYNAMIC_OVERLOAD_ENABLED` | 启动时动态备用开关；源码默认 false，Compose 显式映射启用 |
+| `CODEXMANAGER_DYNAMIC_RECOVERY_LIMIT` | 账号与模型恢复阶段的最大并发；默认 8，允许 1–64 |
+| `CODEXMANAGER_CLAUDE_SAFEGUARDS_EMULATION_ENABLED` | 为 OpenAI 账号池仿真 Claude Code Auto mode safeguards；默认 true |
+| `CODEXMANAGER_CLAUDE_SAFEGUARDS_CLASSIFIER_MODEL` | safeguards 分类模型；空值复用当前请求模型 |
+| `CODEXMANAGER_CLAUDE_CONTEXT_MANAGEMENT_ENABLED` | 为 OpenAI-compatible 路由仿真 `context_management`；默认 true |
+| `CODEXMANAGER_CLAUDE_COMPACT_SUMMARY_MODEL` | `/compact` 摘要模型；空值复用当前请求模型 |
+| `CODEXMANAGER_CLAUDE_COMPACT_SUMMARY_MAX_TOKENS` | `/compact` 摘要模型输出上限；默认 4096 |
+| `CODEXMANAGER_ARTIFACTS_DIR` | Artifact 文件和元数据目录；默认数据库目录下 `artifacts/` |
+| `CODEXMANAGER_ARTIFACTS_PUBLIC_BASE_URL` | Artifact 对外 origin；反向代理部署应显式配置 |
 
 以上是常用入口，不是全部上游设置的逐项索引。完整定义位于 `crates/service/src/app_settings` 和 `crates/service/src/gateway/core/runtime_config.rs`。调度和限额语义见 [SCHEDULING.md](SCHEDULING.md)；不要把提高工作线程数当成提高上游账号额度。
 

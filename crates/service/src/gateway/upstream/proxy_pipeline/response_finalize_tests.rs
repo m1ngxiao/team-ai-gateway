@@ -1,8 +1,62 @@
 use super::{
     binding_status, derive_final_error, derive_status_for_log, is_client_disconnect_error,
-    should_mark_stream_network_failure,
+    should_mark_stream_network_failure, temporary_unavailable_response,
 };
 use crate::gateway::upstream::semantic_health::SemanticHealth;
+
+#[test]
+fn temporary_unavailable_response_sets_429_retry_after_and_stable_error_code() {
+    let response = temporary_unavailable_response(
+        false,
+        "账号临时不可用(account temporarily unavailable)".to_string(),
+        18,
+        Some("trc_test"),
+    );
+
+    assert_eq!(response.status_code().0, 429);
+    let header = |name: &str| {
+        response
+            .headers()
+            .iter()
+            .find(|header| header.field.as_str().as_str().eq_ignore_ascii_case(name))
+            .map(|header| header.value.as_str().to_string())
+    };
+    assert_eq!(header("Retry-After").as_deref(), Some("18"));
+    assert_eq!(
+        header("X-CodexManager-Error-Code").as_deref(),
+        Some("account_temporarily_unavailable")
+    );
+    assert_eq!(
+        header("X-CodexManager-Trace-Id").as_deref(),
+        Some("trc_test")
+    );
+}
+
+#[test]
+fn conversation_rebind_required_uses_non_retryable_conflict_response() {
+    let response = crate::gateway::error_response::terminal_text_response(
+        409,
+        "请新建会话(conversation_rebind_required: bound account quota reserved; reset at 2026-11-05T09:23:14Z)",
+        Some("trc_rebind"),
+    );
+
+    assert_eq!(response.status_code().0, 409);
+    assert!(response.headers().iter().all(|header| {
+        !header
+            .field
+            .as_str()
+            .as_str()
+            .eq_ignore_ascii_case("Retry-After")
+    }));
+    assert!(response.headers().iter().any(|header| {
+        header
+            .field
+            .as_str()
+            .as_str()
+            .eq_ignore_ascii_case("X-CodexManager-Error-Code")
+            && header.value.as_str() == "conversation_rebind_required"
+    }));
+}
 
 #[test]
 fn delivered_http_success_with_failed_body_cannot_rebind_the_conversation() {
@@ -89,15 +143,14 @@ fn downstream_disconnect_before_terminal_does_not_penalize_account() {
         assert!(client_delivery_failed, "{message}");
         // The bridge has stopped reading after the downstream write failed, so
         // no terminal event was observed. This still logs 499 and cannot rebind.
-        let status = derive_status_for_log(
-            200, None, false, false, true, client_delivery_failed,
-        );
+        let status = derive_status_for_log(200, None, false, false, true, client_delivery_failed);
         assert_eq!(status, 499, "{message}");
         assert_eq!(binding_status(status, false), 499, "{message}");
         for health in [None, Some(SemanticHealth::default())] {
-            assert!(!should_mark_stream_network_failure(
-                true, None, client_delivery_failed, health,
-            ), "{message}");
+            assert!(
+                !should_mark_stream_network_failure(true, None, client_delivery_failed, health,),
+                "{message}"
+            );
         }
     }
 }
@@ -106,44 +159,82 @@ fn downstream_disconnect_before_terminal_does_not_penalize_account() {
 fn incomplete_upstream_without_downstream_disconnect_still_penalizes_account() {
     for terminal_error in [None, Some("upstream stream read failed")] {
         assert!(should_mark_stream_network_failure(
-            true, terminal_error, false, Some(SemanticHealth::default()),
+            true,
+            terminal_error,
+            false,
+            Some(SemanticHealth::default()),
         ));
     }
     // Unknown delivery failures remain conservative; only recognized downstream
     // disconnects can excuse an otherwise unexplained missing terminal event.
     assert!(should_mark_stream_network_failure(
-        true, None, is_client_disconnect_error("upstream timeout"), None,
+        true,
+        None,
+        is_client_disconnect_error("upstream timeout"),
+        None,
     ));
-    assert_eq!(derive_status_for_log(200, None, false, false, true, false), 502);
+    assert_eq!(
+        derive_status_for_log(200, None, false, false, true, false),
+        502
+    );
 }
 
 #[test]
 fn observed_upstream_failure_still_penalizes_after_downstream_disconnect() {
     assert!(should_mark_stream_network_failure(
-        true, Some("upstream stream read failed"), true, None,
+        true,
+        Some("upstream stream read failed"),
+        true,
+        None,
     ));
     // The raw health observer can see a structured failure before the bridge's
     // event collector catches up. A concurrent disconnect must not hide it.
     assert!(should_mark_stream_network_failure(
-        true, None, true, Some(SemanticHealth { failed: true, ..Default::default() }),
+        true,
+        None,
+        true,
+        Some(SemanticHealth {
+            failed: true,
+            ..Default::default()
+        }),
     ));
 }
 
 #[test]
 fn capacity_failure_does_not_also_trigger_account_network_cooldown() {
-    let overloaded = SemanticHealth { overloaded: true, failed: true, ..Default::default() };
+    let overloaded = SemanticHealth {
+        overloaded: true,
+        failed: true,
+        ..Default::default()
+    };
     for client_delivery_failed in [false, true] {
         assert!(!should_mark_stream_network_failure(
-            true, Some("server_is_overloaded"), client_delivery_failed, Some(overloaded),
+            true,
+            Some("server_is_overloaded"),
+            client_delivery_failed,
+            Some(overloaded),
         ));
     }
 }
 
 #[test]
 fn successful_stream_or_non_stream_delivery_does_not_penalize_account() {
-    let completed = SemanticHealth { completed: true, ..Default::default() };
-    assert!(!should_mark_stream_network_failure(false, None, false, Some(completed)));
-    assert!(!should_mark_stream_network_failure(false, None, true, Some(completed)));
+    let completed = SemanticHealth {
+        completed: true,
+        ..Default::default()
+    };
+    assert!(!should_mark_stream_network_failure(
+        false,
+        None,
+        false,
+        Some(completed)
+    ));
+    assert!(!should_mark_stream_network_failure(
+        false,
+        None,
+        true,
+        Some(completed)
+    ));
     // A non-streaming response never enters the stream-network penalty path.
     assert!(!should_mark_stream_network_failure(false, None, true, None));
 }

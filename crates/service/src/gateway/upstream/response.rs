@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use std::collections::VecDeque;
-use std::io::Read;
+use std::io::{self, Read};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
@@ -106,7 +106,10 @@ impl GatewayByteStream {
         }
         let item = match self.rx.recv() {
             Ok(item) => item,
-            Err(err) => { self.observe_eof(); return Err(err); }
+            Err(err) => {
+                self.observe_eof();
+                return Err(err);
+            }
         };
         self.observe_item(&item);
         Ok(item)
@@ -122,7 +125,9 @@ impl GatewayByteStream {
         let item = match self.rx.recv_timeout(timeout) {
             Ok(item) => item,
             Err(err) => {
-                if matches!(err, RecvTimeoutError::Disconnected) { self.observe_eof(); }
+                if matches!(err, RecvTimeoutError::Disconnected) {
+                    self.observe_eof();
+                }
                 return Err(err);
             }
         };
@@ -135,7 +140,7 @@ impl GatewayByteStream {
             match item {
                 GatewayByteStreamItem::Chunk(bytes) => observer.feed(bytes),
                 GatewayByteStreamItem::Eof => observer.eof(),
-                GatewayByteStreamItem::Error(_) => {},
+                GatewayByteStreamItem::Error(_) => {}
             }
         }
     }
@@ -144,7 +149,9 @@ impl GatewayByteStream {
         // A closed producer is EOF for read_all_bytes and tee consumers too.
         // Flush framing once; only a complete structured terminal can certify
         // success. An explicit transport Error never calls this helper.
-        if let Some(observer) = &self.health_observer { observer.eof(); }
+        if let Some(observer) = &self.health_observer {
+            observer.eof();
+        }
     }
 
     fn prefetch_until<F>(
@@ -279,6 +286,34 @@ impl GatewayByteStream {
     }
 }
 
+impl Read for GatewayByteStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            match self.recv() {
+                Ok(GatewayByteStreamItem::Chunk(bytes)) => {
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    let read = bytes.len().min(buffer.len());
+                    buffer[..read].copy_from_slice(&bytes[..read]);
+                    if read < bytes.len() {
+                        self.replay
+                            .push_front(GatewayByteStreamItem::Chunk(bytes.slice(read..)));
+                    }
+                    return Ok(read);
+                }
+                Ok(GatewayByteStreamItem::Eof) | Err(_) => return Ok(0),
+                Ok(GatewayByteStreamItem::Error(message)) => {
+                    return Err(io::Error::new(io::ErrorKind::Other, message));
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct GatewayStreamResponse {
     status: reqwest::StatusCode,
@@ -369,9 +404,15 @@ impl GatewayUpstreamResponse {
             Self::Stream(response) => {
                 let mut prefix = Vec::new();
                 for item in &response.body.replay {
-                    if let GatewayByteStreamItem::Chunk(bytes) = item { prefix.extend_from_slice(bytes); }
+                    if let GatewayByteStreamItem::Chunk(bytes) = item {
+                        prefix.extend_from_slice(bytes);
+                    }
                 }
-                let rebuilt = GatewayStreamResponse::new(response.status, response.headers.clone(), GatewayByteStream::from_bytes(Bytes::from(prefix)));
+                let rebuilt = GatewayStreamResponse::new(
+                    response.status,
+                    response.headers.clone(),
+                    GatewayByteStream::from_bytes(Bytes::from(prefix)),
+                );
                 drop(response);
                 Self::Stream(rebuilt)
             }

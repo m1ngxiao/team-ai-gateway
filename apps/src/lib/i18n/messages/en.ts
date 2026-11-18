@@ -713,6 +713,7 @@ export const EN_MESSAGES: MessageCatalog = {
   选择策略: "Choose a strategy",
   "顺序优先 (Ordered)": "Ordered priority (Ordered)",
   "均衡轮询 (Balanced)": "Balanced rotation (Balanced)",
+  "额度感知 (Quota Aware)": "Quota-aware (Quota Aware)",
   模型转发规则: "Model forwarding rules",
   后台任务线程: "Background task workers",
   用量轮询线程: "Usage polling worker",
@@ -1207,6 +1208,8 @@ export const EN_MESSAGES: MessageCatalog = {
   适合小规模或低峰值场景: "Suitable for small scale or low peaks",
   "顺序优先：按账号候选顺序优先尝试，默认只会在头部小窗口内按健康度做轻微换头；均衡轮询：按“平台密钥 + 模型”维度严格轮询可用账号，默认不做健康度换头。":
     "Ordered: try accounts in order, with slight health-based head swapping in the top small window; Balanced: strictly round-robin available accounts by “API key + model”, no health swapping by default.",
+  "顺序优先：按账号候选顺序优先尝试，默认只会在头部小窗口内按健康度做轻微换头；均衡轮询：按“平台密钥 + 模型”维度严格轮询可用账号；额度感知：综合剩余额度、近 1 小时 Token、活跃会话和在途数选号，新会话优先低负载账号，空闲 30 分钟以上的旧会话在额度明显更优时会重绑定。":
+    "Ordered: try accounts in order, with slight health-based head swapping in the top small window; Balanced: strictly round-robin available accounts by “API key + model”; Quota-aware: select accounts by remaining quota, last-hour tokens, active sessions, and in-flight requests. New sessions prefer lower-load accounts; idle sessions (30+ minutes) are rebound only when another account is materially better.",
   速度和资源占用比较均衡: "Balanced speed and resource usage",
   "同一账号同时能处理多少个请求。满了以后会优先换下一个账号；填 0 表示关闭上限。":
     "How many requests a single account can handle concurrently. When full, it switches to the next account; 0 disables the limit.",

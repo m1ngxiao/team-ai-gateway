@@ -8,16 +8,14 @@ use super::super::attempt_flow::transport::UpstreamRequestContext;
 use super::super::GatewayUpstreamResponse;
 
 fn should_skip_codex_v1_alt_for_responses(
-    request_ctx: UpstreamRequestContext<'_>,
+    _request_ctx: UpstreamRequestContext<'_>,
     alt_url: &str,
 ) -> bool {
-    request_ctx.protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
-        && reqwest::Url::parse(alt_url).ok().is_some_and(|url| {
-            url.path()
-                .trim_end_matches('/')
-                .to_ascii_lowercase()
-                .ends_with("/backend-api/codex/v1/responses")
-        })
+    reqwest::Url::parse(alt_url).ok().is_some_and(|url| {
+        let path = url.path().trim_end_matches('/').to_ascii_lowercase();
+        path.ends_with("/backend-api/codex/v1/responses")
+            || path.ends_with("/backend-api/codex/v1/responses/compact")
+    })
 }
 
 pub(in super::super) enum AltPathRetryResult {
@@ -65,6 +63,9 @@ where
     if !matches!(status.as_u16(), 400 | 404) {
         return AltPathRetryResult::NotTriggered;
     }
+    if status == StatusCode::BAD_REQUEST && super::super::config::is_chatgpt_backend_base(alt_url) {
+        return AltPathRetryResult::NotTriggered;
+    }
     if should_skip_codex_v1_alt_for_responses(request_ctx, alt_url) {
         log::warn!(
             "event=gateway_upstream_alt_retry_skipped path={} status={} reason=responses_codex_v1_alt_blocked upstream_url={}",
@@ -72,6 +73,9 @@ where
             status.as_u16(),
             alt_url
         );
+        return AltPathRetryResult::NotTriggered;
+    }
+    if super::super::generation_budget::current().is_some_and(|budget| !budget.can_send()) {
         return AltPathRetryResult::NotTriggered;
     }
     if debug {
@@ -116,6 +120,22 @@ where
         Ok(response) => AltPathRetryResult::Upstream(response),
         Err(err) => {
             let err_msg = err.to_string();
+            if super::super::generation_budget::is_deadline_error_message(&err_msg) {
+                return AltPathRetryResult::Terminal {
+                    status_code: 504,
+                    message: err_msg,
+                };
+            }
+            if super::super::generation_budget::is_budget_error_message(&err_msg) {
+                log::warn!(
+                    "event=gateway_upstream_alt_retry_budget_exhausted path={} status={} account_id={} reason={}",
+                    request_ctx.request_path,
+                    status.as_u16(),
+                    account.id,
+                    err_msg
+                );
+                return AltPathRetryResult::NotTriggered;
+            }
             super::super::super::mark_account_cooldown(
                 &account.id,
                 super::super::super::CooldownReason::Network,

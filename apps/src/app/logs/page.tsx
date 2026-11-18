@@ -22,7 +22,7 @@ import {
   resolveSessionRole,
   useAppSession,
 } from "@/hooks/useAppSession";
-import { useLocalDayRange } from "@/hooks/useLocalDayRange";
+import { useBusinessDayRange } from "@/hooks/useBusinessDayRange";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useCodexProfileModeStatus } from "@/hooks/useCodexProfileModeStatus";
@@ -58,7 +58,7 @@ function getLogRefreshIntervalMs(
 
 function LogsPageContent() {
   const { t } = useI18n();
-  const localDayRange = useLocalDayRange();
+  const businessDayRange = useBusinessDayRange();
   const searchParams = useSearchParams();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
   const serviceAddr = serviceStatus.addr || null;
@@ -96,8 +96,8 @@ function LogsPageContent() {
     buildStartupSnapshotQueryKey(
       serviceAddr,
       STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
-      localDayRange.dayStartTs,
-      localDayRange.dayEndTs,
+      businessDayRange.dayStartTs,
+      businessDayRange.dayEndTs,
     )
   );
   const startupAccounts = startupSnapshot?.accounts || [];
@@ -346,8 +346,8 @@ function LogsPageContent() {
     const frameId = window.requestAnimationFrame(() => {
       const todayRange = buildFixedTimePreset(
         "today",
-        localDayRange.dayStartTs,
-        localDayRange.dayEndTs,
+        businessDayRange.dayStartTs,
+        businessDayRange.dayEndTs,
       );
       setStartTimeInput((current) =>
         current === todayRange.startInput ? current : todayRange.startInput,
@@ -359,7 +359,7 @@ function LogsPageContent() {
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [localDayRange.dayEndTs, localDayRange.dayStartTs, timePreset]);
+  }, [businessDayRange.dayEndTs, businessDayRange.dayStartTs, timePreset]);
 
   const currentFilterLabel =
     filter === "all"
@@ -404,8 +404,8 @@ function LogsPageContent() {
     }
     const nextRange = buildFixedTimePreset(
       preset,
-      localDayRange.dayStartTs,
-      localDayRange.dayEndTs,
+      businessDayRange.dayStartTs,
+      businessDayRange.dayEndTs,
     );
     setStartTimeInput(nextRange.startInput);
     setEndTimeInput(nextRange.endInput);

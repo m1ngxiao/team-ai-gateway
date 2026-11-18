@@ -12,7 +12,9 @@ use codexmanager_core::rpc::types::{JsonRpcRequest, JsonRpcResponse};
 /// # 返回
 /// 返回函数执行结果
 pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
-    if let Some(response) = server_only_response(req) { return Some(response); }
+    if let Some(response) = server_only_response(req) {
+        return Some(response);
+    }
     let result = match req.method.as_str() {
         "codexProfile/get" => super::value_or_error(crate::codex_profile::get_status(
             super::str_param(req, "codexHome"),
@@ -73,11 +75,23 @@ mod server_only_tests {
 
     #[test]
     fn server_only_rejects_all_profile_operations_without_using_parameters() {
-        for method in ["get", "setConfig", "listCandidates", "applyDirectAccount", "applyGateway",
-            "restore", "repairHistory", "pruneHistoryBackups", "futureOperation"] {
+        for method in [
+            "get",
+            "setConfig",
+            "listCandidates",
+            "applyDirectAccount",
+            "applyGateway",
+            "restore",
+            "repairHistory",
+            "pruneHistoryBackups",
+            "futureOperation",
+        ] {
             let req = JsonRpcRequest {
-                id: 42.into(), method: format!("codexProfile/{method}"),
-                params: Some(serde_json::json!({"codexHome": "/must-not-be-created", "reloadAfterSwitch": true})),
+                id: 42.into(),
+                method: format!("codexProfile/{method}"),
+                params: Some(
+                    serde_json::json!({"codexHome": "/must-not-be-created", "reloadAfterSwitch": true}),
+                ),
                 trace: None,
             };
             let response = try_handle(&req).expect("profile operation must be blocked");
@@ -88,8 +102,19 @@ mod server_only_tests {
 
     #[test]
     fn server_only_does_not_intercept_gateway_or_account_operations() {
-        for method in ["account/list", "apikey/list", "model/list", "initialize", "codexProfileOther/get"] {
-            let req = JsonRpcRequest { id: 1.into(), method: method.to_string(), params: None, trace: None };
+        for method in [
+            "account/list",
+            "apikey/list",
+            "model/list",
+            "initialize",
+            "codexProfileOther/get",
+        ] {
+            let req = JsonRpcRequest {
+                id: 1.into(),
+                method: method.to_string(),
+                params: None,
+                trace: None,
+            };
             assert!(try_handle(&req).is_none());
         }
     }
@@ -97,10 +122,15 @@ mod server_only_tests {
     #[test]
     fn server_only_never_resolves_client_paths_or_syncs_imported_profiles() {
         for path in [None, Some(r"C:\Users\example\.codex"), Some("/data/.codex")] {
-            assert!(crate::codex_profile::resolve_profile_dir(path).unwrap_err().contains("permission_denied"));
+            assert!(crate::codex_profile::resolve_profile_dir(path)
+                .unwrap_err()
+                .contains("permission_denied"));
         }
         let storage = Storage::open_in_memory().unwrap();
         assert!(!crate::codex_profile::sync_active_gateway_profile_from_storage(&storage).unwrap());
-        assert!(!crate::codex_profile::sync_active_gateway_profile_for_api_key(&storage, "missing-key").unwrap());
+        assert!(
+            !crate::codex_profile::sync_active_gateway_profile_for_api_key(&storage, "missing-key")
+                .unwrap()
+        );
     }
 }

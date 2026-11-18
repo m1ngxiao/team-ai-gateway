@@ -78,7 +78,10 @@ fn claude_usage_polling_enabled() -> bool {
         return false;
     }
     match std::env::var("CODEXMANAGER_CLAUDE_USAGE_POLLING_ENABLED") {
-        Ok(value) => !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"),
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off"
+        ),
         Err(_) => true,
     }
 }

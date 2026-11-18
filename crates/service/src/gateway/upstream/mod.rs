@@ -1,6 +1,7 @@
 pub(super) mod attempt_flow;
 pub(super) mod claude_subscription;
 pub(super) mod config;
+pub(super) mod context_summarizer;
 pub(super) mod executor;
 pub(crate) mod generation_budget;
 pub(super) mod header_profile;
@@ -8,6 +9,7 @@ pub(super) mod protocol;
 pub(super) mod proxy;
 pub(super) mod proxy_pipeline;
 pub(super) mod response;
+pub(super) mod safeguards_classifier;
 pub(crate) mod semantic_health;
 pub(super) mod support;
 

@@ -48,6 +48,12 @@ static THREAD_AWARE_ACCOUNT_DISTRIBUTION: AtomicBool =
     AtomicBool::new(DEFAULT_THREAD_AWARE_ACCOUNT_DISTRIBUTION);
 static STRICT_REQUEST_PARAM_ALLOWLIST: AtomicBool =
     AtomicBool::new(DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST);
+static CLAUDE_SAFEGUARDS_EMULATION_ENABLED: AtomicBool =
+    AtomicBool::new(DEFAULT_CLAUDE_SAFEGUARDS_EMULATION_ENABLED);
+static CLAUDE_CONTEXT_MANAGEMENT_ENABLED: AtomicBool =
+    AtomicBool::new(DEFAULT_CLAUDE_CONTEXT_MANAGEMENT_ENABLED);
+static CLAUDE_COMPACT_SUMMARY_MAX_TOKENS: AtomicUsize =
+    AtomicUsize::new(DEFAULT_CLAUDE_COMPACT_SUMMARY_MAX_TOKENS);
 static ENABLE_REQUEST_COMPRESSION: AtomicBool = AtomicBool::new(DEFAULT_ENABLE_REQUEST_COMPRESSION);
 static USE_WEBSOCKET_UPSTREAM: AtomicBool = AtomicBool::new(DEFAULT_USE_WEBSOCKET_UPSTREAM);
 static CODEX_IMAGE_GENERATION_ENABLED: AtomicBool =
@@ -59,6 +65,8 @@ static COMPACT_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static COMPACT_API_PATH: OnceLock<RwLock<String>> = OnceLock::new();
 static MODEL_FORWARD_RULES: OnceLock<RwLock<Vec<ModelForwardRule>>> = OnceLock::new();
 static COMPACT_MODEL_FORWARD_RULES: OnceLock<RwLock<Vec<ModelForwardRule>>> = OnceLock::new();
+static CLAUDE_SAFEGUARDS_CLASSIFIER_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
+static CLAUDE_COMPACT_SUMMARY_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static CODEX_IMAGE_MAIN_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static CODEX_IMAGE_TOOL_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static ORIGINATOR: OnceLock<RwLock<String>> = OnceLock::new();
@@ -77,6 +85,9 @@ const DEFAULT_SSE_KEEPALIVE_INTERVAL_MS: u64 = 15_000;
 const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 0;
 const DEFAULT_THREAD_AWARE_ACCOUNT_DISTRIBUTION: bool = true;
 const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = false;
+const DEFAULT_CLAUDE_SAFEGUARDS_EMULATION_ENABLED: bool = true;
+const DEFAULT_CLAUDE_CONTEXT_MANAGEMENT_ENABLED: bool = true;
+const DEFAULT_CLAUDE_COMPACT_SUMMARY_MAX_TOKENS: usize = 4096;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
 const DEFAULT_USE_WEBSOCKET_UPSTREAM: bool = false;
 const DEFAULT_CODEX_IMAGE_GENERATION_ENABLED: bool = true;
@@ -107,6 +118,15 @@ const ENV_SSE_KEEPALIVE_ENABLED: &str = "CODEXMANAGER_SSE_KEEPALIVE_ENABLED";
 const ENV_SSE_KEEPALIVE_INTERVAL_MS: &str = "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS";
 const ENV_ACCOUNT_MAX_INFLIGHT: &str = "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT";
 const ENV_STRICT_REQUEST_PARAM_ALLOWLIST: &str = "CODEXMANAGER_STRICT_REQUEST_PARAM_ALLOWLIST";
+const ENV_CLAUDE_SAFEGUARDS_EMULATION_ENABLED: &str =
+    "CODEXMANAGER_CLAUDE_SAFEGUARDS_EMULATION_ENABLED";
+const ENV_CLAUDE_SAFEGUARDS_CLASSIFIER_MODEL: &str =
+    "CODEXMANAGER_CLAUDE_SAFEGUARDS_CLASSIFIER_MODEL";
+const ENV_CLAUDE_CONTEXT_MANAGEMENT_ENABLED: &str =
+    "CODEXMANAGER_CLAUDE_CONTEXT_MANAGEMENT_ENABLED";
+const ENV_CLAUDE_COMPACT_SUMMARY_MODEL: &str = "CODEXMANAGER_CLAUDE_COMPACT_SUMMARY_MODEL";
+const ENV_CLAUDE_COMPACT_SUMMARY_MAX_TOKENS: &str =
+    "CODEXMANAGER_CLAUDE_COMPACT_SUMMARY_MAX_TOKENS";
 const ENV_ENABLE_REQUEST_COMPRESSION: &str = "CODEXMANAGER_ENABLE_REQUEST_COMPRESSION";
 const ENV_USE_WEBSOCKET_UPSTREAM: &str = "CODEXMANAGER_USE_WEBSOCKET_UPSTREAM";
 const ENV_CODEX_IMAGE_GENERATION_ENABLED: &str = "CODEXMANAGER_CODEX_IMAGE_GENERATION_ENABLED";
@@ -1202,6 +1222,43 @@ pub(crate) fn current_compact_model_override() -> Option<String> {
     (!current.eq_ignore_ascii_case("auto")).then_some(current)
 }
 
+pub(crate) fn claude_safeguards_emulation_enabled() -> bool {
+    ensure_runtime_config_loaded();
+    CLAUDE_SAFEGUARDS_EMULATION_ENABLED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn current_claude_safeguards_classifier_model() -> Option<String> {
+    ensure_runtime_config_loaded();
+    let value = crate::lock_utils::read_recover(
+        claude_safeguards_classifier_model_cell(),
+        "claude_safeguards_classifier_model",
+    );
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+pub(crate) fn claude_context_management_enabled() -> bool {
+    ensure_runtime_config_loaded();
+    CLAUDE_CONTEXT_MANAGEMENT_ENABLED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn current_claude_compact_summary_model() -> Option<String> {
+    ensure_runtime_config_loaded();
+    let value = crate::lock_utils::read_recover(
+        claude_compact_summary_model_cell(),
+        "claude_compact_summary_model",
+    );
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+pub(crate) fn current_claude_compact_summary_max_tokens() -> usize {
+    ensure_runtime_config_loaded();
+    CLAUDE_COMPACT_SUMMARY_MAX_TOKENS
+        .load(Ordering::Relaxed)
+        .max(1)
+}
+
 pub(crate) fn current_compact_api_path() -> String {
     ensure_runtime_config_loaded();
     crate::lock_utils::read_recover(compact_api_path_cell(), "compact_api_path").clone()
@@ -1782,6 +1839,28 @@ pub(super) fn reload_from_env() {
         ),
         Ordering::Relaxed,
     );
+    CLAUDE_SAFEGUARDS_EMULATION_ENABLED.store(
+        env_bool_or(
+            ENV_CLAUDE_SAFEGUARDS_EMULATION_ENABLED,
+            DEFAULT_CLAUDE_SAFEGUARDS_EMULATION_ENABLED,
+        ),
+        Ordering::Relaxed,
+    );
+    CLAUDE_CONTEXT_MANAGEMENT_ENABLED.store(
+        env_bool_or(
+            ENV_CLAUDE_CONTEXT_MANAGEMENT_ENABLED,
+            DEFAULT_CLAUDE_CONTEXT_MANAGEMENT_ENABLED,
+        ),
+        Ordering::Relaxed,
+    );
+    CLAUDE_COMPACT_SUMMARY_MAX_TOKENS.store(
+        env_usize_or(
+            ENV_CLAUDE_COMPACT_SUMMARY_MAX_TOKENS,
+            DEFAULT_CLAUDE_COMPACT_SUMMARY_MAX_TOKENS,
+        )
+        .max(1),
+        Ordering::Relaxed,
+    );
     ENABLE_REQUEST_COMPRESSION.store(
         env_bool_or(
             ENV_ENABLE_REQUEST_COMPRESSION,
@@ -1857,6 +1936,30 @@ pub(super) fn reload_from_env() {
         crate::lock_utils::write_recover(compact_model_cell(), "compact_model");
     *cached_compact_model = compact_model;
     drop(cached_compact_model);
+
+    let safeguards_classifier_model = env_non_empty(ENV_CLAUDE_SAFEGUARDS_CLASSIFIER_MODEL)
+        .and_then(|value| {
+            normalize_model_slug_with_error(value.as_str(), "claudeSafeguardsClassifierModel").ok()
+        })
+        .unwrap_or_default();
+    let mut cached_safeguards_classifier_model = crate::lock_utils::write_recover(
+        claude_safeguards_classifier_model_cell(),
+        "claude_safeguards_classifier_model",
+    );
+    *cached_safeguards_classifier_model = safeguards_classifier_model;
+    drop(cached_safeguards_classifier_model);
+
+    let compact_summary_model = env_non_empty(ENV_CLAUDE_COMPACT_SUMMARY_MODEL)
+        .and_then(|value| {
+            normalize_model_slug_with_error(value.as_str(), "claudeCompactSummaryModel").ok()
+        })
+        .unwrap_or_default();
+    let mut cached_compact_summary_model = crate::lock_utils::write_recover(
+        claude_compact_summary_model_cell(),
+        "claude_compact_summary_model",
+    );
+    *cached_compact_summary_model = compact_summary_model;
+    drop(cached_compact_summary_model);
 
     let compact_api_path = env_non_empty(ENV_COMPACT_API_PATH)
         .map(|value| normalize_compact_api_path(value.as_str()))
@@ -2291,6 +2394,14 @@ fn compact_model_forward_rules_cell() -> &'static RwLock<Vec<ModelForwardRule>> 
             parse_model_forward_rules(DEFAULT_COMPACT_MODEL_FORWARD_RULES).unwrap_or_default();
         RwLock::new(initial)
     })
+}
+
+fn claude_safeguards_classifier_model_cell() -> &'static RwLock<String> {
+    CLAUDE_SAFEGUARDS_CLASSIFIER_MODEL.get_or_init(|| RwLock::new(String::new()))
+}
+
+fn claude_compact_summary_model_cell() -> &'static RwLock<String> {
+    CLAUDE_COMPACT_SUMMARY_MODEL.get_or_init(|| RwLock::new(String::new()))
 }
 
 fn codex_image_main_model_cell() -> &'static RwLock<String> {

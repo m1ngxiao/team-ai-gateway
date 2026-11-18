@@ -39,6 +39,16 @@ pub(super) fn load_active_api_key(
     request_url: &str,
     debug: bool,
 ) -> Result<ApiKey, super::LocalValidationError> {
+    load_active_api_key_with_options(storage, platform_key, request_url, debug, false)
+}
+
+pub(super) fn load_active_api_key_with_options(
+    storage: &Storage,
+    platform_key: &str,
+    request_url: &str,
+    debug: bool,
+    skip_quota_check: bool,
+) -> Result<ApiKey, super::LocalValidationError> {
     let key_hash = hash_platform_key(platform_key);
     let api_key = storage.find_api_key_by_hash(&key_hash).map_err(|err| {
         super::LocalValidationError::new(
@@ -61,13 +71,22 @@ pub(super) fn load_active_api_key(
         ));
     };
 
-    ensure_active_api_key(storage, api_key, request_url, debug)
+    ensure_active_api_key(storage, api_key, request_url, debug, skip_quota_check)
 }
 
 pub(super) fn load_active_api_key_by_id(
     storage: &Storage,
     key_id: &str,
     request_url: &str,
+) -> Result<ApiKey, super::LocalValidationError> {
+    load_active_api_key_by_id_with_options(storage, key_id, request_url, false)
+}
+
+pub(super) fn load_active_api_key_by_id_with_options(
+    storage: &Storage,
+    key_id: &str,
+    request_url: &str,
+    skip_quota_check: bool,
 ) -> Result<ApiKey, super::LocalValidationError> {
     let api_key = storage.find_api_key_by_id(key_id).map_err(|err| {
         super::LocalValidationError::new(
@@ -81,7 +100,7 @@ pub(super) fn load_active_api_key_by_id(
             crate::gateway::bilingual_error("API Key 不存在", "api key not found"),
         ));
     };
-    ensure_active_api_key(storage, api_key, request_url, false)
+    ensure_active_api_key(storage, api_key, request_url, false, skip_quota_check)
 }
 
 fn ensure_active_api_key(
@@ -89,6 +108,7 @@ fn ensure_active_api_key(
     api_key: ApiKey,
     request_url: &str,
     debug: bool,
+    skip_quota_check: bool,
 ) -> Result<ApiKey, super::LocalValidationError> {
     if api_key.status != "active" {
         if debug {
@@ -101,7 +121,12 @@ fn ensure_active_api_key(
         return Err(super::LocalValidationError::new(
             403,
             crate::gateway::bilingual_error("API Key 已禁用", "api key disabled"),
-        ));
+        )
+        .with_key_id(api_key.id.clone()));
+    }
+
+    if skip_quota_check {
+        return Ok(api_key);
     }
 
     if let Some(limit) = storage
@@ -114,6 +139,7 @@ fn ensure_active_api_key(
                     format!("storage read failed: {err}"),
                 ),
             )
+            .with_key_id(api_key.id.clone())
         })?
     {
         let used = storage
@@ -126,6 +152,7 @@ fn ensure_active_api_key(
                         format!("read api key usage failed: {err}"),
                     ),
                 )
+                .with_key_id(api_key.id.clone())
             })?;
         if limit > 0 && used >= limit {
             if debug {
@@ -143,7 +170,8 @@ fn ensure_active_api_key(
                     "API Key 额度已用尽",
                     format!("api key quota exhausted: used {used}, limit {limit}"),
                 ),
-            ));
+            )
+            .with_key_id(api_key.id.clone()));
         }
     }
 
@@ -158,6 +186,7 @@ fn ensure_active_api_key(
                     format!("read api key weekly usage failed: {err}"),
                 ),
             )
+            .with_key_id(api_key.id.clone())
         })?;
     let limit_cents = codexmanager_core::storage::DEFAULT_KEY_WEEKLY_LIMIT_CENTS;
     if used_cents >= limit_cents {
@@ -178,7 +207,8 @@ fn ensure_active_api_key(
                     "api key weekly quota exhausted: used {used_cents} cents, limit {limit_cents} cents"
                 ),
             ),
-        ));
+        )
+        .with_key_id(api_key.id.clone()));
     }
 
     Ok(api_key)

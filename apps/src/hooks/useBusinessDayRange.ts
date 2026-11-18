@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getLocalDayRange, type LocalDayRange } from "@/lib/utils/time";
+import { getBusinessDayRange, type BusinessDayRange } from "@/lib/utils/time";
 
 /**
- * 函数 `useLocalDayRange`
+ * 函数 `useBusinessDayRange`
  *
  * 作者: gaohongshun
  *
@@ -14,15 +14,15 @@ import { getLocalDayRange, type LocalDayRange } from "@/lib/utils/time";
  * 无
  *
  * # 返回
- * 返回当前浏览器本地时区对应的当天时间范围
+ * 返回团队统一业务时区 Asia/Shanghai 对应的当天时间范围
  */
-export function useLocalDayRange(): LocalDayRange {
-  const [dayRange, setDayRange] = useState<LocalDayRange>(() => getLocalDayRange());
+export function useBusinessDayRange(): BusinessDayRange {
+  const [dayRange, setDayRange] = useState<BusinessDayRange>(() => getBusinessDayRange());
 
   useEffect(() => {
     const refresh = () => {
       setDayRange((current) => {
-        const next = getLocalDayRange();
+        const next = getBusinessDayRange();
         if (
           current.dayStartTs === next.dayStartTs &&
           current.dayEndTs === next.dayEndTs &&

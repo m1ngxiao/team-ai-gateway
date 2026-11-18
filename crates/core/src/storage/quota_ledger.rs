@@ -11,6 +11,13 @@ pub const DEFAULT_KEY_WEEKLY_LIMIT_CENTS: i64 = 24_000;
 pub const DEFAULT_ACCOUNT_WEEKLY_LIMIT_CENTS: i64 = 120_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRollingUsageSummary {
+    pub used_cents: i64,
+    pub next_release_at: Option<i64>,
+    pub next_release_cents: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyQuotaState {
     pub key_id: String,
     pub epoch_at: i64,
@@ -171,10 +178,15 @@ impl Storage {
         )
     }
 
-    /// Rolling seven-day usage, bounded below by the key's current epoch.
-    pub fn key_usage_cents_rolling_7d(&self, key_id: &str, now: i64) -> Result<i64> {
-        let state = self.ensure_key_quota_state(key_id)?;
-        let since = (now - SECONDS_PER_WEEK).max(state.epoch_at);
+    fn key_rolling_window_since(&self, key_id: &str, now: i64) -> Result<i64> {
+        let epoch_at = self
+            .get_key_quota_state(key_id)?
+            .map(|state| state.epoch_at)
+            .unwrap_or(0);
+        Ok((now - SECONDS_PER_WEEK).max(epoch_at))
+    }
+
+    fn key_usage_cents_rolling_since(&self, key_id: &str, since: i64) -> Result<i64> {
         // Billing is finalized after the token-stat row is inserted, so the
         // incremental hourly ledger can be empty for successful requests. Derive
         // the rolling total from the durable cost stats first; fall back to the
@@ -192,10 +204,46 @@ impl Storage {
         self.key_usage_cents_since(key_id, since)
     }
 
+    fn oldest_stat_release_at_least(
+        &self,
+        key_id: &str,
+        since: i64,
+        inclusive_min_usd: f64,
+    ) -> Result<Option<(i64, i64)>> {
+        let row: Option<(i64, f64)> = self
+            .conn
+            .query_row(
+                "SELECT created_at, estimated_cost_usd
+                 FROM request_token_stats
+                 WHERE key_id = ?1
+                   AND created_at >= ?2
+                   AND usage_included = 1
+                   AND estimated_cost_usd IS NOT NULL
+                   AND estimated_cost_usd > 0
+                   AND estimated_cost_usd >= ?3
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT 1",
+                params![key_id, since, inclusive_min_usd],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(created_at, cost_usd)| {
+            (
+                created_at + SECONDS_PER_WEEK,
+                ((cost_usd * 100.0).round() as i64).max(1),
+            )
+        }))
+    }
+
+    /// Rolling seven-day usage, bounded below by the key's current epoch.
+    pub fn key_usage_cents_rolling_7d(&self, key_id: &str, now: i64) -> Result<i64> {
+        let since = self.key_rolling_window_since(key_id, now)?;
+        self.key_usage_cents_rolling_since(key_id, since)
+    }
+
     /// Timestamp when the oldest still-billable charge leaves the rolling window.
     pub fn key_next_release_at(&self, key_id: &str, now: i64) -> Result<Option<i64>> {
-        let state = self.ensure_key_quota_state(key_id)?;
-        let since = (now - SECONDS_PER_WEEK).max(state.epoch_at);
+        let since = self.key_rolling_window_since(key_id, now)?;
         let oldest_stat: Option<i64> = self.conn.query_row(
             "SELECT MIN(created_at)
              FROM request_token_stats
@@ -215,6 +263,40 @@ impl Storage {
             |row| row.get(0),
         )?;
         Ok(oldest_hour.map(|hour| hour + SECONDS_PER_WEEK))
+    }
+
+    /// Read-only rolling 7d usage summary including the next release timestamp and amount.
+    pub fn key_rolling_7d_usage_summary(
+        &self,
+        key_id: &str,
+        now: i64,
+    ) -> Result<KeyRollingUsageSummary> {
+        let since = self.key_rolling_window_since(key_id, now)?;
+        let used_cents = self.key_usage_cents_rolling_since(key_id, since)?.max(0);
+        let release = if let Some(hit) = self.oldest_stat_release_at_least(key_id, since, 0.005)? {
+            Some(hit)
+        } else if let Some(hit) = self.oldest_stat_release_at_least(key_id, since, 0.0)? {
+            Some(hit)
+        } else {
+            let hourly: Option<(i64, i64)> = self
+                .conn
+                .query_row(
+                    "SELECT hour_start, cost_cents
+                     FROM key_usage_hourly
+                     WHERE key_id = ?1 AND hour_start >= ?2 AND cost_cents > 0
+                     ORDER BY hour_start ASC
+                     LIMIT 1",
+                    params![key_id, since],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            hourly.map(|(hour, cents)| (hour + SECONDS_PER_WEEK, cents.max(1)))
+        };
+        Ok(KeyRollingUsageSummary {
+            used_cents,
+            next_release_at: release.map(|(at, _)| at),
+            next_release_cents: release.map(|(_, cents)| cents),
+        })
     }
 
     /// Rolling seven-day account usage derived from durable request cost stats.
@@ -610,6 +692,104 @@ mod tests {
     }
 
     #[test]
+    fn rolling_usage_summary_tracks_release_amount_and_skips_negligible_dust() {
+        let storage = open_storage();
+        let now = 1_700_000_000_i64;
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id: 950,
+                key_id: Some("key-summary".to_string()),
+                account_id: None,
+                model: Some("gpt-6-luna".to_string()),
+                actual_source_kind: None,
+                actual_source_id: None,
+                input_tokens: Some(10),
+                cached_input_tokens: Some(0),
+                output_tokens: Some(1),
+                total_tokens: Some(11),
+                reasoning_output_tokens: Some(0),
+                estimated_cost_usd: Some(0.001),
+                created_at: now - 2_000,
+            })
+            .expect("dust stat");
+        storage
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id: 951,
+                key_id: Some("key-summary".to_string()),
+                account_id: None,
+                model: Some("gpt-6-luna".to_string()),
+                actual_source_kind: None,
+                actual_source_id: None,
+                input_tokens: Some(100),
+                cached_input_tokens: Some(0),
+                output_tokens: Some(50),
+                total_tokens: Some(150),
+                reasoning_output_tokens: Some(0),
+                estimated_cost_usd: Some(1.25),
+                created_at: now - 1_000,
+            })
+            .expect("main stat");
+        let summary = storage
+            .key_rolling_7d_usage_summary("key-summary", now)
+            .expect("summary");
+        assert_eq!(summary.used_cents, 125);
+        assert_eq!(summary.next_release_at, Some(now - 1_000 + SECONDS_PER_WEEK));
+        assert_eq!(summary.next_release_cents, Some(125));
+    }
+
+    #[test]
+    fn rolling_usage_summary_falls_back_to_subcent_hourly_and_respects_epoch() {
+        let storage = open_storage();
+        let now = 1_700_000_000_i64;
+        for (idx, offset) in [1_200_i64, 600_i64].into_iter().enumerate() {
+            storage
+                .insert_request_token_stat(&RequestTokenStat {
+                    request_log_id: 960 + idx as i64,
+                    key_id: Some("key-sub".to_string()),
+                    account_id: None,
+                    model: Some("gpt-6-luna".to_string()),
+                    actual_source_kind: None,
+                    actual_source_id: None,
+                    input_tokens: Some(20),
+                    cached_input_tokens: Some(0),
+                    output_tokens: Some(5),
+                    total_tokens: Some(25),
+                    reasoning_output_tokens: Some(0),
+                    estimated_cost_usd: Some(0.004),
+                    created_at: now - offset,
+                })
+                .expect("subcent stat");
+        }
+        let sub = storage
+            .key_rolling_7d_usage_summary("key-sub", now)
+            .expect("sub summary");
+        assert_eq!(sub.used_cents, 1);
+        assert_eq!(sub.next_release_at, Some(now - 1_200 + SECONDS_PER_WEEK));
+        assert_eq!(sub.next_release_cents, Some(1));
+
+        storage
+            .add_key_usage_hourly("key-hourly", now - 3_600, 420, 2)
+            .expect("hourly");
+        let aligned = (now - 3_600) - (now - 3_600).rem_euclid(SECONDS_PER_HOUR);
+        let hourly = storage
+            .key_rolling_7d_usage_summary("key-hourly", now)
+            .expect("hourly summary");
+        assert_eq!(hourly.used_cents, 420);
+        assert_eq!(hourly.next_release_at, Some(aligned + SECONDS_PER_WEEK));
+        assert_eq!(hourly.next_release_cents, Some(420));
+
+        storage
+            .set_key_quota_epoch("key-hourly", now + 1)
+            .expect("epoch");
+        let after_epoch = storage
+            .key_rolling_7d_usage_summary("key-hourly", now + 10)
+            .expect("epoch summary");
+        assert_eq!(after_epoch.used_cents, 0);
+        assert_eq!(after_epoch.next_release_at, None);
+        assert_eq!(after_epoch.next_release_cents, None);
+    }
+
+    #[test]
     fn next_release_tracks_oldest_billable_request() {
         let storage = open_storage();
         let now = 1_700_000_000_i64;
@@ -638,6 +818,222 @@ mod tests {
                 .expect("release"),
             Some(now - 1_000 + SECONDS_PER_WEEK)
         );
+    }
+
+    struct TempSqliteCleanup(std::path::PathBuf);
+
+    impl Drop for TempSqliteCleanup {
+        fn drop(&mut self) {
+            let base = self.0.to_string_lossy();
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{base}{suffix}"));
+            }
+        }
+    }
+
+    fn unique_quota_db_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}.db", std::process::id()))
+    }
+
+    fn sample_quota_api_key(id: &str, now: i64) -> ApiKey {
+        ApiKey {
+            id: id.to_string(),
+            name: Some(id.to_string()),
+            model_slug: None,
+            reasoning_effort: None,
+            service_tier: None,
+            rotation_strategy: "account_rotation".to_string(),
+            upstream_provider: UpstreamProvider::Openai,
+            aggregate_api_id: None,
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "codex".to_string(),
+            protocol_type: "openai_compat".to_string(),
+            auth_scheme: "authorization_bearer".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: format!("hash-{id}"),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        }
+    }
+
+    #[test]
+    fn key_usage_rolling_7d_and_next_release_succeed_while_writer_holds_lock() {
+        let db_path = unique_quota_db_path("codexmanager-quota-writer-lock");
+        let _cleanup = TempSqliteCleanup(db_path.clone());
+        let now = 1_700_000_000_i64;
+
+        let writer = Storage::open(&db_path).expect("open writer");
+        writer.init().expect("init writer");
+        writer
+            .insert_api_key(&sample_quota_api_key("key-lock", now))
+            .expect("insert api key");
+        writer
+            .insert_api_key(&sample_quota_api_key("key-lock-holder", now))
+            .expect("insert holder api key");
+        writer
+            .insert_request_token_stat(&RequestTokenStat {
+                request_log_id: 101,
+                key_id: Some("key-lock".to_string()),
+                account_id: None,
+                model: Some("gpt-6-astra".to_string()),
+                actual_source_kind: None,
+                actual_source_id: None,
+                input_tokens: Some(100),
+                cached_input_tokens: Some(0),
+                output_tokens: Some(50),
+                total_tokens: Some(150),
+                reasoning_output_tokens: Some(0),
+                estimated_cost_usd: Some(2.50),
+                created_at: now - 3600,
+            })
+            .expect("insert token stat");
+
+        let reader = Storage::open(&db_path).expect("open reader");
+        reader
+            .conn
+            .busy_timeout(std::time::Duration::from_millis(50))
+            .expect("set short reader busy timeout");
+
+        let tx = writer
+            .conn
+            .unchecked_transaction()
+            .expect("begin immediate writer transaction");
+        let updated = tx
+            .execute(
+                "UPDATE api_keys SET name = 'holding' WHERE id = 'key-lock-holder'",
+                [],
+            )
+            .expect("hold sqlite writer lock");
+        assert_eq!(updated, 1);
+
+        let usage = reader
+            .key_usage_cents_rolling_7d("key-lock", now)
+            .expect("read rolling usage while writer holds lock");
+        let release_at = reader
+            .key_next_release_at("key-lock", now)
+            .expect("read next release while writer holds lock");
+        assert_eq!(usage, 250);
+        assert_eq!(release_at, Some(now - 3600 + SECONDS_PER_WEEK));
+
+        let quota_state_rows: i64 = reader
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM key_quota_state WHERE key_id = ?1",
+                params!["key-lock"],
+                |row| row.get(0),
+            )
+            .expect("count key_quota_state rows");
+        assert_eq!(quota_state_rows, 0);
+
+        tx.commit().expect("commit writer transaction");
+    }
+
+    #[test]
+    fn concurrent_readers_and_writers_stress_without_database_locked() {
+        let db_path = unique_quota_db_path("codexmanager-quota-stress");
+        let _cleanup = TempSqliteCleanup(db_path.clone());
+        let now = 1_700_000_000_i64;
+
+        let init = Storage::open(&db_path).expect("open init storage");
+        init.init().expect("init storage");
+        init.insert_api_key(&sample_quota_api_key("key-stress", now))
+            .expect("insert api key");
+        init.insert_request_token_stat(&RequestTokenStat {
+            request_log_id: 1,
+            key_id: Some("key-stress".to_string()),
+            account_id: None,
+            model: Some("gpt-6-astra".to_string()),
+            actual_source_kind: None,
+            actual_source_id: None,
+            input_tokens: Some(100),
+            cached_input_tokens: Some(0),
+            output_tokens: Some(50),
+            total_tokens: Some(150),
+            reasoning_output_tokens: Some(0),
+            estimated_cost_usd: Some(1.00),
+            created_at: now - 3600,
+        })
+        .expect("insert seed stat");
+        drop(init);
+
+        let reader_threads = 8usize;
+        let writer_threads = 4usize;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(reader_threads + writer_threads));
+        let mut handles = Vec::new();
+
+        for writer_idx in 0..writer_threads {
+            let db_path = db_path.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let storage = Storage::open(&db_path).expect("open stress writer");
+                barrier.wait();
+                for step in 0..20usize {
+                    let stat_id = 100 + (writer_idx * 100 + step) as i64;
+                    storage
+                        .insert_request_token_stat(&RequestTokenStat {
+                            request_log_id: stat_id,
+                            key_id: Some("key-stress".to_string()),
+                            account_id: None,
+                            model: Some("gpt-6-astra".to_string()),
+                            actual_source_kind: None,
+                            actual_source_id: None,
+                            input_tokens: Some(20),
+                            cached_input_tokens: Some(0),
+                            output_tokens: Some(10),
+                            total_tokens: Some(30),
+                            reasoning_output_tokens: Some(0),
+                            estimated_cost_usd: Some(0.10),
+                            created_at: now - 1000 + step as i64,
+                        })
+                        .expect("writer insert_request_token_stat must not hit database locked");
+                }
+            }));
+        }
+
+        for _ in 0..reader_threads {
+            let db_path = db_path.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let storage = Storage::open(&db_path).expect("open stress reader");
+                barrier.wait();
+                for _ in 0..30usize {
+                    let cents = storage
+                        .key_usage_cents_rolling_7d("key-stress", now)
+                        .expect("reader key_usage_cents_rolling_7d must not hit database locked");
+                    assert!(cents >= 100);
+                    let release = storage
+                        .key_next_release_at("key-stress", now)
+                        .expect("reader key_next_release_at must not hit database locked");
+                    assert_eq!(release, Some(now - 3600 + SECONDS_PER_WEEK));
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("stress worker thread panicked");
+        }
+
+        let check = Storage::open(&db_path).expect("open verify storage");
+        let final_cents = check
+            .key_usage_cents_rolling_7d("key-stress", now)
+            .expect("final usage check");
+        assert_eq!(final_cents, 900);
+        let quota_state_rows: i64 = check
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM key_quota_state WHERE key_id = ?1",
+                params!["key-stress"],
+                |row| row.get(0),
+            )
+            .expect("count key_quota_state rows after stress");
+        assert_eq!(quota_state_rows, 0);
     }
 
 }

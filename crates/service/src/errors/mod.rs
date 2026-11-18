@@ -20,6 +20,8 @@ pub(crate) enum ErrorCode {
     UpstreamRateLimited,
     UpstreamNotFound,
     UpstreamNonSuccess,
+    AccountTemporaryUnavailable,
+    ConversationRebindRequired,
     NoAvailableAccount,
     CandidateResolveFailed,
     ResponseWriteFailed,
@@ -43,6 +45,8 @@ impl ErrorCode {
             Self::UpstreamRateLimited => "upstream_rate_limited",
             Self::UpstreamNotFound => "upstream_not_found",
             Self::UpstreamNonSuccess => "upstream_non_success",
+            Self::AccountTemporaryUnavailable => "account_temporarily_unavailable",
+            Self::ConversationRebindRequired => "conversation_rebind_required",
             Self::NoAvailableAccount => "no_available_account",
             Self::CandidateResolveFailed => "candidate_resolve_failed",
             Self::ResponseWriteFailed => "response_write_failed",
@@ -135,6 +139,12 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     }
     if eq("upstream non-success") {
         return ErrorCode::UpstreamNonSuccess;
+    }
+    if eq("account temporarily unavailable") {
+        return ErrorCode::AccountTemporaryUnavailable;
+    }
+    if starts_with("conversation_rebind_required") {
+        return ErrorCode::ConversationRebindRequired;
     }
     if eq("no available account") {
         return ErrorCode::NoAvailableAccount;

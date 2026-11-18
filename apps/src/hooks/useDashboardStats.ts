@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
-import { useLocalDayRange } from "@/hooks/useLocalDayRange";
+import { useBusinessDayRange } from "@/hooks/useBusinessDayRange";
 import {
   buildStartupSnapshotQueryKey,
   hasStartupSnapshotSignal,
@@ -44,7 +44,7 @@ interface UseDashboardStatsOptions {
  */
 export function useDashboardStats(options: UseDashboardStatsOptions = {}) {
   const serviceStatus = useAppStore((state) => state.serviceStatus);
-  const localDayRange = useLocalDayRange();
+  const businessDayRange = useBusinessDayRange();
   const isServiceReady = serviceStatus.connected;
   const defaultPageActive = useDesktopPageActive("/");
   const isPageActive = options.forceActive ?? defaultPageActive;
@@ -74,8 +74,8 @@ export function useDashboardStats(options: UseDashboardStatsOptions = {}) {
     queryKey: buildStartupSnapshotQueryKey(
       serviceStatus.addr,
       requestLogLimit,
-      localDayRange.dayStartTs,
-      localDayRange.dayEndTs,
+      businessDayRange.dayStartTs,
+      businessDayRange.dayEndTs,
       includeApiModels,
       includeApiKeys,
       includeAccounts,
@@ -86,8 +86,8 @@ export function useDashboardStats(options: UseDashboardStatsOptions = {}) {
     queryFn: () =>
       serviceClient.getStartupSnapshot({
         requestLogLimit,
-        dayStartTs: localDayRange.dayStartTs,
-        dayEndTs: localDayRange.dayEndTs,
+        dayStartTs: businessDayRange.dayStartTs,
+        dayEndTs: businessDayRange.dayEndTs,
         includeApiModels,
         includeApiKeys,
         includeAccounts,

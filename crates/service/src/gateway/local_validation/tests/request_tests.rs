@@ -1215,6 +1215,117 @@ fn openai_chat_completions_api_body_is_adapted_to_responses_for_codex_backend() 
 }
 
 #[test]
+fn openai_chat_completions_maps_controls_messages_and_tool_outputs() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "stream": false,
+        "temperature": 0.2,
+        "top_p": 0.8,
+        "max_tokens": 128,
+        "max_completion_tokens": 256,
+        "reasoning_effort": "high",
+        "messages": [
+            { "role": "system", "content": "System rules." },
+            {
+                "role": "developer",
+                "content": [{ "type": "text", "text": "Developer rules." }]
+            },
+            { "role": "user", "content": "Read the file." },
+            {
+                "role": "assistant",
+                "content": "I will read it.",
+                "tool_calls": [{
+                    "id": "call_read_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }
+                }]
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_read_1",
+                "content": { "ok": true, "path": "README.md" }
+            }
+        ],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a repository file",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } },
+                    "required": ["path"]
+                }
+            }
+        }],
+        "tool_choice": {
+            "type": "function",
+            "function": { "name": "read_file" }
+        }
+    });
+    let adapted = adapt_openai_chat_completions_body_to_responses(
+        serde_json::to_vec(&body).expect("serialize chat body"),
+    )
+    .expect("adapt chat body");
+    let payload: Value = serde_json::from_slice(&adapted).expect("json body");
+
+    assert_eq!(payload["model"], "gpt-5.5");
+    assert_eq!(payload["stream"], false);
+    assert_eq!(payload["temperature"], 0.2);
+    assert_eq!(payload["top_p"], 0.8);
+    assert_eq!(payload["max_output_tokens"], 256);
+    assert_eq!(payload["instructions"], "System rules.\n\nDeveloper rules.");
+    assert_eq!(payload["reasoning"]["effort"], "high");
+    assert_eq!(payload["tools"][0]["type"], "function");
+    assert_eq!(payload["tools"][0]["name"], "read_file");
+    assert!(payload["tools"][0].get("function").is_none());
+    assert_eq!(payload["tool_choice"]["type"], "function");
+    assert_eq!(payload["tool_choice"]["name"], "read_file");
+    assert!(payload["tool_choice"].get("function").is_none());
+
+    let input = payload["input"].as_array().expect("responses input");
+    assert_eq!(input.len(), 4);
+    assert_eq!(input[0]["type"], "message");
+    assert_eq!(input[0]["role"], "user");
+    assert_eq!(input[0]["content"][0]["type"], "input_text");
+    assert_eq!(input[0]["content"][0]["text"], "Read the file.");
+    assert_eq!(input[1]["type"], "message");
+    assert_eq!(input[1]["role"], "assistant");
+    assert_eq!(input[1]["content"][0]["text"], "I will read it.");
+    assert_eq!(input[2]["type"], "function_call");
+    assert_eq!(input[2]["call_id"], "call_read_1");
+    assert_eq!(input[2]["name"], "read_file");
+    assert_eq!(input[2]["arguments"], "{\"path\":\"README.md\"}");
+    assert_eq!(input[3]["type"], "function_call_output");
+    assert_eq!(input[3]["call_id"], "call_read_1");
+    let tool_output = input[3]["output"].as_str().expect("string tool output");
+    let tool_output: Value = serde_json::from_str(tool_output).expect("serialized tool output");
+    assert_eq!(tool_output["ok"], true);
+    assert_eq!(tool_output["path"], "README.md");
+}
+
+#[test]
+fn openai_chat_completions_maps_legacy_max_tokens() {
+    let body = serde_json::json!({
+        "model": "gpt-5.5",
+        "max_tokens": 321,
+        "messages": [{ "role": "user", "content": "hello" }]
+    });
+    let adapted = adapt_openai_chat_completions_body_to_responses(
+        serde_json::to_vec(&body).expect("serialize chat body"),
+    )
+    .expect("adapt chat body");
+    let payload: Value = serde_json::from_slice(&adapted).expect("json body");
+
+    assert_eq!(payload["max_output_tokens"], 321);
+    assert!(payload.get("max_tokens").is_none());
+    assert!(payload.get("max_completion_tokens").is_none());
+}
+
+#[test]
 fn openai_chat_completions_prompt_cache_key_is_reinjected_after_responses_adaptation() {
     let body = serde_json::json!({
         "model": "gpt-5.5",
@@ -1770,4 +1881,41 @@ fn anthropic_model_must_exist_in_v2_catalog() {
     )
     .expect_err("missing model should fail");
     assert!(err.message.contains("claude model not found in model list"));
+}
+
+
+#[test]
+fn anthropic_model_catalog_accepts_gpt_reserve_alias_when_luna_is_listed() {
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    if storage
+        .get_managed_model_v2(codexmanager_core::usage::LUNA_MODEL_SLUG)
+        .expect("check luna model")
+        .is_none()
+    {
+        let mut model = storage
+            .get_managed_model_v2("gpt-5.4-mini")
+            .expect("read template model")
+            .expect("template model");
+        model.id.clear();
+        model.slug = codexmanager_core::usage::LUNA_MODEL_SLUG.to_string();
+        model.display_name = codexmanager_core::usage::LUNA_MODEL_SLUG.to_string();
+        model.origin = "custom".to_string();
+        model.builtin_revision = None;
+        model.user_edited = false;
+        model.routes.clear();
+        storage
+            .upsert_managed_model_v2(&ManagedModelV2Upsert {
+                previous_slug: None,
+                model,
+            })
+            .expect("save luna model");
+    }
+
+    assert!(ensure_anthropic_model_is_listed(
+        &storage,
+        crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE,
+        Some(codexmanager_core::usage::LUNA_RESERVE_MODEL_SLUG)
+    )
+    .is_ok());
 }

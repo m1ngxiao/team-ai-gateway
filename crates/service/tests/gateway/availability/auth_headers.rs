@@ -73,8 +73,10 @@ fn drop_incoming_header_keeps_session_affinity_for_primary_attempt() {
     assert!(should_drop_incoming_header("authorization"));
     assert!(should_drop_incoming_header("x-api-key"));
     assert!(should_drop_incoming_header("x-goog-api-key"));
-    assert!(should_drop_incoming_header("anthropic-version"));
-    assert!(should_drop_incoming_header("x-stainless-lang"));
+    // Protocol and SDK metadata are preserved for compatibility routes; only
+    // credentials, host routing and stale account bindings are stripped here.
+    assert!(!should_drop_incoming_header("anthropic-version"));
+    assert!(!should_drop_incoming_header("x-stainless-lang"));
     assert!(!should_drop_incoming_header("session_id"));
     assert!(!should_drop_incoming_header("x-codex-other-limit-name"));
     assert!(!should_drop_incoming_header("x-codex-turn-state"));

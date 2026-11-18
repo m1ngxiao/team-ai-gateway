@@ -33,7 +33,9 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
                 super::value_or_error::<()>(Err(super::permission_denied(&req.method)))
             } else {
                 let account_id = super::str_param(req, "accountId").unwrap_or("");
-                super::value_or_error(claude_subscription_auth::refresh_usage_for_account(account_id))
+                super::value_or_error(claude_subscription_auth::refresh_usage_for_account(
+                    account_id,
+                ))
             }
         }
         "claudeAccount/updateStatus" => {
@@ -42,7 +44,9 @@ pub(super) fn try_handle(req: &JsonRpcRequest, actor: &RpcActor) -> Option<JsonR
             } else {
                 let account_id = super::str_param(req, "accountId").unwrap_or("");
                 let status = super::str_param(req, "status").unwrap_or("");
-                super::ok_or_error(claude_subscription_auth::set_account_status(account_id, status))
+                super::ok_or_error(claude_subscription_auth::set_account_status(
+                    account_id, status,
+                ))
             }
         }
         "claudeAccount/delete" => {

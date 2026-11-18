@@ -109,3 +109,59 @@ fn codex_http_rules_promote_and_fill_standard_responses_defaults() {
         Some("install-1")
     );
 }
+
+#[test]
+fn codex_http_rules_normalize_none_and_minimal_reasoning_effort_to_low() {
+    for path in ["/v1/responses", "/v1/responses/compact"] {
+        for raw_effort in ["none", "minimal", " None "] {
+            let mut obj = serde_json::json!({
+                "model": "gpt-6.1-sol",
+                "instructions": "follow rules",
+                "input": [],
+                "reasoning": {"effort": raw_effort, "summary": "auto"}
+            })
+            .as_object()
+            .cloned()
+            .expect("object");
+
+            let result = apply_codex_http_request_rules(path, &mut obj, true, None, false, None);
+
+            assert!(result.changed);
+            assert_eq!(
+                obj.get("reasoning")
+                    .and_then(Value::as_object)
+                    .and_then(|reasoning| reasoning.get("effort"))
+                    .and_then(Value::as_str),
+                Some("low")
+            );
+            assert_eq!(
+                obj.get("reasoning")
+                    .and_then(Value::as_object)
+                    .and_then(|reasoning| reasoning.get("summary"))
+                    .and_then(Value::as_str),
+                Some("auto")
+            );
+        }
+    }
+
+    for supported in ["low", "medium", "high", "xhigh"] {
+        let mut obj = serde_json::json!({
+            "model": "gpt-6.1-sol",
+            "instructions": "follow rules",
+            "input": [],
+            "reasoning": {"effort": supported, "summary": "auto"}
+        })
+        .as_object()
+        .cloned()
+        .expect("object");
+
+        let _ = apply_codex_http_request_rules("/v1/responses", &mut obj, true, None, false, None);
+        assert_eq!(
+            obj.get("reasoning")
+                .and_then(Value::as_object)
+                .and_then(|reasoning| reasoning.get("effort"))
+                .and_then(Value::as_str),
+            Some(supported)
+        );
+    }
+}

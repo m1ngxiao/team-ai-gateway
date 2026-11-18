@@ -1,4 +1,5 @@
 mod request_router;
+mod schema_sanitizer;
 mod types;
 
 pub(super) use self::request_router::{

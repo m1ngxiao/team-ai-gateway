@@ -1,14 +1,15 @@
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Request, Response, StatusCode};
 
+use crate::gateway::anthropic_context_management::AnthropicContextEnrichment;
+use crate::gateway::anthropic_safeguards::{tool_uses_from_anthropic_message, SafeguardEvaluator};
 use crate::gateway::upstream::GatewayStreamResponse;
 
 use super::super::{GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap};
 use super::body_conversion::{
     chat_completion_body_to_single_sse, chat_response_failure, chat_responses_sse_failure,
-    chat_responses_sse_length_body,
-    compatibility_stream_content_type,
+    chat_responses_sse_length_body, compatibility_stream_content_type,
     convert_chat_completions_body_to_compact, convert_error_body_for_adapter,
     convert_responses_body_to_chat_completions, convert_success_body_for_adapter,
     gemini_cli_wrap_response_envelope, images_response_body_to_sse,
@@ -27,7 +28,7 @@ use super::manual_chunked::respond_streaming_chunked;
 #[cfg(test)]
 use super::manual_chunked::write_streaming_chunked_response;
 use super::metadata::{
-    copy_upstream_response_headers, log_bridge_stream_diagnostics,
+    copy_upstream_response_headers_with_extras, log_bridge_stream_diagnostics,
     terminal_bridge_result_with_debug_meta, upstream_response_metadata, with_bridge_debug_meta,
 };
 use super::response_helpers::{
@@ -40,8 +41,8 @@ use super::{
     ChatCompletionsFromResponsesSseReader, GeminiSseReader, ImagesFromResponsesSseReader,
     ImagesResponseFormat, OpenAIResponsesPassthroughSseReader, PassthroughSseCollector,
     PassthroughSseProtocol, PassthroughSseUsageReader, ResponsesFromAnthropicSseReader,
-    ResponsesFromAnthropicTerminal,
-    SseKeepAliveFrame, UpstreamResponseBridgeResult, UpstreamResponseUsage,
+    ResponsesFromAnthropicTerminal, SseKeepAliveFrame, UpstreamResponseBridgeResult,
+    UpstreamResponseUsage,
 };
 
 /// 函数 `is_compact_request_path`
@@ -57,6 +58,100 @@ use super::{
 /// 返回函数执行结果
 fn is_compact_request_path(path: &str) -> bool {
     path == "/v1/responses/compact" || path.starts_with("/v1/responses/compact?")
+}
+
+fn apply_safeguard_results_to_response(
+    response_adapter: ResponseAdapter,
+    body: Vec<u8>,
+    evaluator: Option<&Arc<dyn SafeguardEvaluator>>,
+) -> Vec<u8> {
+    if response_adapter != ResponseAdapter::AnthropicMessagesFromResponses {
+        return body;
+    }
+    let Some(evaluator) = evaluator else {
+        return body;
+    };
+    let Ok(mut value) = serde_json::from_slice::<Value>(body.as_slice()) else {
+        return body;
+    };
+    if value.get("safeguard_results").is_some() {
+        return body;
+    }
+    let tool_uses = tool_uses_from_anthropic_message(&value);
+    let results = evaluator.evaluate(tool_uses.as_slice());
+    let Some(object) = value.as_object_mut() else {
+        return body;
+    };
+    object.insert("safeguard_results".to_string(), results);
+    serde_json::to_vec(&value).unwrap_or(body)
+}
+
+fn apply_anthropic_context_to_response(
+    response_adapter: ResponseAdapter,
+    body: Vec<u8>,
+    enrichment: Option<&Arc<AnthropicContextEnrichment>>,
+) -> Vec<u8> {
+    if response_adapter != ResponseAdapter::AnthropicMessagesFromResponses {
+        return body;
+    }
+    let Some(enrichment) = enrichment else {
+        return body;
+    };
+    let Ok(mut value) = serde_json::from_slice::<Value>(body.as_slice()) else {
+        return body;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return body;
+    };
+    let had_content = object
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|content| !content.is_empty());
+    if let Some(compaction) = enrichment.compaction_value() {
+        let content = object
+            .entry("content")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        match content {
+            Value::Array(blocks) => blocks.insert(0, compaction),
+            _ => *content = Value::Array(vec![compaction]),
+        }
+        if !had_content {
+            object.insert(
+                "stop_reason".to_string(),
+                Value::String("compaction".to_string()),
+            );
+        }
+    }
+    if let Some(context_management) = enrichment.context_management_value() {
+        object.insert("context_management".to_string(), context_management);
+    }
+    if let Some(compaction_usage) = enrichment.compaction_usage_value() {
+        let usage = object
+            .entry("usage")
+            .or_insert_with(|| Value::Object(Default::default()));
+        if let Some(usage) = usage.as_object_mut() {
+            let input_tokens = usage
+                .get("input_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let output_tokens = usage
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            usage.insert(
+                "iterations".to_string(),
+                json!([
+                    compaction_usage,
+                    {
+                        "type": "message",
+                        "input_tokens": input_tokens.max(0),
+                        "output_tokens": output_tokens.max(0)
+                    }
+                ]),
+            );
+        }
+    }
+    serde_json::to_vec(&value).unwrap_or(body)
 }
 
 #[cfg(test)]
@@ -134,9 +229,16 @@ fn respond_responses_from_anthropic_stream(
     meta: UpstreamDebugMetaRefs<'_>,
 ) -> UpstreamResponseBridgeResult {
     let delivery_error = respond_streaming_chunked(request, status, headers, response_body)
-        .err().map(|err| err.to_string());
-    let usage = usage_collector.lock().map(|guard| guard.clone()).unwrap_or_default();
-    let terminal = terminal_collector.lock().map(|guard| guard.clone()).unwrap_or_default();
+        .err()
+        .map(|err| err.to_string());
+    let usage = usage_collector
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
+    let terminal = terminal_collector
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
     let mut result = terminal_bridge_result_with_debug_meta(
         usage,
         delivery_error,
@@ -201,13 +303,23 @@ fn respond_failed_chat_completion(
     usage: UpstreamResponseUsage,
     meta: UpstreamDebugMetaRefs<'_>,
 ) -> UpstreamResponseBridgeResult {
-    let status = if status.0 >= 400 { status } else { StatusCode(502) };
+    let status = if status.0 >= 400 {
+        status
+    } else {
+        StatusCode(502)
+    };
     let body = serde_json::to_vec(&serde_json::json!({"error": error}))
         .expect("serialize structured chat error");
     let delivery_error = respond_json_bytes(request, status, headers, body);
     let mut result = terminal_bridge_result_with_debug_meta(
-        usage, delivery_error, Some(message.clone()),
-        meta.request_id, meta.cf_ray, meta.auth_error, meta.identity_error_code, meta.content_type,
+        usage,
+        delivery_error,
+        Some(message.clone()),
+        meta.request_id,
+        meta.cf_ray,
+        meta.auth_error,
+        meta.identity_error_code,
+        meta.content_type,
     );
     result.stream_terminal_error = Some(message);
     result.delivered_status_code = Some(status.0);
@@ -239,6 +351,9 @@ pub(crate) fn respond_with_upstream(
     trace_id: Option<&str>,
     fallback_model: Option<&str>,
     request_started_at: std::time::Instant,
+    safeguards_evaluator: Option<Arc<dyn SafeguardEvaluator>>,
+    context_enrichment: Option<Arc<AnthropicContextEnrichment>>,
+    extra_response_headers: &[Header],
 ) -> Result<UpstreamResponseBridgeResult, String> {
     let keepalive_frame = SseKeepAliveFrame::Comment;
     let passthrough_sse_protocol =
@@ -253,7 +368,7 @@ pub(crate) fn respond_with_upstream(
     let is_json = upstream_meta.is_json;
     if response_adapter != ResponseAdapter::Passthrough {
         let status = StatusCode(upstream.status().as_u16());
-        let mut headers = copy_upstream_response_headers(upstream.headers(), trace_id);
+        let mut headers = copy_upstream_response_headers_with_extras(upstream.headers(), trace_id, extra_response_headers);
 
         if !is_stream {
             let upstream_body = upstream
@@ -278,12 +393,18 @@ pub(crate) fn respond_with_upstream(
                 let failure = if detected_sse {
                     chat_responses_sse_failure(upstream_body.as_ref())
                 } else {
-                    serde_json::from_slice::<Value>(upstream_body.as_ref()).ok()
+                    serde_json::from_slice::<Value>(upstream_body.as_ref())
+                        .ok()
                         .and_then(|value| chat_response_failure(&value, None))
                 };
                 if let Some((error, message)) = failure {
                     return Ok(respond_failed_chat_completion(
-                        request, status, headers, error, message, usage,
+                        request,
+                        status,
+                        headers,
+                        error,
+                        message,
+                        usage,
                         UpstreamDebugMetaRefs {
                             request_id: &upstream_request_id,
                             cf_ray: &upstream_cf_ray,
@@ -294,7 +415,9 @@ pub(crate) fn respond_with_upstream(
                     ));
                 }
                 if detected_sse {
-                    if let Some(partial_body) = chat_responses_sse_length_body(upstream_body.as_ref()) {
+                    if let Some(partial_body) =
+                        chat_responses_sse_length_body(upstream_body.as_ref())
+                    {
                         body = partial_body;
                     }
                 }
@@ -327,6 +450,16 @@ pub(crate) fn respond_with_upstream(
                 )
                 .unwrap_or_else(|| body.clone())
             };
+            let response_body = apply_safeguard_results_to_response(
+                response_adapter,
+                response_body,
+                safeguards_evaluator.as_ref(),
+            );
+            let response_body = apply_anthropic_context_to_response(
+                response_adapter,
+                response_body,
+                context_enrichment.as_ref(),
+            );
             let delivery_error = respond_json_bytes(request, status, headers, response_body);
             return Ok(terminal_bridge_result_with_debug_meta(
                 usage,
@@ -383,12 +516,14 @@ pub(crate) fn respond_with_upstream(
             ResponseAdapter::AnthropicMessagesFromResponses => {
                 let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
                 let response_body: Box<dyn std::io::Read + Send> =
-                    Box::new(AnthropicSseReader::new(
+                    Box::new(AnthropicSseReader::new_with_context_enrichment(
                         upstream,
                         Arc::clone(&usage_collector),
                         fallback_model,
                         tool_name_restore_map.cloned(),
                         request_started_at,
+                        safeguards_evaluator.clone(),
+                        context_enrichment.clone(),
                     ));
                 return Ok(respond_usage_collector_stream(
                     request,
@@ -407,7 +542,8 @@ pub(crate) fn respond_with_upstream(
             }
             ResponseAdapter::ResponsesFromAnthropicMessages => {
                 let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
-                let terminal_collector = Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
+                let terminal_collector =
+                    Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
                 let response_body: Box<dyn std::io::Read + Send> =
                     Box::new(ResponsesFromAnthropicSseReader::new(
                         upstream,
@@ -519,7 +655,7 @@ pub(crate) fn respond_with_upstream(
     match response_adapter {
         ResponseAdapter::Passthrough => {
             let status = StatusCode(upstream.status().as_u16());
-            let mut headers = copy_upstream_response_headers(upstream.headers(), trace_id);
+            let mut headers = copy_upstream_response_headers_with_extras(upstream.headers(), trace_id, extra_response_headers);
             if !is_stream {
                 let upstream_body = upstream
                     .bytes()
@@ -604,6 +740,7 @@ pub(crate) fn respond_with_upstream(
                         ));
                     }
                     if status.0 >= 400
+                        && !crate::gateway::response_has_safeguard_results(upstream_body.as_ref())
                         && non_success_body_should_be_normalized(
                             status.0,
                             upstream_content_type.as_deref(),
@@ -689,6 +826,7 @@ pub(crate) fn respond_with_upstream(
                     ));
                 }
                 if status.0 >= 400
+                    && !crate::gateway::response_has_safeguard_results(upstream_body.as_ref())
                     && non_success_body_should_be_normalized(
                         status.0,
                         upstream_content_type.as_deref(),
@@ -771,13 +909,15 @@ pub(crate) fn respond_with_upstream(
                 } else {
                     UpstreamResponseUsage::default()
                 };
-                if non_success_body_should_be_normalized(
-                    status.0,
-                    upstream_content_type.as_deref(),
-                    upstream_body.as_ref(),
-                    upstream_auth_error.as_deref(),
-                    upstream_identity_error_code.as_deref(),
-                ) {
+                if !crate::gateway::response_has_safeguard_results(upstream_body.as_ref())
+                    && non_success_body_should_be_normalized(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    )
+                {
                     return Ok(respond_normalized_passthrough_non_success_body(
                         request,
                         usage,
@@ -928,7 +1068,7 @@ pub(crate) fn respond_with_upstream(
         }
         ResponseAdapter::CompactFromChatCompletions => {
             let status = StatusCode(upstream.status().as_u16());
-            let headers = copy_upstream_response_headers(upstream.headers(), trace_id);
+            let headers = copy_upstream_response_headers_with_extras(upstream.headers(), trace_id, extra_response_headers);
             let upstream_body = upstream
                 .bytes()
                 .map_err(|err| format!("read upstream body failed: {err}"))?;
@@ -993,6 +1133,9 @@ pub(crate) fn respond_with_stream_upstream(
     trace_id: Option<&str>,
     fallback_model: Option<&str>,
     request_started_at: std::time::Instant,
+    safeguards_evaluator: Option<Arc<dyn SafeguardEvaluator>>,
+    context_enrichment: Option<Arc<AnthropicContextEnrichment>>,
+    extra_response_headers: &[Header],
 ) -> Result<UpstreamResponseBridgeResult, String> {
     let keepalive_frame = SseKeepAliveFrame::Comment;
     let upstream_meta = upstream_response_metadata(upstream.headers());
@@ -1005,7 +1148,7 @@ pub(crate) fn respond_with_stream_upstream(
     let is_json = upstream_meta.is_json;
     if response_adapter != ResponseAdapter::Passthrough {
         let status = StatusCode(upstream.status().as_u16());
-        let mut headers = copy_upstream_response_headers(upstream.headers(), trace_id);
+        let mut headers = copy_upstream_response_headers_with_extras(upstream.headers(), trace_id, extra_response_headers);
 
         if !is_stream {
             let upstream_body = upstream
@@ -1030,12 +1173,18 @@ pub(crate) fn respond_with_stream_upstream(
                 let failure = if detected_sse {
                     chat_responses_sse_failure(upstream_body.as_ref())
                 } else {
-                    serde_json::from_slice::<Value>(upstream_body.as_ref()).ok()
+                    serde_json::from_slice::<Value>(upstream_body.as_ref())
+                        .ok()
                         .and_then(|value| chat_response_failure(&value, None))
                 };
                 if let Some((error, message)) = failure {
                     return Ok(respond_failed_chat_completion(
-                        request, status, headers, error, message, usage,
+                        request,
+                        status,
+                        headers,
+                        error,
+                        message,
+                        usage,
                         UpstreamDebugMetaRefs {
                             request_id: &upstream_request_id,
                             cf_ray: &upstream_cf_ray,
@@ -1046,7 +1195,9 @@ pub(crate) fn respond_with_stream_upstream(
                     ));
                 }
                 if detected_sse {
-                    if let Some(partial_body) = chat_responses_sse_length_body(upstream_body.as_ref()) {
+                    if let Some(partial_body) =
+                        chat_responses_sse_length_body(upstream_body.as_ref())
+                    {
                         body = partial_body;
                     }
                 }
@@ -1079,6 +1230,16 @@ pub(crate) fn respond_with_stream_upstream(
                 )
                 .unwrap_or_else(|| body.clone())
             };
+            let response_body = apply_safeguard_results_to_response(
+                response_adapter,
+                response_body,
+                safeguards_evaluator.as_ref(),
+            );
+            let response_body = apply_anthropic_context_to_response(
+                response_adapter,
+                response_body,
+                context_enrichment.as_ref(),
+            );
             let delivery_error = respond_json_bytes(request, status, headers, response_body);
             return Ok(terminal_bridge_result_with_debug_meta(
                 usage,
@@ -1133,17 +1294,16 @@ pub(crate) fn respond_with_stream_upstream(
         );
         match response_adapter {
             ResponseAdapter::AnthropicMessagesFromResponses => {
-                let upstream_body = upstream
-                    .read_all_bytes()
-                    .map_err(|err| format!("read upstream body failed: {err}"))?;
                 let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
                 let response_body: Box<dyn std::io::Read + Send> =
-                    Box::new(AnthropicSseReader::from_reader(
-                        std::io::Cursor::new(upstream_body.to_vec()),
+                    Box::new(AnthropicSseReader::from_reader_with_context_enrichment(
+                        upstream.into_body(),
                         Arc::clone(&usage_collector),
                         fallback_model,
                         tool_name_restore_map.cloned(),
                         request_started_at,
+                        safeguards_evaluator.clone(),
+                        context_enrichment.clone(),
                     ));
                 return Ok(respond_usage_collector_stream(
                     request,
@@ -1161,14 +1321,12 @@ pub(crate) fn respond_with_stream_upstream(
                 ));
             }
             ResponseAdapter::ResponsesFromAnthropicMessages => {
-                let upstream_body = upstream
-                    .read_all_bytes()
-                    .map_err(|err| format!("read upstream body failed: {err}"))?;
                 let usage_collector = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
-                let terminal_collector = Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
+                let terminal_collector =
+                    Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
                 let response_body: Box<dyn std::io::Read + Send> =
                     Box::new(ResponsesFromAnthropicSseReader::from_reader(
-                        std::io::Cursor::new(upstream_body.to_vec()),
+                        upstream.into_body(),
                         Arc::clone(&usage_collector),
                         Arc::clone(&terminal_collector),
                         fallback_model,
@@ -1221,11 +1379,17 @@ pub(crate) fn respond_with_stream_upstream(
                     collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
                 let body = synthesized.unwrap_or_else(|| upstream_body.to_vec());
                 merge_usage_from_body_without_output_text(&mut usage, &body);
-                if let Some((error, message)) = serde_json::from_slice::<Value>(&body).ok()
+                if let Some((error, message)) = serde_json::from_slice::<Value>(&body)
+                    .ok()
                     .and_then(|value| chat_response_failure(&value, None))
                 {
                     return Ok(respond_failed_chat_completion(
-                        request, status, headers, error, message, usage,
+                        request,
+                        status,
+                        headers,
+                        error,
+                        message,
+                        usage,
                         UpstreamDebugMetaRefs {
                             request_id: &upstream_request_id,
                             cf_ray: &upstream_cf_ray,
@@ -1332,7 +1496,7 @@ pub(crate) fn respond_with_stream_upstream(
     match response_adapter {
         ResponseAdapter::Passthrough => {
             let status = StatusCode(upstream.status().as_u16());
-            let mut headers = copy_upstream_response_headers(upstream.headers(), trace_id);
+            let mut headers = copy_upstream_response_headers_with_extras(upstream.headers(), trace_id, extra_response_headers);
 
             if !is_stream {
                 let upstream_body = upstream
@@ -1418,6 +1582,7 @@ pub(crate) fn respond_with_stream_upstream(
                         ));
                     }
                     if status.0 >= 400
+                        && !crate::gateway::response_has_safeguard_results(upstream_body.as_ref())
                         && non_success_body_should_be_normalized(
                             status.0,
                             upstream_content_type.as_deref(),
@@ -1466,6 +1631,7 @@ pub(crate) fn respond_with_stream_upstream(
                     UpstreamResponseUsage::default()
                 };
                 if status.0 >= 400
+                    && !crate::gateway::response_has_safeguard_results(upstream_body.as_ref())
                     && non_success_body_should_be_normalized(
                         status.0,
                         upstream_content_type.as_deref(),
@@ -1542,13 +1708,15 @@ pub(crate) fn respond_with_stream_upstream(
                     .read_all_bytes()
                     .map_err(|err| format!("read upstream body failed: {err}"))?;
                 let usage = UpstreamResponseUsage::default();
-                if non_success_body_should_be_normalized(
-                    status.0,
-                    upstream_content_type.as_deref(),
-                    upstream_body.as_ref(),
-                    upstream_auth_error.as_deref(),
-                    upstream_identity_error_code.as_deref(),
-                ) {
+                if !crate::gateway::response_has_safeguard_results(upstream_body.as_ref())
+                    && non_success_body_should_be_normalized(
+                        status.0,
+                        upstream_content_type.as_deref(),
+                        upstream_body.as_ref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
+                    )
+                {
                     return Ok(respond_normalized_passthrough_non_success_body(
                         request,
                         usage,
@@ -1700,7 +1868,7 @@ pub(crate) fn respond_with_stream_upstream(
         }
         ResponseAdapter::CompactFromChatCompletions => {
             let status = StatusCode(upstream.status().as_u16());
-            let headers = copy_upstream_response_headers(upstream.headers(), trace_id);
+            let headers = copy_upstream_response_headers_with_extras(upstream.headers(), trace_id, extra_response_headers);
             let upstream_body = upstream
                 .read_all_bytes()
                 .map_err(|err| format!("read upstream body failed: {err}"))?;

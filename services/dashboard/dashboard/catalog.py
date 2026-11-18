@@ -1,11 +1,30 @@
 """Schema-pinned, credential-free catalogue and platform-key presentation fields."""
 
+from datetime import datetime, timezone
 import re
+import sqlite3
 
 from .account_details import positive_int
 
+OFFICIAL_RELEASE_DATES = {
+    "gpt-6.2-sol": "2026-11-17",
+    "gpt-6.2-astra": "2026-11-17",
+    "gpt-6.1-terra": "2026-10-26",
+    "gpt-6.1-sol": "2026-09-29",
+    "gpt-6-sol": "2026-09-22",
+    "gpt-6-luna": "2026-09-22",
+    "gpt-6-astra": "2026-09-03",
+    "gpt-5.6-sol": "2026-07-09",
+    "gpt-5.6-terra": "2026-07-09",
+    "gpt-5.6-luna": "2026-07-09",
+    "gpt-image-2": "2026-04-21",
+}
+
 # Translate the known source copy, not arbitrary changed descriptions by slug.
 DESCRIPTION_ZH = {
+    "Fast, go-to model for coding and everyday work.": "适合编码与日常工作的高速主力模型。",
+    "Our most capable model for complex coding and professional work.": "适合复杂编码与专业工作的最强旗舰模型。",
+    "Efficient model that excels at visual understanding and computer use.": "擅长视觉理解与计算机操作的高效模型。",
     "Our most capable model for complex, demanding work.": "能力最强的模型，适合复杂、高要求的任务。",
     "Latest workhorse model for coding and everyday work.": "适合复杂编程与日常工作的主力模型。",
     "Fast and affordable model for easier tasks.": "适合较简单任务的快速、经济模型。",
@@ -22,7 +41,7 @@ DESCRIPTION_ZH = {
 
 CATALOG_COLUMNS = {
     "models": {"id", "slug", "display_name", "description", "origin", "enabled", "visibility",
-               "supported_in_api", "instructions_mode", "sort_order"},
+               "supported_in_api", "instructions_mode", "sort_order", "created_at"},
     "model_prices": {"model_id", "price_status", "input_microusd_per_1m", "cached_input_microusd_per_1m",
                      "cache_write_microusd_per_1m", "output_microusd_per_1m"},
     "model_routes": {"model_id", "enabled", "source_kind"},
@@ -30,6 +49,7 @@ CATALOG_COLUMNS = {
 
 CATALOG_SQL = """
 SELECT m.slug,m.display_name,m.description,m.origin,m.enabled,m.supported_in_api,m.instructions_mode,
+  m.sort_order,m.created_at,
   p.price_status,p.input_microusd_per_1m,p.cached_input_microusd_per_1m,
   p.cache_write_microusd_per_1m,p.output_microusd_per_1m,
   COALESCE(r.route_count,0) AS route_count,COALESCE(r.account_pool_count,0) AS account_pool_count,
@@ -44,6 +64,8 @@ LEFT JOIN (
 WHERE m.visibility='list'
 ORDER BY m.sort_order,m.slug
 """
+
+CATALOG_SQL_NO_CREATED_AT = CATALOG_SQL.replace(",m.created_at,", ",NULL AS created_at,")
 
 
 def public_text(value, fallback="", maximum=128):
@@ -94,9 +116,23 @@ def price_value(value):
     return value / 1_000_000 if type(value) is int and 0 <= value <= 2**53-1 else None
 
 
+def model_release_date(slug, created_at):
+    if slug in OFFICIAL_RELEASE_DATES:
+        return OFFICIAL_RELEASE_DATES[slug]
+    if type(created_at) is int and 946684800 <= created_at <= 32503680000:
+        return datetime.fromtimestamp(created_at, timezone.utc).strftime("%Y-%m-%d")
+    return None
+
+
 def collect_catalog(connection):
-    catalog, unlisted = [], 0
-    for row in connection.execute(CATALOG_SQL):
+    try:
+        rows = connection.execute(CATALOG_SQL).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "created_at" not in str(exc):
+            raise
+        rows = connection.execute(CATALOG_SQL_NO_CREATED_AT).fetchall()
+    ranked, unlisted = [], 0
+    for row in rows:
         slug = public_model_slug(row["slug"])
         if slug is None:
             unlisted += 1
@@ -108,11 +144,18 @@ def collect_catalog(connection):
                 value = row[source + "_microusd_per_1m"]
                 price[target + "_usd_per_million"] = price_value(value)
         description = public_text(row["description"], maximum=600)
-        catalog.append({"model": slug, "name": public_text(row["display_name"], slug),
-                        "description": DESCRIPTION_ZH.get(description, description),
-                        "origin": choice(row["origin"], {"builtin", "custom"}),
-                        "enabled": nullable_bool(row["enabled"]), "supported_in_api": nullable_bool(row["supported_in_api"]),
-                        "instructions_mode": choice(row["instructions_mode"], {"passthrough", "fallback", "override"}),
-                        "price": price, "route_count": row["route_count"],
-                        "account_pool_routes": row["account_pool_count"], "aggregate_api_routes": row["aggregate_api_count"]})
-    return catalog, unlisted
+        release_date = model_release_date(slug, row["created_at"])
+        sort_key = row["sort_order"] if type(row["sort_order"]) is int else 10**9
+        order_tuple = (0, -int(release_date.replace("-", "")), sort_key, slug) if release_date else (1, 0, sort_key, slug)
+        ranked.append((order_tuple, {
+            "model": slug, "name": public_text(row["display_name"], slug),
+            "release_date": release_date,
+            "description": DESCRIPTION_ZH.get(description, description),
+            "origin": choice(row["origin"], {"builtin", "custom"}),
+            "enabled": nullable_bool(row["enabled"]), "supported_in_api": nullable_bool(row["supported_in_api"]),
+            "instructions_mode": choice(row["instructions_mode"], {"passthrough", "fallback", "override"}),
+            "price": price, "route_count": row["route_count"],
+            "account_pool_routes": row["account_pool_count"], "aggregate_api_routes": row["aggregate_api_count"],
+        }))
+    ranked.sort(key=lambda pair: pair[0])
+    return [item for _, item in ranked], unlisted

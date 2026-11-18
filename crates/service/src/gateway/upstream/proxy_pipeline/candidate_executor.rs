@@ -595,13 +595,31 @@ pub(in super::super) fn execute_candidate_sequence(
         if attempted_account_ids.len() >= overload_budget.max_attempts() {
             break;
         }
+        if !attempted_account_ids.is_empty()
+            && reserved_backup.is_none()
+            && !generation_scope.can_send()
+        {
+            log::info!(
+                "event=gateway_candidate_failover_stopped_budget_exhausted trace_id={} attempted={} sent={}",
+                trace_id,
+                attempted_account_ids.len(),
+                generation_scope.sent_count()
+            );
+            break;
+        }
+        let next_attempted_count = attempted_account_ids.len().saturating_add(1);
+        let remaining_has_available_candidate = remaining.iter().any(|(cand, _)| {
+            !super::super::super::is_account_in_cooldown(&cand.id)
+                && account_has_inflight_capacity(
+                    cand.id.as_str(),
+                    context.effective_account_inflight_limit(),
+                )
+        });
         let has_more_candidates = !single_send_mode
-            && overload_budget.has_more_candidates(if dynamic_enabled {
-                attempted_account_ids.len() < overload_budget.max_attempts()
-                    && ordered_account_ids.len() > attempted_account_ids.len()
-            } else {
-                context.has_more_candidates(idx)
-            });
+            && remaining_has_available_candidate
+            && overload_budget.has_more_candidates(
+                next_attempted_count < overload_budget.max_attempts(),
+            );
         let disable_challenge_stateless_retry =
             disable_challenge_stateless_retry || overload_budget.used();
         if deadline::is_expired(request_deadline) {
@@ -856,6 +874,7 @@ pub(in super::super) fn execute_candidate_sequence(
         }
         let mut attempt_trace = CandidateAttemptTrace::default();
         let mut same_account_retry_count = 0u8;
+        let sent_before_candidate = generation_scope.sent_count();
         let mut decision = run_candidate_attempt(CandidateAttemptParams {
             storage,
             method,
@@ -883,6 +902,7 @@ pub(in super::super) fn execute_candidate_sequence(
         if matches!(decision, CandidateUpstreamDecision::Failover)
             && !overload_budget.used()
             && should_retry_same_account_after_failover(same_account_retry_count)
+            && generation_scope.can_send()
         {
             same_account_retry_count += 1;
             log::warn!(
@@ -921,6 +941,22 @@ pub(in super::super) fn execute_candidate_sequence(
 
         match decision {
             CandidateUpstreamDecision::Failover => {
+                if generation_scope.sent_count() == sent_before_candidate
+                    && !generation_scope.can_send()
+                {
+                    if attempted_account_ids.len() > 1
+                        && attempted_account_ids.last().is_some_and(|id| id == &account.id)
+                    {
+                        attempted_account_ids.pop();
+                    }
+                    log::info!(
+                        "event=gateway_candidate_unsent_budget_exhausted trace_id={} account_id={} sent={}",
+                        trace_id,
+                        account.id,
+                        generation_scope.sent_count()
+                    );
+                    break;
+                }
                 if should_force_strip_after_anthropic_challenge(context, &attempt_trace) {
                     force_strip_session_affinity_after_challenge = true;
                     log::warn!(

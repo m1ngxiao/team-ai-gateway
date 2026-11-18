@@ -109,6 +109,20 @@ sudo bash scripts/server.sh --env-file deploy/.env up
 
 部署数据及私密配置对普通宿主用户不可读，所以示例用 `sudo` 执行检查和启动。系统服务示例在 `deploy/team-ai-gateway.service.example`，需按实际仓库路径调整；可选看板初始化后再同时为 ExecStart/ExecStop 增加 `--dashboard`。
 
+## 分离管理端 Web
+
+生产环境需要只更新管理端而不能重启 API 时，可使用
+`deploy/compose.ui-refresh.yml` 增加独立的 `web-ui` 容器。它复用同一个
+`codexmanager-web` 镜像，通过内部网络访问 `codexmanager:48760`，只把管理端
+端口发布到宿主；Tunnel 的管理域名可单独从旧 Web 端口切换到新端口。
+
+该配置固定设置 `CODEXMANAGER_WEB_NO_SPAWN_SERVICE=1`，因此单独的 UI
+进程即使遇到 RPC token 不匹配，也不能停止或替换正在运行的 API。首次启用前
+应先直接验证候选端口的登录、`/api/session` 和健康检查，再切换管理域名；
+API hostname 无需修改。`TEAM_GATEWAY_IMAGE`、`TEAM_GATEWAY_DATA_DIR`、
+`TEAM_GATEWAY_SERVICE_ADDR`、`ADMIN_WEB_BIND_ADDR` 和 `ADMIN_WEB_PORT`
+可按部署环境覆盖。
+
 ## HTTPS 接入
 
 可使用自行管理的反向代理；`deploy/cloudflared.yml.example` 提供宿主机 Cloudflare Tunnel 的可选模板，另有独立 systemd 示例。部署脚本不会安装或启动 Tunnel。
@@ -116,3 +130,9 @@ sudo bash scripts/server.sh --env-file deploy/.env up
 模板只将列出的 `/v1` API 路径代理到 48760，其他 API hostname 路径返回 404；后台 hostname 要求 Access JWT 并继续使用应用自身登录。不要把交互式 Access 登录放在客户端 API 域名前。看板使用独立登录，配置其公网 origin 后再开放。若不部署看板，移除 stats ingress。域名、Tunnel ID、Access audience 均需替换，凭据留在仓库外的私有目录。
 
 发布前检查未授权 API、后台和看板请求确实被拒绝，再使用自己的授权 Key 验证模型列表和流式请求。完整迁移与回退流程见 [备份与升级](BACKUP_AND_UPGRADE.md)。
+
+Claude Code Auto Mode 验收需要使用实际配置的、支持 classifier 的 Claude API 聚合上游或 Claude 原生上游。创建全新的 Claude Code session 后执行 `/status`，确认 `Auto mode server` 为 `Enabled`。这个验证不要求当前 GPT 中转 Key 登录 Claude 账号；若平台 Key 仍把 `gpt-6-astra` 路由到 OpenAI/Codex 上游，网关会记录 `anthropic_safeguards_capability capability=false` 并拒绝 safeguards 请求。在配置支持该协议的 Claude 路由并确认真实上游返回 `safeguard_results` 前，不能把该状态标记为已支持。
+
+客户端出现 Cloudflare 524 时，先对齐网关的入站与 `ATTEMPT_RESULT` 上游状态、`BRIDGE_RESULT` 中的上游 CF-Ray 和客户端错误响应的 CF-Ray。没有对应失败日志时，不能认定超时位于入口，也不能认定压缩请求是非流式。流式部署若额外使用 Nginx，需要在 API location 关闭 `proxy_buffering`、`proxy_cache`，并按实测的上游空闲时间设置 `proxy_read_timeout`；调整 Nginx 不会调整 Cloudflare 的限制。下游 `ping` 无法修复上游自己返回的 524。
+
+若已确认是入口 Cloudflare 对非流式慢响应超时，可准备独立的 DNS-only API hostname，直接连接有有效 TLS 证书的公网反向代理，或让客户端通过受控 VPN 直连。DNS-only 需要实际可达的源站地址与独立的访问控制；现有 Tunnel hostname 不能仅切换 DNS 标志就变成直连。保留原 hostname，先验证相同协议、模型与长请求，再切换客户端 Base URL；回滚时切回原 Base URL。只有具备适用套餐和可调整配置时才考虑提高 Cloudflare 超时，见 [官方 524 说明](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-524/)。官方当前说明的默认读超时为 125 秒，历史错误正文可能写 120 秒，现场判断应以该响应和实际配置为准。将上游改成 SSE 再聚合成 JSON，仍会让下游同步等待；普通 JSON 响应不能插入 SSE 心跳，异步轮询需要客户端协议支持。

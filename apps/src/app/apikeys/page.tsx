@@ -47,6 +47,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useApiKeys } from "@/hooks/useApiKeys";
+import { useBusinessDayRange } from "@/hooks/useBusinessDayRange";
 import {
   isAdminRole,
   resolveSessionRole,
@@ -176,6 +177,7 @@ export default function ApiKeysPage() {
     readApiKeySecret,
     isToggling,
   } = useApiKeys();
+  const businessDayRange = useBusinessDayRange();
   const isPageActive = useDesktopPageActive("/apikeys/");
   const isUsageQueryEnabled = useDeferredDesktopActivation(isServiceReady);
   usePageTransitionReady(
@@ -286,7 +288,11 @@ export default function ApiKeysPage() {
     ]);
   };
   const { data: usageOverview, isPending: isUsageOverviewLoading } = useQuery({
-    queryKey: ["apikey-usage-overview", serviceAddr || null],
+    queryKey: [
+      "apikey-usage-overview",
+      serviceAddr || null,
+      businessDayRange.dayStartTs,
+    ],
     queryFn: async () => {
       const stats = await accountClient.listApiKeyUsageStats(serviceAddr);
       const usageByKey = stats.reduce<Record<string, number>>(
@@ -850,7 +856,7 @@ export default function ApiKeysPage() {
                         <div className="space-y-1.5">
                           <div>
                             <div className="text-[10px] font-normal text-muted-foreground">
-                              {t("今日")}
+                              {t("今日 · UTC+8")}
                             </div>
                             <div className="text-foreground">
                               {formatCompactTokenAmount(todayUsedTokens)}

@@ -1,11 +1,12 @@
+use super::super::quota_aware::{QuotaAwareAccountMetrics, QuotaAwareSnapshot};
 use super::{
-    apply_candidate_rotation, cache_affinity_route_id, claim_initial_conversation_binding,
-    effective_thread_anchor, prepare_conversation_routing,
+    apply_candidate_rotation, apply_candidate_rotation_with_quota, cache_affinity_route_id,
+    claim_initial_conversation_binding, effective_thread_anchor, prepare_conversation_routing,
     prepare_conversation_routing_with_source, record_conversation_binding_terminal_response,
     resolve_attempt_thread, CacheAffinityKeySource, CandidateRotationSource,
     ConversationBindingWrite, InitialBindingClaim, RouteConversationSource,
 };
-use codexmanager_core::storage::{Account, ConversationBinding, Storage, Token};
+use codexmanager_core::storage::{now_ts, Account, ConversationBinding, Storage, Token};
 use std::collections::HashMap;
 
 /// 函数 `sample_account`
@@ -581,6 +582,139 @@ fn apply_candidate_rotation_keeps_existing_binding_before_thread_distribution() 
     assert_eq!(candidates[0].0.id, "acc-1");
 }
 
+#[test]
+fn quota_aware_rotation_rebinds_idle_conversation_to_better_quota_account() {
+    let _guard = crate::test_env_guard();
+    let previous_strategy = std::env::var("CODEXMANAGER_ROUTE_STRATEGY").ok();
+    std::env::set_var("CODEXMANAGER_ROUTE_STRATEGY", "quota_aware");
+    super::super::route_hint::reload_from_env();
+
+    let now = now_ts();
+    let mut binding = sample_binding("quota-bound");
+    binding.last_used_at = now.saturating_sub(7_200);
+    let mut candidates = vec![
+        (
+            sample_account("quota-target", 0),
+            sample_token("quota-target"),
+        ),
+        (
+            sample_account("quota-bound", 1),
+            sample_token("quota-bound"),
+        ),
+    ];
+    let routing = prepare_conversation_routing(
+        "key-hash-1",
+        Some("conv-1"),
+        Some(&binding),
+        &mut candidates,
+    )
+    .expect("routing context");
+    let snapshot = QuotaAwareSnapshot::new([
+        (
+            "quota-target".to_string(),
+            QuotaAwareAccountMetrics {
+                remaining_percent: Some(98.0),
+                recent_tokens: 2_000,
+                active_bindings: 2,
+            },
+        ),
+        (
+            "quota-bound".to_string(),
+            QuotaAwareAccountMetrics {
+                remaining_percent: Some(55.0),
+                recent_tokens: 80_000_000,
+                active_bindings: 8,
+            },
+        ),
+    ]);
+
+    let plan = apply_candidate_rotation_with_quota(
+        &mut candidates,
+        Some(&routing),
+        "key-hash-1",
+        Some("gpt-5.4"),
+        None,
+        Some(&snapshot),
+    );
+
+    assert_eq!(plan.source, CandidateRotationSource::QuotaAwareRebalance);
+    assert_eq!(plan.strategy_label, "quota_aware_rebalance");
+    assert_eq!(candidates[0].0.id, "quota-target");
+
+    if let Some(value) = previous_strategy {
+        std::env::set_var("CODEXMANAGER_ROUTE_STRATEGY", value);
+    } else {
+        std::env::remove_var("CODEXMANAGER_ROUTE_STRATEGY");
+    }
+    super::super::route_hint::reload_from_env();
+}
+
+#[test]
+fn quota_aware_rotation_keeps_recent_conversation_on_bound_account() {
+    let _guard = crate::test_env_guard();
+    let previous_strategy = std::env::var("CODEXMANAGER_ROUTE_STRATEGY").ok();
+    std::env::set_var("CODEXMANAGER_ROUTE_STRATEGY", "quota_aware");
+    super::super::route_hint::reload_from_env();
+
+    let now = now_ts();
+    let mut binding = sample_binding("quota-recent-bound");
+    binding.last_used_at = now.saturating_sub(30);
+    let mut candidates = vec![
+        (
+            sample_account("quota-recent-target", 0),
+            sample_token("quota-recent-target"),
+        ),
+        (
+            sample_account("quota-recent-bound", 1),
+            sample_token("quota-recent-bound"),
+        ),
+    ];
+    let routing = prepare_conversation_routing(
+        "key-hash-1",
+        Some("conv-1"),
+        Some(&binding),
+        &mut candidates,
+    )
+    .expect("routing context");
+    let snapshot = QuotaAwareSnapshot::new([
+        (
+            "quota-recent-target".to_string(),
+            QuotaAwareAccountMetrics {
+                remaining_percent: Some(98.0),
+                recent_tokens: 2_000,
+                active_bindings: 2,
+            },
+        ),
+        (
+            "quota-recent-bound".to_string(),
+            QuotaAwareAccountMetrics {
+                remaining_percent: Some(55.0),
+                recent_tokens: 80_000_000,
+                active_bindings: 8,
+            },
+        ),
+    ]);
+
+    let plan = apply_candidate_rotation_with_quota(
+        &mut candidates,
+        Some(&routing),
+        "key-hash-1",
+        Some("gpt-5.4"),
+        None,
+        Some(&snapshot),
+    );
+
+    assert_eq!(plan.source, CandidateRotationSource::ConversationBinding);
+    assert_eq!(candidates[0].0.id, "quota-recent-bound");
+
+    if let Some(value) = previous_strategy {
+        std::env::set_var("CODEXMANAGER_ROUTE_STRATEGY", value);
+    } else {
+        std::env::remove_var("CODEXMANAGER_ROUTE_STRATEGY");
+    }
+    super::super::route_hint::reload_from_env();
+}
+
 /// 函数 `terminal_response_creates_and_rebinds_conversation_binding_on_success`
 ///
 /// 作者: gaohongshun
@@ -647,24 +781,45 @@ fn terminal_response_creates_and_rebinds_conversation_binding_on_success() {
 
 #[test]
 fn concurrent_successful_migrations_keep_first_completed_binding() {
-    for source in [RouteConversationSource::StickyFallback, RouteConversationSource::PromptCacheKey] {
+    for source in [
+        RouteConversationSource::StickyFallback,
+        RouteConversationSource::PromptCacheKey,
+    ] {
         let storage = Storage::open_in_memory().unwrap();
         storage.init().unwrap();
         let original = sample_binding("acc-1");
         storage.upsert_conversation_binding(&original).unwrap();
         // Both in-flight requests observed the same original account and epoch.
         let routing = prepare_conversation_routing_with_source(
-            "key-hash-1", Some("conv-1"), Some(&original), &mut vec![], source,
-        ).unwrap();
+            "key-hash-1",
+            Some("conv-1"),
+            Some(&original),
+            &mut vec![],
+            source,
+        )
+        .unwrap();
         let first = record_conversation_binding_terminal_response(
-            &storage, Some(&routing), &sample_account("acc-2", 0), Some("winner"), 200,
-        ).unwrap();
+            &storage,
+            Some(&routing),
+            &sample_account("acc-2", 0),
+            Some("winner"),
+            200,
+        )
+        .unwrap();
         let late = record_conversation_binding_terminal_response(
-            &storage, Some(&routing), &sample_account("acc-3", 0), Some("late"), 200,
-        ).unwrap();
+            &storage,
+            Some(&routing),
+            &sample_account("acc-3", 0),
+            Some("late"),
+            200,
+        )
+        .unwrap();
         assert_eq!(first, ConversationBindingWrite::Rebound);
         assert_eq!(late, ConversationBindingWrite::Conflict);
-        let saved = storage.get_conversation_binding("key-hash-1", "conv-1").unwrap().unwrap();
+        let saved = storage
+            .get_conversation_binding("key-hash-1", "conv-1")
+            .unwrap()
+            .unwrap();
         assert_eq!(saved.account_id, "acc-2");
         assert_eq!(saved.thread_epoch, 2);
         assert_eq!(saved.last_model.as_deref(), Some("winner"));
@@ -676,16 +831,23 @@ fn concurrent_successful_migrations_keep_first_completed_binding() {
 fn successful_initial_binding_never_overwrites_concurrent_claim() {
     let storage = Storage::open_in_memory().unwrap();
     storage.init().unwrap();
-    let stale_routing = prepare_conversation_routing(
-        "key-hash-1", Some("conv-1"), None, &mut vec![],
-    ).unwrap();
+    let stale_routing =
+        prepare_conversation_routing("key-hash-1", Some("conv-1"), None, &mut vec![]).unwrap();
     let first = sample_binding("acc-1");
     storage.claim_conversation_binding(&first).unwrap();
     let result = record_conversation_binding_terminal_response(
-        &storage, Some(&stale_routing), &sample_account("acc-2", 0), Some("late"), 200,
-    ).unwrap();
+        &storage,
+        Some(&stale_routing),
+        &sample_account("acc-2", 0),
+        Some("late"),
+        200,
+    )
+    .unwrap();
     assert_eq!(result, ConversationBindingWrite::Conflict);
-    let saved = storage.get_conversation_binding("key-hash-1", "conv-1").unwrap().unwrap();
+    let saved = storage
+        .get_conversation_binding("key-hash-1", "conv-1")
+        .unwrap()
+        .unwrap();
     assert_eq!(saved.account_id, "acc-1");
     assert_eq!(saved.thread_epoch, 1);
     assert_eq!(saved.thread_anchor, first.thread_anchor);
@@ -697,18 +859,26 @@ fn failed_terminal_response_neither_migrates_nor_touches_binding() {
     storage.init().unwrap();
     let original = sample_binding("acc-1");
     storage.upsert_conversation_binding(&original).unwrap();
-    let routing = prepare_conversation_routing(
-        "key-hash-1", Some("conv-1"), Some(&original), &mut vec![],
-    ).unwrap();
+    let routing =
+        prepare_conversation_routing("key-hash-1", Some("conv-1"), Some(&original), &mut vec![])
+            .unwrap();
     for account_id in ["acc-1", "acc-2"] {
         for status in [302, 429, 503] {
             let result = record_conversation_binding_terminal_response(
-                &storage, Some(&routing), &sample_account(account_id, 0), Some("failed"), status,
-            ).unwrap();
+                &storage,
+                Some(&routing),
+                &sample_account(account_id, 0),
+                Some("failed"),
+                status,
+            )
+            .unwrap();
             assert_eq!(result, ConversationBindingWrite::Skipped);
         }
     }
-    let saved = storage.get_conversation_binding("key-hash-1", "conv-1").unwrap().unwrap();
+    let saved = storage
+        .get_conversation_binding("key-hash-1", "conv-1")
+        .unwrap()
+        .unwrap();
     assert_eq!(saved.account_id, "acc-1");
     assert_eq!(saved.thread_epoch, 1);
     assert_eq!(saved.updated_at, original.updated_at);

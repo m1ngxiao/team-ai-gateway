@@ -284,8 +284,7 @@ pub(crate) fn validate_upstream_provider_route(
     aggregate_api_id: Option<&str>,
 ) -> Result<(), String> {
     if provider != UpstreamProvider::Claude {
-        if let Some(aggregate_api_id) =
-            aggregate_api_id.map(str::trim).filter(|id| !id.is_empty())
+        if let Some(aggregate_api_id) = aggregate_api_id.map(str::trim).filter(|id| !id.is_empty())
         {
             if aggregate_api_is_claude(storage, aggregate_api_id)? {
                 return Err("OpenAI upstream cannot pin a Claude aggregateApiId".to_string());
@@ -295,12 +294,16 @@ pub(crate) fn validate_upstream_provider_route(
     }
     if rotation_strategy == ROTATION_ACCOUNT {
         if aggregate_api_id.is_some_and(|id| !id.trim().is_empty()) {
-            return Err("Claude subscription account rotation cannot pin an aggregateApiId".to_string());
+            return Err(
+                "Claude subscription account rotation cannot pin an aggregateApiId".to_string(),
+            );
         }
         return Ok(());
     }
     if rotation_strategy != ROTATION_AGGREGATE_API {
-        return Err("Claude upstream requires account_rotation or aggregate_api_rotation".to_string());
+        return Err(
+            "Claude upstream requires account_rotation or aggregate_api_rotation".to_string(),
+        );
     }
     let aggregate_api_id = aggregate_api_id
         .map(str::trim)
@@ -337,9 +340,7 @@ pub(crate) fn validate_claude_model_route(
     if rotation_strategy == ROTATION_ACCOUNT {
         if model.is_some_and(|model| {
             model.routes.iter().any(|route| {
-                route.enabled
-                    && route.source_kind == "account_pool"
-                    && route.source_id == "claude"
+                route.enabled && route.source_kind == "account_pool" && route.source_id == "claude"
             })
         }) {
             return Ok(());
@@ -416,7 +417,9 @@ pub(crate) fn validate_openai_model_route(
     }) {
         return Ok(());
     }
-    Err(format!("OpenAI model has no active upstream route: {model_slug}"))
+    Err(format!(
+        "OpenAI model has no active upstream route: {model_slug}"
+    ))
 }
 
 pub(crate) fn validate_claude_protocol(

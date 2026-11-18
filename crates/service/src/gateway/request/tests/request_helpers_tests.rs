@@ -133,3 +133,43 @@ fn legacy_completions_path_no_longer_participates_in_text_limit_validation() {
 
     assert!(result.is_ok());
 }
+
+
+#[test]
+fn normalize_models_path_collapses_duplicate_v1_prefix() {
+    assert_eq!(
+        super::normalize_models_path("/v1/v1/messages?beta=true"),
+        "/v1/messages?beta=true"
+    );
+    assert_eq!(
+        super::normalize_models_path("/v1/v1/messages/count_tokens?beta=true"),
+        "/v1/messages/count_tokens?beta=true"
+    );
+    assert_eq!(
+        super::normalize_models_path("/v1/v1/models/gpt-6-astra"),
+        "/v1/models/gpt-6-astra"
+    );
+    assert_eq!(super::normalize_models_path("/v1/v1"), "/v1");
+    assert_eq!(super::normalize_models_path("/v1/v1?x=1"), "/v1?x=1");
+    assert_eq!(super::normalize_models_path("/v1/models?foo=1"), "/v1/models?foo=1");
+}
+
+#[test]
+fn strip_model_context_window_suffix_handles_claude_code_notation() {
+    assert_eq!(
+        super::strip_model_context_window_suffix(" gpt-6-astra[272k] "),
+        "gpt-6-astra"
+    );
+    assert_eq!(
+        super::strip_model_context_window_suffix("gpt-6-astra[1M]"),
+        "gpt-6-astra"
+    );
+    assert_eq!(
+        super::strip_model_context_window_suffix("gpt-6-astra[beta]"),
+        "gpt-6-astra[beta]"
+    );
+    let parsed = super::parse_request_metadata(
+        br#"{"model":"gpt-6-astra[272k]","input":"hi"}"#,
+    );
+    assert_eq!(parsed.model.as_deref(), Some("gpt-6-astra"));
+}

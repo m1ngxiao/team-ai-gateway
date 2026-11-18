@@ -76,7 +76,7 @@ pub(crate) fn parse_request_metadata_from_value(value: &Value) -> ParsedRequestM
     let model = value
         .get("model")
         .and_then(Value::as_str)
-        .map(str::trim)
+        .map(strip_model_context_window_suffix)
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string());
 
@@ -358,16 +358,11 @@ fn summarize_request_shape_from_object(object: &serde_json::Map<String, Value>) 
 /// 返回函数执行结果
 #[cfg(test)]
 pub(crate) fn should_drop_incoming_header(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
     name.eq_ignore_ascii_case("Authorization")
         || name.eq_ignore_ascii_case("x-api-key")
         || name.eq_ignore_ascii_case("x-goog-api-key")
         || name.eq_ignore_ascii_case("Host")
         || name.eq_ignore_ascii_case("Content-Length")
-        // 中文注释：Claude SDK/CLI 会附带 anthropic/x-stainless 指纹头；
-        // 直接透传到 ChatGPT upstream 会提高 challenge 概率，这里统一剔除。
-        || lower.starts_with("anthropic-")
-        || lower.starts_with("x-stainless-")
         // 中文注释：resume 会携带旧会话的账号头；若不剔除会把请求强行绑定到过期/耗尽账号，导致无法切换候选账号。
         || name.eq_ignore_ascii_case("ChatGPT-Account-Id")
 }
@@ -457,10 +452,40 @@ pub(crate) fn is_html_content_type(value: &str) -> bool {
 ///
 /// # 返回
 /// 返回函数执行结果
+pub(crate) fn strip_model_context_window_suffix(model: &str) -> &str {
+    let trimmed = model.trim();
+    let Some(without_close) = trimmed.strip_suffix(']') else {
+        return trimmed;
+    };
+    let Some(open) = without_close.rfind('[') else {
+        return trimmed;
+    };
+    if open == 0 {
+        return trimmed;
+    }
+    let inside = &without_close[open + 1..];
+    let bytes = inside.as_bytes();
+    if bytes.len() >= 2
+        && bytes.len() <= 7
+        && matches!(bytes.last(), Some(b'k' | b'K' | b'm' | b'M'))
+        && bytes[..bytes.len() - 1]
+            .iter()
+            .all(u8::is_ascii_digit)
+    {
+        return without_close[..open].trim_end();
+    }
+    trimmed
+}
+
 pub(crate) fn normalize_models_path(path: &str) -> String {
-    let is_models_path = path == "/v1/models" || path.starts_with("/v1/models?");
-    if !is_models_path {
-        return path.to_string();
+    if let Some(rest) = path.strip_prefix("/v1/v1/") {
+        return format!("/v1/{rest}");
+    }
+    if path == "/v1/v1" {
+        return "/v1".to_string();
+    }
+    if let Some(query) = path.strip_prefix("/v1/v1?") {
+        return format!("/v1?{query}");
     }
     path.to_string()
 }

@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
-import { useLocalDayRange } from "@/hooks/useLocalDayRange";
+import { useBusinessDayRange } from "@/hooks/useBusinessDayRange";
 import { dashboardClient } from "@/lib/api/dashboard-client";
 import { useAppStore } from "@/lib/store/useAppStore";
 import type { MemberDashboardSummary } from "@/types";
@@ -15,7 +15,7 @@ export const MEMBER_DASHBOARD_SUMMARY_QUERY_KEY = [
 
 export function useMemberDashboardSummary(enabled = true) {
   const serviceStatus = useAppStore((state) => state.serviceStatus);
-  const localDayRange = useLocalDayRange();
+  const businessDayRange = useBusinessDayRange();
   const isPageActive = useDesktopPageActive("/");
   const isServiceReady = serviceStatus.connected;
   const isQueryEnabled = useDeferredDesktopActivation(
@@ -26,12 +26,12 @@ export function useMemberDashboardSummary(enabled = true) {
     queryKey: [
       ...MEMBER_DASHBOARD_SUMMARY_QUERY_KEY,
       serviceStatus.addr,
-      localDayRange.dayStartTs,
+      businessDayRange.dayStartTs,
     ],
     queryFn: () =>
       dashboardClient.getMemberSummary({
-        dayStartTs: localDayRange.dayStartTs,
-        dayEndTs: localDayRange.dayEndTs,
+        dayStartTs: businessDayRange.dayStartTs,
+        dayEndTs: businessDayRange.dayEndTs,
         includeDetails: false,
       }),
     enabled: isQueryEnabled,

@@ -1,16 +1,26 @@
 use codexmanager_core::rpc::types::ModelsResponse;
-use codexmanager_core::storage::{Account, Storage};
+use codexmanager_core::storage::{
+    Account, OfficialCatalogModelSyncV2, OfficialCatalogReconcileResultV2, Storage,
+    UpstreamProvider,
+};
 use reqwest::header::{ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, ETAG, USER_AGENT};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const OFFICIAL_CATALOG_CACHE_DIR: &str = "official-model-catalogs";
 const OFFICIAL_CATALOG_CACHE_TTL_SECS: i64 = 300;
+const MODEL_CATALOG_SYNC_INTERVAL_ENV: &str = "CODEXMANAGER_MODEL_CATALOG_SYNC_INTERVAL_SECS";
+const DEFAULT_MODEL_CATALOG_SYNC_INTERVAL_SECS: u64 = 5 * 60;
+const MIN_MODEL_CATALOG_SYNC_INTERVAL_SECS: u64 = 60;
 static OFFICIAL_CATALOG_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static OFFICIAL_CATALOG_SYNC_STARTED: OnceLock<()> = OnceLock::new();
+static LAST_RECONCILED_SNAPSHOT_KEY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayCatalogPolicy {
@@ -80,14 +90,43 @@ pub(crate) fn write_gateway_model_catalog(
         }
         GatewayCatalogPolicy::Managed => {
             let catalog = crate::models_v2::text_generation_models_response_with_storage(storage)?;
-            let catalog =
-                crate::gateway::filter_managed_models_for_gateway_key(storage, api_key_id, catalog)?;
+            let catalog = crate::gateway::filter_managed_models_for_gateway_key(
+                storage, api_key_id, catalog,
+            )?;
             let models_count = catalog.models.len();
             (serialize_gateway_model_catalog(&catalog)?, models_count)
         }
     };
     write_atomic(catalog_path, &content)?;
     Ok(models_count)
+}
+
+fn snapshot_reconcile_key(snapshot: &Value) -> Option<String> {
+    let fetched_at = snapshot.get("fetched_at").and_then(Value::as_str)?;
+    let client_version = snapshot
+        .get("client_version")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Some(format!("{client_version}:{fetched_at}"))
+}
+
+fn maybe_reconcile_from_cached_snapshot(storage: &Storage, snapshot: &Value) {
+    let Some(key) = snapshot_reconcile_key(snapshot) else {
+        return;
+    };
+    let cell = LAST_RECONCILED_SNAPSHOT_KEY.get_or_init(|| Mutex::new(None));
+    {
+        let guard = crate::lock_utils::lock_recover(cell, "last_reconciled_snapshot");
+        if guard.as_deref() == Some(key.as_str()) {
+            return;
+        }
+    }
+    if let Err(err) = reconcile_managed_models_from_official_snapshot(storage, snapshot) {
+        log::warn!("event=reconcile_cached_official_catalog_failed error={err}");
+        return;
+    }
+    let mut guard = crate::lock_utils::lock_recover(cell, "last_reconciled_snapshot");
+    *guard = Some(key);
 }
 
 fn load_or_sync_official_model_catalog(
@@ -102,7 +141,9 @@ fn load_or_sync_official_model_catalog(
         .as_ref()
         .is_some_and(|value| official_snapshot_is_fresh(value, now))
     {
-        return Ok(cached.expect("checked above"));
+        let snapshot = cached.expect("checked above");
+        maybe_reconcile_from_cached_snapshot(storage, &snapshot);
+        return Ok(snapshot);
     }
 
     let sync_lock = OFFICIAL_CATALOG_SYNC_LOCK.get_or_init(|| Mutex::new(()));
@@ -114,13 +155,22 @@ fn load_or_sync_official_model_catalog(
         .as_ref()
         .is_some_and(|value| official_snapshot_is_fresh(value, chrono::Utc::now().timestamp()))
     {
-        return Ok(cached.expect("checked above"));
+        let snapshot = cached.expect("checked above");
+        maybe_reconcile_from_cached_snapshot(storage, &snapshot);
+        return Ok(snapshot);
     }
 
     match fetch_official_model_catalog(storage, api_key_id, &client_version) {
         Ok((response, etag)) => {
             let snapshot = build_official_snapshot(response, &client_version, etag.as_deref())?;
             write_official_snapshot(&cache_path, &snapshot)?;
+            if let Err(err) = reconcile_managed_models_from_official_snapshot(storage, &snapshot) {
+                log::warn!("event=reconcile_fetched_official_catalog_failed error={err}");
+            } else if let Some(key) = snapshot_reconcile_key(&snapshot) {
+                let cell = LAST_RECONCILED_SNAPSHOT_KEY.get_or_init(|| Mutex::new(None));
+                let mut guard = crate::lock_utils::lock_recover(cell, "last_reconciled_snapshot");
+                *guard = Some(key);
+            }
             Ok(snapshot)
         }
         Err(err) => match cached {
@@ -521,6 +571,328 @@ fn temp_file_path(parent: &Path, target: &Path) -> PathBuf {
     ))
 }
 
+fn official_model_to_sync_input(
+    model: &Value,
+    fallback_order: i64,
+) -> Option<(bool, OfficialCatalogModelSyncV2)> {
+    let raw_slug = model.get("slug").and_then(Value::as_str)?.trim();
+    if raw_slug.is_empty() {
+        return None;
+    }
+    let canonical_slug = crate::models_v2::policy_catalog_slug(raw_slug);
+    let is_exact = raw_slug.eq_ignore_ascii_case(canonical_slug);
+    let display_name = model
+        .get("display_name")
+        .or_else(|| model.get("displayName"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(canonical_slug)
+        .to_string();
+    let description = model
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let supported_in_api = model
+        .get("supported_in_api")
+        .or_else(|| model.get("supportedInApi"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let visibility = match model
+        .get("visibility")
+        .and_then(Value::as_str)
+        .map(str::trim)
+    {
+        Some("hide" | "hidden") => "hide".to_string(),
+        _ => "list".to_string(),
+    };
+    let sort_order = model
+        .get("priority")
+        .or_else(|| model.get("sort_order"))
+        .or_else(|| model.get("sortOrder"))
+        .and_then(Value::as_i64)
+        .unwrap_or(fallback_order);
+    let context_window = model
+        .get("context_window")
+        .or_else(|| model.get("contextWindow"))
+        .and_then(Value::as_i64);
+    let max_context_window = model
+        .get("max_context_window")
+        .or_else(|| model.get("maxContextWindow"))
+        .and_then(Value::as_i64)
+        .or(context_window);
+    let default_reasoning_effort = model
+        .get("default_reasoning_level")
+        .or_else(|| model.get("defaultReasoningEffort"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let reasoning_efforts = model
+        .get("supported_reasoning_levels")
+        .or_else(|| model.get("supportedReasoningLevels"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .or_else(|| item.get("effort").and_then(Value::as_str))
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let service_tiers = model
+        .get("service_tiers")
+        .or_else(|| model.get("serviceTiers"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .or_else(|| item.get("id").and_then(Value::as_str))
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let additional_speed_tiers = model
+        .get("additional_speed_tiers")
+        .or_else(|| model.get("additionalSpeedTiers"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let input_modalities = model
+        .get("input_modalities")
+        .or_else(|| model.get("inputModalities"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| vec![Value::String("text".to_string())]);
+
+    let bool_cap = |keys: &[&str], default: bool| -> bool {
+        keys.iter()
+            .find_map(|k| model.get(*k).and_then(Value::as_bool))
+            .unwrap_or(default)
+    };
+    let str_cap = |keys: &[&str]| -> Value {
+        keys.iter()
+            .find_map(|k| model.get(*k).and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| Value::String(v.to_string()))
+            .unwrap_or(Value::Null)
+    };
+    let truncation_policy = model.get("truncation_policy").and_then(Value::as_object);
+    let truncation_mode = truncation_policy
+        .and_then(|obj| obj.get("mode").and_then(Value::as_str))
+        .map(|v| Value::String(v.to_string()))
+        .unwrap_or_else(|| str_cap(&["truncation_mode", "truncationMode"]));
+    let truncation_limit = truncation_policy
+        .and_then(|obj| obj.get("limit").and_then(Value::as_i64))
+        .or_else(|| {
+            model
+                .get("truncation_limit")
+                .or_else(|| model.get("truncationLimit"))
+                .and_then(Value::as_i64)
+        })
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+
+    let capabilities = serde_json::json!({
+        "reasoning_efforts": reasoning_efforts,
+        "service_tiers": service_tiers,
+        "additional_speed_tiers": additional_speed_tiers,
+        "input_modalities": input_modalities,
+        "output_modalities": ["text"],
+        "supported_endpoints": ["/v1/responses", "/v1/chat/completions"],
+        "supports_text_generation": true,
+        "prefer_websockets": bool_cap(&["prefer_websockets", "preferWebsockets"], true),
+        "supports_parallel_tool_calls": bool_cap(&["supports_parallel_tool_calls", "supportsParallelToolCalls"], true),
+        "supports_reasoning_summaries": bool_cap(&["supports_reasoning_summaries", "supportsReasoningSummaries", "supports_reasoning_summary_parameter"], true),
+        "default_reasoning_summary": str_cap(&["default_reasoning_summary", "defaultReasoningSummary"]),
+        "supports_verbosity": bool_cap(&["support_verbosity", "supports_verbosity", "supportsVerbosity"], true),
+        "default_verbosity": str_cap(&["default_verbosity", "defaultVerbosity"]),
+        "supports_image_detail_original": bool_cap(&["supports_image_detail_original", "supportsImageDetailOriginal"], true),
+        "supports_search_tool": bool_cap(&["supports_search_tool", "supportsSearchTool"], true),
+        "apply_patch_tool_type": str_cap(&["apply_patch_tool_type", "applyPatchToolType"]),
+        "web_search_tool_type": str_cap(&["web_search_tool_type", "webSearchToolType"]),
+        "shell_type": str_cap(&["shell_type", "shellType"]),
+        "truncation_mode": truncation_mode,
+        "truncation_limit": truncation_limit,
+        "minimal_client_version": str_cap(&["minimal_client_version", "minimalClientVersion"]),
+        "comp_hash": str_cap(&["comp_hash", "compHash"]),
+        "tool_mode": str_cap(&["tool_mode", "toolMode"]),
+        "multi_agent_version": str_cap(&["multi_agent_version", "multiAgentVersion"]),
+        "use_responses_lite": bool_cap(&["use_responses_lite", "useResponsesLite"], true),
+        "include_skills_usage_instructions": false,
+    });
+
+    Some((
+        is_exact,
+        OfficialCatalogModelSyncV2 {
+            slug: canonical_slug.to_string(),
+            display_name,
+            description,
+            supported_in_api,
+            visibility,
+            sort_order,
+            context_window,
+            max_context_window,
+            default_reasoning_effort,
+            capabilities,
+        },
+    ))
+}
+
+pub(crate) fn reconcile_managed_models_from_official_snapshot(
+    storage: &Storage,
+    snapshot: &Value,
+) -> Result<OfficialCatalogReconcileResultV2, String> {
+    let raw_models = official_model_catalog_from_value(snapshot)?;
+    let mut deduped: Vec<OfficialCatalogModelSyncV2> = Vec::new();
+    let mut index_by_slug: HashMap<String, (bool, usize)> = HashMap::new();
+    for (idx, model) in raw_models.iter().enumerate() {
+        let Some((is_exact, item)) = official_model_to_sync_input(model, (idx + 1) as i64) else {
+            continue;
+        };
+        let key = item.slug.to_ascii_lowercase();
+        if let Some((prev_exact, prev_idx)) = index_by_slug.get(&key).copied() {
+            if is_exact && !prev_exact {
+                deduped[prev_idx] = item;
+                index_by_slug.insert(key, (true, prev_idx));
+            }
+        } else {
+            let pos = deduped.len();
+            index_by_slug.insert(key, (is_exact, pos));
+            deduped.push(item);
+        }
+    }
+    let visible_api_count = deduped
+        .iter()
+        .filter(|item| item.visibility == "list" && item.supported_in_api)
+        .count();
+    let retire_missing = visible_api_count >= 3;
+    let result = storage
+        .reconcile_official_codex_catalog_v2(&deduped, retire_missing)
+        .map_err(|err| format!("reconcile official codex catalog failed: {err}"))?;
+    if !result.created_models.is_empty()
+        || !result.reenabled_models.is_empty()
+        || !result.retired_models.is_empty()
+        || !result.ensured_routes.is_empty()
+    {
+        log::info!(
+            "event=official_model_catalog_reconciled created={:?} reenabled={:?} retired={:?} ensured_routes={:?}",
+            result.created_models,
+            result.reenabled_models,
+            result.retired_models,
+            result.ensured_routes
+        );
+        crate::models_v2::sync_active_gateway_catalog_best_effort(storage);
+    }
+    Ok(result)
+}
+
+fn latest_compatible_official_snapshot_in_cache_dir(client_version: &str) -> Option<Value> {
+    let cache_dir = crate::process_env::db_dir().join(OFFICIAL_CATALOG_CACHE_DIR);
+    let entries = fs::read_dir(cache_dir).ok()?;
+    let mut best: Option<(i64, Value)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(snapshot) = load_compatible_official_snapshot(&path, client_version) else {
+            continue;
+        };
+        let fetched_ts = snapshot
+            .get("fetched_at")
+            .and_then(Value::as_str)
+            .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+            .map(|dt| dt.timestamp())
+            .unwrap_or(0);
+        if best
+            .as_ref()
+            .is_none_or(|(best_ts, _)| fetched_ts > *best_ts)
+        {
+            best = Some((fetched_ts, snapshot));
+        }
+    }
+    best.map(|(_, snapshot)| snapshot)
+}
+
+fn model_catalog_sync_interval_secs() -> u64 {
+    std::env::var(MODEL_CATALOG_SYNC_INTERVAL_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MODEL_CATALOG_SYNC_INTERVAL_SECS)
+        .max(MIN_MODEL_CATALOG_SYNC_INTERVAL_SECS)
+}
+
+fn sync_official_model_catalog_once() {
+    let Some(storage) = crate::storage_helpers::open_storage() else {
+        return;
+    };
+    let active_key_id = storage
+        .list_api_keys()
+        .ok()
+        .and_then(|keys| {
+            keys.into_iter().find(|key| {
+                key.status == "active"
+                    && key.upstream_provider == UpstreamProvider::Openai
+                    && key.rotation_strategy == crate::apikey_profile::ROTATION_ACCOUNT
+            })
+        })
+        .map(|key| key.id);
+
+    if let Some(key_id) = active_key_id {
+        match load_or_sync_official_model_catalog(&storage, &key_id) {
+            Ok(_) => return,
+            Err(err) => {
+                log::warn!("event=official_model_catalog_background_fetch_failed error={err}");
+            }
+        }
+    }
+
+    let client_version = crate::gateway::current_codex_user_agent_version();
+    if let Some(snapshot) = latest_compatible_official_snapshot_in_cache_dir(&client_version) {
+        maybe_reconcile_from_cached_snapshot(&storage, &snapshot);
+    }
+}
+
+pub(crate) fn ensure_official_model_catalog_sync() {
+    OFFICIAL_CATALOG_SYNC_STARTED.get_or_init(|| {
+        if let Err(err) = thread::Builder::new()
+            .name("codex-official-model-catalog-sync".to_string())
+            .spawn(|| {
+                thread::sleep(Duration::from_secs(5));
+                loop {
+                    sync_official_model_catalog_once();
+                    thread::sleep(Duration::from_secs(model_catalog_sync_interval_secs()));
+                }
+            })
+        {
+            log::warn!("official model catalog sync thread failed to start: {err}");
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,5 +1136,100 @@ mod tests {
         let err = serialize_gateway_model_catalog(&ModelsResponse::default())
             .expect_err("empty catalog must fail");
         assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn official_snapshot_reconcile_registers_new_models_maps_reserve_alias_and_retires_old() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let snapshot = serde_json::json!({
+            "fetched_at": "2026-11-18T00:00:00Z",
+            "client_version": "0.169.0",
+            "models": [
+                {
+                    "slug": "gpt-6.2-sol",
+                    "display_name": "GPT-6.2-Sol",
+                    "visibility": "list",
+                    "supported_in_api": true,
+                    "priority": 1
+                },
+                {
+                    "slug": "gpt-6.2-astra",
+                    "display_name": "GPT-6.2-Astra",
+                    "visibility": "list",
+                    "supported_in_api": true,
+                    "priority": 2
+                },
+                {
+                    "slug": "gpt-6.1-terra",
+                    "display_name": "GPT-6.1 Terra",
+                    "visibility": "list",
+                    "supported_in_api": true,
+                    "priority": 3
+                },
+                {
+                    "slug": "gpt-reserve",
+                    "display_name": "GPT-Reserve",
+                    "visibility": "hide",
+                    "supported_in_api": true,
+                    "priority": 4
+                },
+                {
+                    "slug": "gpt-6-luna",
+                    "display_name": "GPT-6-Luna",
+                    "visibility": "list",
+                    "supported_in_api": true,
+                    "priority": 5
+                },
+                {
+                    "slug": "gpt-6.3-nova",
+                    "display_name": "GPT-6.3-Nova",
+                    "description": "Newly rolled out model",
+                    "visibility": "list",
+                    "supported_in_api": true,
+                    "priority": 6,
+                    "context_window": 500000,
+                    "max_context_window": 872000,
+                    "default_reasoning_level": "medium",
+                    "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"}],
+                    "service_tiers": [{"id": "priority", "name": "Fast"}]
+                }
+            ]
+        });
+
+        let result = reconcile_managed_models_from_official_snapshot(&storage, &snapshot)
+            .expect("reconcile official snapshot");
+        assert_eq!(result.created_models, ["gpt-6.3-nova"]);
+        assert!(result.retired_models.contains(&"gpt-5.4".to_string()));
+        assert!(!result.retired_models.contains(&"gpt-image-2".to_string()));
+
+        let nova = storage
+            .get_managed_model_v2("gpt-6.3-nova")
+            .expect("read nova")
+            .expect("nova exists");
+        assert!(nova.enabled);
+        assert_eq!(nova.visibility, "list");
+        assert_eq!(nova.routes[0].upstream_model, "gpt-6.3-nova");
+        assert_eq!(nova.capabilities["service_tiers"], serde_json::json!(["priority"]));
+
+        let luna = storage
+            .get_managed_model_v2("gpt-6-luna")
+            .expect("read luna")
+            .expect("luna exists");
+        assert_eq!(luna.visibility, "list");
+        assert!(storage
+            .get_managed_model_v2("gpt-reserve")
+            .expect("read reserve")
+            .is_none());
+        assert!(!storage
+            .get_managed_model_v2("gpt-5.4")
+            .expect("read 5.4")
+            .expect("5.4 exists")
+            .enabled);
+        assert!(storage
+            .get_managed_model_v2("gpt-image-2")
+            .expect("read image")
+            .expect("image exists")
+            .enabled);
     }
 }

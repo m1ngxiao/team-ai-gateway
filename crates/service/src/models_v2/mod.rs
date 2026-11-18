@@ -187,11 +187,14 @@ fn service_tier_display_name(id: &str) -> &str {
 
 fn service_tier_description(model_slug: &str, id: &str) -> &'static str {
     if id.eq_ignore_ascii_case("priority") {
-        if model_slug.eq_ignore_ascii_case("gpt-6-astra")
+        if model_slug.eq_ignore_ascii_case("gpt-6.2-astra")
+            || model_slug.eq_ignore_ascii_case("gpt-6.2-sol")
+            || model_slug.eq_ignore_ascii_case("gpt-6-astra")
             || model_slug.eq_ignore_ascii_case("gpt-6.1-sol")
         {
             "2x speed, increased usage"
-        } else if model_slug.eq_ignore_ascii_case("gpt-6-sol")
+        } else if model_slug.eq_ignore_ascii_case("gpt-6.1-terra")
+            || model_slug.eq_ignore_ascii_case("gpt-6-sol")
             || model_slug.eq_ignore_ascii_case("gpt-6-luna")
         {
             "1.5x speed"
@@ -556,6 +559,9 @@ mod tests {
     #[test]
     fn new_gpt6_fast_service_tiers_match_live_codex_catalog() {
         for (slug, description) in [
+            ("gpt-6.2-astra", "2x speed, increased usage"),
+            ("gpt-6.2-sol", "2x speed, increased usage"),
+            ("gpt-6.1-terra", "1.5x speed"),
             ("gpt-6.1-sol", "2x speed, increased usage"),
             ("gpt-6-luna", "1.5x speed"),
         ] {

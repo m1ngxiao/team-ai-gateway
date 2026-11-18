@@ -13,7 +13,7 @@ test("sidebar collapse avoids transitions that continuously reflow the active pa
 
   assert.match(
     source,
-    /isSidebarOpen \? "w-\[220px\] xl:w-\[280px\]" : "w-\[60px\] xl:w-\[72px\]"/,
+    /isSidebarOpen \? "w-\[224px\] xl:w-\[252px\]" : "w-\[64px\] xl:w-\[68px\]"/,
   );
   assert.match(
     source,
@@ -177,6 +177,6 @@ test("page fallback stays aligned with both sidebar widths", async () => {
 
   assert.match(
     source,
-    /isSidebarOpen \? "left-\[220px\] xl:left-\[280px\]" : "left-\[60px\] xl:left-\[72px\]"/,
+    /isSidebarOpen \? "left-\[224px\] xl:left-\[252px\]" : "left-\[64px\] xl:left-\[68px\]"/,
   );
 });

@@ -32,7 +32,7 @@ test("shell preserves page titles and compacts header controls by content width"
     /gap-2 glass-header px-2[\s\S]*sm:gap-3 sm:px-4/,
   );
   assert.match(headerSource, /flex min-w-0 flex-1[\s\S]*overflow-hidden/);
-  assert.match(headerSource, /truncate text-lg[\s\S]*sm:text-\[21px\]/);
+  assert.match(headerSource, /truncate text-\[18px\][\s\S]*sm:text-\[20px\]/);
   assert.match(
     headerSource,
     /triggerClassName="w-\[124px\] min-w-\[124px\] gap-2 px-2\.5"/,

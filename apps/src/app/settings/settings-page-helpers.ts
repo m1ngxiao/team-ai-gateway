@@ -72,7 +72,7 @@ export function compareEnvOverrideItems(
 }
 
 export const THEMES = [
-  { id: "tech", name: "企业蓝", color: "#4f63e5" },
+  { id: "tech", name: "暖砂", color: "#c2603e" },
   { id: "dark", name: "极夜黑", color: "#a5b4fc" },
   { id: "dark-one", name: "深邃黑", color: "#79b8f3" },
   { id: "business", name: "事务金", color: "#a96f0b" },
@@ -89,6 +89,7 @@ export const THEMES = [
 export const ROUTE_STRATEGY_LABELS: Record<string, string> = {
   ordered: "顺序优先 (Ordered)",
   balanced: "均衡轮询 (Balanced)",
+  quota_aware: "额度感知 (Quota Aware)",
 };
 
 export function formatFreeAccountMaxModelLabel(

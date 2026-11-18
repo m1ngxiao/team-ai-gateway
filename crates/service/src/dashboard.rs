@@ -40,7 +40,7 @@ pub(crate) fn read_admin_usage_summary(
     crate::initialize_storage_if_needed()?;
     let storage =
         storage_helpers::open_storage().ok_or_else(|| "open storage failed".to_string())?;
-    let (today_start, today_end) = time_bounds::local_day_bounds_ts()?;
+    let (today_start, today_end) = time_bounds::business_day_bounds_ts()?;
     let range_start = start_ts.filter(|value| *value > 0).unwrap_or_else(|| {
         today_start.saturating_sub((ADMIN_USAGE_RANGE_DAYS - 1) * time_bounds::DAY_SECONDS)
     });
@@ -584,7 +584,7 @@ pub(crate) fn read_member_dashboard_summary(
 ) -> Result<MemberDashboardSummaryResult, String> {
     crate::initialize_storage_if_needed()?;
     let target_user_id = resolve_target_user_id(actor, requested_user_id)?;
-    let (day_start, day_end) = resolve_day_bounds(day_start_ts, day_end_ts);
+    let (day_start, day_end) = resolve_day_bounds(day_start_ts, day_end_ts)?;
     let storage =
         storage_helpers::open_storage().ok_or_else(|| "open storage failed".to_string())?;
     let distribution_enabled = crate::distribution_enabled_for_storage(&storage);
@@ -692,8 +692,11 @@ fn resolve_target_user_id(
         .ok_or_else(|| "permission_denied: dashboard requires user session".to_string())
 }
 
-fn resolve_day_bounds(day_start_ts: Option<i64>, day_end_ts: Option<i64>) -> (i64, i64) {
-    time_bounds::resolve_optional_utc_day_bounds_ts(
+fn resolve_day_bounds(
+    day_start_ts: Option<i64>,
+    day_end_ts: Option<i64>,
+) -> Result<(i64, i64), String> {
+    time_bounds::resolve_optional_business_day_bounds_ts(
         day_start_ts,
         day_end_ts,
         codexmanager_core::storage::now_ts(),

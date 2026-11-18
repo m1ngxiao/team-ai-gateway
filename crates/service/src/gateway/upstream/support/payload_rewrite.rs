@@ -96,9 +96,64 @@ pub(in crate::gateway) fn strip_encrypted_content_from_body(body: &[u8]) -> Opti
     serde_json::to_vec(&value).ok()
 }
 
+fn account_scoped_item(value: &Value) -> bool {
+    let Value::Object(map) = value else {
+        return false;
+    };
+    map.get("file_id").is_some_and(|value| !value.is_null())
+        || map
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("item_reference"))
+}
+
+fn remove_account_scoped_array_items(value: &mut Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut changed = false;
+            for child in map.values_mut() {
+                changed |= remove_account_scoped_array_items(child);
+            }
+            changed
+        }
+        Value::Array(items) => {
+            let mut changed = false;
+            items.retain_mut(|item| {
+                if account_scoped_item(item) {
+                    changed = true;
+                    return false;
+                }
+                changed |= remove_account_scoped_array_items(item);
+                true
+            });
+            changed
+        }
+        _ => false,
+    }
+}
+
+/// Rebase a request for best-effort replay on another account.
+///
+/// The body must remain internally valid, so account-scoped history items are
+/// removed instead of forwarding opaque IDs or encrypted payloads to the backup.
+pub(in crate::gateway) fn strip_account_scoped_context_from_body(body: &[u8]) -> Option<Vec<u8>> {
+    let mut value: Value = serde_json::from_slice(body).ok()?;
+    let object = value.as_object_mut()?;
+    let mut changed = false;
+    for field in ["previous_response_id", "conversation", "conversation_id"] {
+        changed |= object.remove(field).is_some();
+    }
+    changed |= strip_encrypted_content_value(&mut value);
+    changed |= remove_account_scoped_array_items(&mut value);
+    if !changed {
+        return None;
+    }
+    serde_json::to_vec(&value).ok()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::strip_encrypted_content_from_body;
+    use super::{strip_account_scoped_context_from_body, strip_encrypted_content_from_body};
     use serde_json::{json, Value};
 
     fn contains_encrypted_content(value: &Value) -> bool {
@@ -235,5 +290,46 @@ mod tests {
         assert_eq!(input.len(), 25);
         assert_eq!(input[24]["type"], "message");
         assert_eq!(input[24]["content"][0]["text"], "continue");
+    }
+
+    #[test]
+    fn account_rebase_removes_opaque_history_and_file_references() {
+        let body = json!({
+            "model": "gpt-6-astra",
+            "previous_response_id": "resp_old_account",
+            "conversation": "conv_old_account",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "keep this"}]},
+                {"type": "reasoning", "id": "rs_1", "encrypted_content": "secret"},
+                {"type": "item_reference", "id": "item_old_account"},
+                {"role": "user", "content": [
+                    {"type": "input_file", "file_id": "file_old_account"},
+                    {"type": "input_text", "text": "also keep this"}
+                ]}
+            ],
+            "tools": [{"type": "function", "name": "lookup"}]
+        });
+        let rewritten = strip_account_scoped_context_from_body(
+            serde_json::to_vec(&body)
+                .expect("serialize body")
+                .as_slice(),
+        )
+        .expect("rewrite body");
+        let value: Value = serde_json::from_slice(&rewritten).expect("parse rewritten body");
+
+        assert!(value.get("previous_response_id").is_none());
+        assert!(value.get("conversation").is_none());
+        assert!(!contains_encrypted_content(&value));
+        assert_eq!(value["input"].as_array().expect("input").len(), 2);
+        assert_eq!(value["input"][0]["content"][0]["text"], "keep this");
+        assert_eq!(
+            value["input"][1]["content"]
+                .as_array()
+                .expect("content")
+                .len(),
+            1
+        );
+        assert_eq!(value["input"][1]["content"][0]["text"], "also keep this");
+        assert_eq!(value["tools"][0]["name"], "lookup");
     }
 }

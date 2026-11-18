@@ -1,4 +1,4 @@
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous};
 use sqlx::{Column, Row as SqlxRow, SqlitePool, TypeInfo};
 use std::cell::Cell;
 use std::fmt;
@@ -67,6 +67,8 @@ impl Connection {
         let pool = block_on_runtime(&rt, async {
             SqlitePoolOptions::new()
                 .max_connections(1)
+                .idle_timeout(None)
+                .max_lifetime(None)
                 .connect_with(options)
                 .await
         })?;
@@ -82,10 +84,14 @@ impl Connection {
         let pool = block_on_runtime(&rt, async {
             SqlitePoolOptions::new()
                 .max_connections(1)
+                .idle_timeout(None)
+                .max_lifetime(None)
                 .connect_with(
                     SqliteConnectOptions::from_str("sqlite::memory:")?
                         .create_if_missing(true)
-                        .journal_mode(SqliteJournalMode::Memory),
+                        .journal_mode(SqliteJournalMode::Memory)
+                        .foreign_keys(true)
+                        .pragma("temp_store", "MEMORY"),
                 )
                 .await
         })?;
@@ -206,7 +212,11 @@ fn sqlite_options_for_path(path: &Path) -> Result<SqliteConnectOptions> {
     Ok(SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal))
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_millis(10_000))
+        .foreign_keys(true)
+        .pragma("temp_store", "MEMORY"))
 }
 
 #[derive(Debug)]
@@ -1015,4 +1025,72 @@ fn row_from_sqlx(row: SqliteRow) -> Result<Row<'static>> {
 
 fn split_sql_batch(sql: &str) -> impl Iterator<Item = &str> {
     sql.split(';').map(str::trim).filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::Connection;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempSqliteFiles(PathBuf);
+
+    impl Drop for TempSqliteFiles {
+        fn drop(&mut self) {
+            let base = self.0.to_string_lossy();
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{base}{suffix}"));
+            }
+        }
+    }
+
+    fn unique_db_path(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}.db", std::process::id()))
+    }
+
+    #[test]
+    fn file_connection_persists_wal_normal_sync_foreign_keys_temp_store_and_busy_timeout() {
+        let db_path = unique_db_path("codexmanager-rusqlite-pragmas");
+        let _cleanup = TempSqliteFiles(db_path.clone());
+
+        let conn = Connection::open(&db_path).expect("open file connection");
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS t(id INTEGER PRIMARY KEY);")
+            .expect("create table");
+
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("read journal_mode");
+        let synchronous: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .expect("read synchronous");
+        let foreign_keys: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read foreign_keys");
+        let temp_store: i64 = conn
+            .query_row("PRAGMA temp_store", [], |row| row.get(0))
+            .expect("read temp_store");
+        let busy_timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("read busy_timeout");
+
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        assert_eq!(synchronous, 1); // NORMAL
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(temp_store, 2); // MEMORY
+        assert_eq!(busy_timeout, 10_000);
+
+        let mem = Connection::open_in_memory().expect("open memory connection");
+        let mem_fk: i64 = mem
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("read memory foreign_keys");
+        let mem_temp: i64 = mem
+            .query_row("PRAGMA temp_store", [], |row| row.get(0))
+            .expect("read memory temp_store");
+        assert_eq!(mem_fk, 1);
+        assert_eq!(mem_temp, 2);
+    }
 }

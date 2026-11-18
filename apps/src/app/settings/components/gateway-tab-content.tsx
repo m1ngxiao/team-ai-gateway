@@ -149,12 +149,13 @@ export function GatewayTabContent({
               <SelectGroup>
                 <SelectItem value="ordered">{t("顺序优先 (Ordered)")}</SelectItem>
                 <SelectItem value="balanced">{t("均衡轮询 (Balanced)")}</SelectItem>
+                <SelectItem value="quota_aware">{t("额度感知 (Quota Aware)")}</SelectItem>
               </SelectGroup>
             </SelectContent>
           </Select>
           <p className="text-[10px] text-muted-foreground">
             {t(
-              "顺序优先：按账号候选顺序优先尝试，默认只会在头部小窗口内按健康度做轻微换头；均衡轮询：按“平台密钥 + 模型”维度严格轮询可用账号，默认不做健康度换头。",
+              "顺序优先：按账号候选顺序优先尝试，默认只会在头部小窗口内按健康度做轻微换头；均衡轮询：按“平台密钥 + 模型”维度严格轮询可用账号；额度感知：综合剩余额度、近 1 小时 Token、活跃会话和在途数选号，新会话优先低负载账号，空闲 30 分钟以上的旧会话在额度明显更优时会重绑定。",
             )}
           </p>
         </div>

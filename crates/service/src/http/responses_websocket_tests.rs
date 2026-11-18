@@ -1,7 +1,8 @@
 use super::{
     apply_model_fast_policy_with_storage, build_socks5_connect_request,
     build_upstream_websocket_request, infer_ws_terminal_status, inspect_ws_terminal_event,
-    is_previous_response_not_found_terminal, load_ws_tool_call_registry, merge_client_metadata,
+    is_previous_response_not_found_terminal, is_upstream_account_rate_limits_ws_event,
+    load_ws_tool_call_registry, merge_client_metadata,
     missing_ws_tool_call_from_terminal, parse_websocket_target, parse_ws_usage,
     prepare_missing_ws_tool_call_retry, proxy_basic_auth_header,
     rebase_ws_request_for_account_change, remember_ws_tool_calls_from_upstream_event,
@@ -2079,4 +2080,14 @@ fn websocket_missing_tool_call_recovery_requires_a_matching_call_and_changed_reb
     .expect("unchanged recovery check")
     .is_none());
     assert!(!already_retried);
+}
+
+#[test]
+fn upstream_rate_limits_ws_event_is_filtered() {
+    assert!(is_upstream_account_rate_limits_ws_event(
+        r#"{"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":99}}}"#
+    ));
+    assert!(!is_upstream_account_rate_limits_ws_event(
+        r#"{"type":"response.completed","response":{"id":"resp_1","output":[]}}"#
+    ));
 }

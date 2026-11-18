@@ -565,3 +565,226 @@ fn reserve_alias_keeps_non_luna_account_route_override_authoritative() {
         Some("gpt-5.4")
     );
 }
+
+struct CandidateEnvGuard {
+    name: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl CandidateEnvGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(name);
+        std::env::set_var(name, value);
+        Self { name, previous }
+    }
+}
+
+impl Drop for CandidateEnvGuard {
+    fn drop(&mut self) {
+        match self.previous.as_ref() {
+            Some(value) => std::env::set_var(self.name, value),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
+
+fn run_multi_candidate_sequence(
+    test_name: &str,
+    account_ids: &[&str],
+    cooldown_ids: &[&str],
+    statuses: Vec<u16>,
+) -> (
+    Vec<CapturedCandidateRequest>,
+    Option<codexmanager_core::storage::RequestLog>,
+) {
+    let _env_guard = crate::test_env_guard();
+    let _cooldown_reset = CooldownReset;
+    let _aggressive_guard =
+        CandidateEnvGuard::set("CODEXMANAGER_DYNAMIC_OVERLOAD_AGGRESSIVE", "false");
+
+    let storage = Storage::open_in_memory().expect("open storage");
+    storage.init().expect("init storage");
+    let candidates = candidate_accounts(account_ids);
+    for (account, token) in &candidates {
+        storage.insert_account(account).expect("insert account");
+        storage.insert_token(token).expect("insert token");
+    }
+    for id in cooldown_ids {
+        crate::gateway::gateway_mark_account_cooldown_for_status(id, 429);
+    }
+
+    let server = Server::http("127.0.0.1:0").expect("start server");
+    let addr = format!("http://{}", server.server_addr());
+    let canonical_url = format!("{addr}/backend-api/codex/responses");
+    let join = thread::spawn(move || {
+        let mut captured = Vec::new();
+        for (index, status) in statuses.into_iter().enumerate() {
+            let timeout = if index == 0 {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(500)
+            };
+            let Some(mut request) = server
+                .recv_timeout(timeout)
+                .expect("receive candidate request")
+            else {
+                break;
+            };
+            let mut body = Vec::new();
+            std::io::Read::read_to_end(request.as_reader(), &mut body)
+                .expect("read candidate request body");
+            captured.push(CapturedCandidateRequest {
+                path: request.url().to_string(),
+                session_headers: captured_session_headers(&request),
+                body: serde_json::from_slice(&body).expect("parse candidate request body"),
+            });
+            let response_body = if status == 200 {
+                r#"{"id":"resp_ok","object":"response","status":"completed","output":[]}"#
+            } else {
+                r#"{"error":{"message":"upstream error","type":"upstream_error"}}"#
+            };
+            request
+                .respond(
+                    Response::from_string(response_body)
+                        .with_status_code(StatusCode(status))
+                        .with_header(
+                            tiny_http::Header::from_bytes("content-type", "application/json")
+                                .expect("content type header"),
+                        ),
+                )
+                .expect("respond candidate request");
+        }
+        captured
+    });
+
+    let incoming_headers = IncomingHeaderSnapshot::from_http_headers(&HeaderMap::new());
+    let body = Bytes::from(
+        serde_json::to_vec(&serde_json::json!({
+            "model": "gpt-6-astra",
+            "input": "hello"
+        }))
+        .expect("serialize request body"),
+    );
+    let setup = super::super::request_setup::UpstreamRequestSetup {
+        upstream_base: addr,
+        upstream_fallback_base: None,
+        url: canonical_url,
+        url_alt: None,
+        candidate_count: candidates.len(),
+        candidate_account_ids: Vec::new(),
+        account_max_inflight: 1,
+        anthropic_has_thread_anchor: false,
+        has_sticky_fallback_session: false,
+        has_sticky_fallback_conversation: false,
+        has_body_encrypted_content: false,
+        conversation_routing: None,
+        route_strategy_for_log: "ordered",
+        route_source_for_log: "test",
+    };
+    let context = super::super::execution_context::GatewayUpstreamExecutionContext::new(
+        test_name,
+        &storage,
+        "candidate-multi-test-key",
+        "/v1/responses",
+        "/v1/responses",
+        "POST",
+        ResponseAdapter::Passthrough,
+        crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        None,
+        Some("gpt-6-astra"),
+        Some("gpt-6-astra"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("account_rotation"),
+        Some(setup.route_strategy_for_log),
+        Some(setup.route_source_for_log),
+        1,
+        setup.candidate_count,
+        setup.account_max_inflight,
+    );
+    let tool_name_restore_map = ToolNameRestoreMap::new();
+    let request: tiny_http::Request = tiny_http::TestRequest::new()
+        .with_method(tiny_http::Method::Post)
+        .with_path("/v1/responses")
+        .into();
+
+    let result = execute_candidate_sequence(
+        request,
+        candidates,
+        CandidateExecutorParams {
+            storage: &storage,
+            method: &reqwest::Method::POST,
+            incoming_headers: &incoming_headers,
+            body: &body,
+            original_body: &body,
+            path: "/v1/responses",
+            request_shape: Some("responses"),
+            trace_id: test_name,
+            model_for_log: Some("gpt-6-astra"),
+            response_adapter: ResponseAdapter::Passthrough,
+            gemini_stream_output_mode: None,
+            tool_name_restore_map: &tool_name_restore_map,
+            context: &context,
+            setup: &setup,
+            request_deadline: None,
+            started_at: Instant::now(),
+            client_is_stream: false,
+            upstream_is_stream: false,
+            debug: false,
+            allow_openai_fallback: false,
+            disable_challenge_stateless_retry: false,
+            has_anthropic_safeguards: false,
+            context_enrichment: None,
+        },
+    )
+    .expect("execute multi candidate sequence");
+
+    assert!(matches!(result, CandidateExecutionResult::Handled));
+    let requests = join.join().expect("join mock upstream server");
+    let request_log = storage
+        .list_request_logs(None, 10)
+        .expect("read request logs")
+        .into_iter()
+        .find(|log| log.trace_id.as_deref() == Some(test_name));
+    (requests, request_log)
+}
+
+#[test]
+fn candidate_sequence_delivers_upstream_error_when_other_candidates_in_cooldown() {
+    let (requests, request_log) = run_multi_candidate_sequence(
+        "candidate-cooldown-delivers-upstream",
+        &["acc-cd-a", "acc-cd-b", "acc-cd-c"],
+        &["acc-cd-b", "acc-cd-c"],
+        vec![404],
+    );
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        request_log.and_then(|log| log.status_code),
+        Some(404),
+        "single available candidate error should be delivered instead of falling through to Exhausted"
+    );
+}
+
+#[test]
+fn candidate_sequence_delivers_backup_upstream_error_when_max_attempts_reached() {
+    let (requests, request_log) = run_multi_candidate_sequence(
+        "candidate-max-attempts-delivers-backup-error",
+        &["acc-cap-a", "acc-cap-b", "acc-cap-c"],
+        &[],
+        vec![502, 502, 502, 502],
+    );
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected first candidate (1 attempt + 1 same-account retry) plus terminal backup attempt before delivery"
+    );
+    assert_eq!(
+        request_log.and_then(|log| log.status_code),
+        Some(502),
+        "backup candidate error at max_attempts should be delivered instead of Exhausted 503"
+    );
+}

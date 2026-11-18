@@ -652,8 +652,16 @@ fn transport_wraps_adapted_chat_only_when_upstream_is_responses_stream() {
         "http://127.0.0.1:12345/custom/responses/",
     ] {
         for client_path in ["/v1/chat/completions", "/v1/chat/completions?stream=false"] {
-            assert!(should_wrap_upstream_as_stream_response(client_path, target, true));
-            assert!(!should_wrap_upstream_as_stream_response(client_path, target, false));
+            assert!(should_wrap_upstream_as_stream_response(
+                client_path,
+                target,
+                true
+            ));
+            assert!(!should_wrap_upstream_as_stream_response(
+                client_path,
+                target,
+                false
+            ));
         }
     }
     for target in [
@@ -710,18 +718,26 @@ fn adapted_chat_stream_transport_retains_bounded_html_error_preview() {
     let expected = b"<html><title>Just a moment...</title></html>".to_vec();
     let (url, release, handle) = spawn_raw_http_response(
         "403 Forbidden",
-        vec![("Content-Type", "text/html"), ("cf-ray", "synthetic-chat-ray")],
+        vec![
+            ("Content-Type", "text/html"),
+            ("cf-ray", "synthetic-chat-ray"),
+        ],
         expected.clone(),
         true,
     );
     let started = Instant::now();
     let response = send_mock_stream_request_for_path(&url, "/v1/chat/completions");
     assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
-    let body = response.read_all_bytes().expect("read adapted chat error preview");
+    let body = response
+        .read_all_bytes()
+        .expect("read adapted chat error preview");
     let elapsed = started.elapsed();
     let _ = release.send(());
     handle.join().expect("join adapted chat mock upstream");
-    assert!(elapsed < Duration::from_secs(1), "error preview waited {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "error preview waited {elapsed:?}"
+    );
     assert_eq!(body.as_ref(), expected.as_slice());
 }
 
@@ -732,8 +748,12 @@ fn adapted_chat_stream_transport_keeps_total_deadline_during_active_chunks() {
     let address = listener.local_addr().unwrap();
     let upstream = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let mut request = Vec::new();
         while !request.windows(4).any(|window| window == b"\r\n\r\n") {
             let mut buf = [0; 1024];
@@ -745,7 +765,8 @@ fn adapted_chat_stream_transport_keeps_total_deadline_during_active_chunks() {
         let frame = "data: {\"type\":\"response.in_progress\"}\n\n";
         for _ in 0..100 {
             if write!(stream, "{:x}\r\n{frame}\r\n", frame.len()).is_err()
-                || stream.flush().is_err() {
+                || stream.flush().is_err()
+            {
                 return;
             }
             thread::sleep(Duration::from_millis(20));
@@ -754,11 +775,19 @@ fn adapted_chat_stream_transport_keeps_total_deadline_during_active_chunks() {
     });
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let response = send_async_stream_request(
-        &client, &reqwest::Method::GET, &format!("http://{address}/v1/responses"),
-        "/v1/chat/completions", Some(Instant::now() + Duration::from_millis(500)),
-        &[], &Bytes::new(), true,
-    ).expect("receive synthetic response headers");
-    let error = response.read_all_bytes().expect_err("active chunks cannot extend total deadline");
+        &client,
+        &reqwest::Method::GET,
+        &format!("http://{address}/v1/responses"),
+        "/v1/chat/completions",
+        Some(Instant::now() + Duration::from_millis(500)),
+        &[],
+        &Bytes::new(),
+        true,
+    )
+    .expect("receive synthetic response headers");
+    let error = response
+        .read_all_bytes()
+        .expect_err("active chunks cannot extend total deadline");
     upstream.join().unwrap();
     assert!(error.contains("upstream total timeout exceeded"), "{error}");
 }
@@ -806,18 +835,31 @@ fn stream_transport_does_not_fast_close_successful_sse_body() {
 fn generation_budget_caps_async_physical_posts_across_worker_threads() {
     use super::super::super::generation_budget::{self, BudgetError};
     let scope = generation_budget::enter(
-        true, "transport_async_generation_limit", "model", "trace", None,
+        true,
+        "transport_async_generation_limit",
+        "model",
+        "trace",
+        None,
     );
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     for expected_count in 1..=3 {
         let (url, _, handle) = spawn_raw_http_response(
-            "200 OK", vec![("Content-Type", "text/event-stream")],
-            b"data: {\"type\":\"response.completed\"}\n\n".to_vec(), false,
+            "200 OK",
+            vec![("Content-Type", "text/event-stream")],
+            b"data: {\"type\":\"response.completed\"}\n\n".to_vec(),
+            false,
         );
         let response = send_async_stream_request(
-            &client, &reqwest::Method::POST, &url, "/v1/responses", None,
-            &[], &Bytes::new(), true,
-        ).unwrap();
+            &client,
+            &reqwest::Method::POST,
+            &url,
+            "/v1/responses",
+            None,
+            &[],
+            &Bytes::new(),
+            true,
+        )
+        .unwrap();
         response.read_all_bytes().unwrap();
         handle.join().unwrap();
         assert_eq!(scope.sent_count(), expected_count);
@@ -826,29 +868,57 @@ fn generation_budget_caps_async_physical_posts_across_worker_threads() {
     forbidden.set_nonblocking(true).unwrap();
     let url = format!("http://{}/v1/responses", forbidden.local_addr().unwrap());
     let result = send_async_stream_request(
-        &client, &reqwest::Method::POST, &url, "/v1/responses", None,
-        &[], &Bytes::new(), true,
+        &client,
+        &reqwest::Method::POST,
+        &url,
+        "/v1/responses",
+        None,
+        &[],
+        &Bytes::new(),
+        true,
     );
-    assert!(matches!(result, Err(super::AsyncStreamRequestError::BudgetExhausted(BudgetError::RequestLimit))));
-    assert_eq!(forbidden.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    assert!(matches!(
+        result,
+        Err(super::AsyncStreamRequestError::BudgetExhausted(
+            BudgetError::RequestLimit
+        ))
+    ));
+    assert_eq!(
+        forbidden.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
 }
 
 #[test]
 fn generation_budget_counts_failed_async_sends_conservatively() {
     use super::super::super::generation_budget;
     let scope = generation_budget::enter(
-        true, "transport_failed_generation_sends", "model", "trace", None,
+        true,
+        "transport_failed_generation_sends",
+        "model",
+        "trace",
+        None,
     );
     let unreachable = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/v1/responses", unreachable.local_addr().unwrap());
     drop(unreachable);
-    let client = reqwest::Client::builder().no_proxy()
-        .connect_timeout(Duration::from_millis(200)).build().unwrap();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_millis(200))
+        .build()
+        .unwrap();
     for expected_count in 1..=2 {
         assert!(send_async_stream_request(
-            &client, &reqwest::Method::POST, &url, "/v1/responses", None,
-            &[], &Bytes::new(), true,
-        ).is_err());
+            &client,
+            &reqwest::Method::POST,
+            &url,
+            "/v1/responses",
+            None,
+            &[],
+            &Bytes::new(),
+            true,
+        )
+        .is_err());
         assert_eq!(scope.sent_count(), expected_count);
     }
 }
@@ -864,17 +934,27 @@ fn generation_budget_counts_websocket_create_after_handshake() {
     let _upper_no_proxy_guard = EnvGuard::set("NO_PROXY", "127.0.0.1,localhost");
     crate::gateway::reload_runtime_config_from_env();
     let scope = generation_budget::enter(
-        true, "transport_websocket_generation_send", "model", "trace", None,
+        true,
+        "transport_websocket_generation_send",
+        "model",
+        "trace",
+        None,
     );
-    let (url, _, frame_rx, handle) = spawn_mock_websocket_upstream(
-        r#"{"type":"response.completed"}"#,
-    );
+    let (url, _, frame_rx, handle) =
+        spawn_mock_websocket_upstream(r#"{"type":"response.completed"}"#);
     let response = super::send_websocket_upstream_request(
-        &url, "transport-budget-ws-account", Some(Instant::now() + Duration::from_secs(5)),
-        &[], &Bytes::from_static(br#"{"model":"model","input":"test"}"#),
-    ).unwrap();
+        &url,
+        "transport-budget-ws-account",
+        Some(Instant::now() + Duration::from_secs(5)),
+        &[],
+        &Bytes::from_static(br#"{"model":"model","input":"test"}"#),
+    )
+    .unwrap();
     response.read_all_bytes().unwrap();
-    assert!(frame_rx.recv_timeout(Duration::from_secs(1)).unwrap().contains("response.create"));
+    assert!(frame_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+        .contains("response.create"));
     handle.join().unwrap();
     assert_eq!(scope.sent_count(), 1);
 }

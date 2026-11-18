@@ -196,15 +196,20 @@ fn tool_before_text_keeps_distinct_output_indices_and_order() {
         Cursor::new(upstream.as_bytes().to_vec()),
         Arc::new(Mutex::new(UpstreamResponseUsage::default())),
         Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default())),
-        Some("claude-test"), Instant::now(),
+        Some("claude-test"),
+        Instant::now(),
     );
     let mut output = String::new();
-    reader.read_to_string(&mut output).expect("read mapped stream");
-    let events = output.lines()
+    reader
+        .read_to_string(&mut output)
+        .expect("read mapped stream");
+    let events = output
+        .lines()
         .filter_map(|line| line.strip_prefix("data: "))
         .map(|data| serde_json::from_str::<Value>(data).expect("event JSON"))
         .collect::<Vec<_>>();
-    let added = events.iter()
+    let added = events
+        .iter()
         .filter(|event| event["type"] == "response.output_item.added")
         .collect::<Vec<_>>();
     assert_eq!(added.len(), 2);
@@ -212,11 +217,13 @@ fn tool_before_text_keeps_distinct_output_indices_and_order() {
     assert_eq!(added[0]["item"]["type"], "function_call");
     assert_eq!(added[1]["output_index"], 1);
     assert_eq!(added[1]["item"]["type"], "message");
-    let text_delta = events.iter()
+    let text_delta = events
+        .iter()
         .find(|event| event["type"] == "response.output_text.delta")
         .expect("text delta");
     assert_eq!(text_delta["output_index"], 1);
-    let completed = events.iter()
+    let completed = events
+        .iter()
         .find(|event| event["type"] == "response.completed")
         .expect("completed event");
     assert_eq!(completed["response"]["output"][0]["type"], "function_call");
@@ -234,17 +241,25 @@ fn interrupted_anthropic_stream_emits_failed_without_completed() {
     let usage = Arc::new(Mutex::new(UpstreamResponseUsage::default()));
     let terminal = Arc::new(Mutex::new(ResponsesFromAnthropicTerminal::default()));
     let mut reader = ResponsesFromAnthropicSseReader::from_reader(
-        Cursor::new(upstream.as_bytes().to_vec()), usage, Arc::clone(&terminal),
-        Some("claude-test"), Instant::now(),
+        Cursor::new(upstream.as_bytes().to_vec()),
+        usage,
+        Arc::clone(&terminal),
+        Some("claude-test"),
+        Instant::now(),
     );
     let mut output = String::new();
-    reader.read_to_string(&mut output).expect("read failed conversion");
+    reader
+        .read_to_string(&mut output)
+        .expect("read failed conversion");
     assert!(output.contains("event: response.output_text.delta"));
     assert!(output.contains("event: response.failed"));
     assert!(!output.contains("event: response.completed"));
     let terminal = terminal.lock().expect("terminal lock");
     assert!(!terminal.saw_message_stop);
-    assert!(terminal.error.as_deref().is_some_and(|error| error.contains("before message_stop")));
+    assert!(terminal
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("before message_stop")));
 }
 
 #[test]
@@ -261,12 +276,19 @@ fn anthropic_error_event_emits_failed_and_ignores_later_stop() {
     let mut reader = ResponsesFromAnthropicSseReader::from_reader(
         Cursor::new(upstream.as_bytes().to_vec()),
         Arc::new(Mutex::new(UpstreamResponseUsage::default())),
-        Arc::clone(&terminal), Some("claude-test"), Instant::now(),
+        Arc::clone(&terminal),
+        Some("claude-test"),
+        Instant::now(),
     );
     let mut output = String::new();
-    reader.read_to_string(&mut output).expect("read error conversion");
+    reader
+        .read_to_string(&mut output)
+        .expect("read error conversion");
     assert!(output.contains("event: response.failed"));
     assert!(output.contains("at capacity"));
     assert!(!output.contains("event: response.completed"));
-    assert_eq!(terminal.lock().expect("terminal lock").error.as_deref(), Some("at capacity"));
+    assert_eq!(
+        terminal.lock().expect("terminal lock").error.as_deref(),
+        Some("at capacity")
+    );
 }

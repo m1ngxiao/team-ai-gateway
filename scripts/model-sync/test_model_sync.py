@@ -61,6 +61,10 @@ class FakeGateway:
             return {'added': added, 'errors': [], 'conflicts': []}
         if method == 'apikey/managedModelGetV2':
             return self.models[params['slug']]
+        if method == 'apikey/managedModelUpsertV2':
+            model = params['model']
+            self.models[model['slug']] = model
+            return model
         raise AssertionError(method)
 
     def model_catalog(self, key_id, secret, version):
@@ -320,6 +324,28 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(json.loads((state / 'gateway-models.json').read_text()), old)
         self.assertEqual(json.loads((state / 'source-catalog.json').read_text()), old)
         self.assertEqual(json.loads((state / 'last-success.json').read_text())['cli_version'], '0.161.0')
+
+
+    def test_upstream_only_model_and_missing_price_backfill(self):
+        FakeGateway.initial = {
+            'gpt-canary': {'slug': 'gpt-canary', 'enabled': True, 'supportedInApi': True,
+                           'visibility': 'list', 'userEdited': True, 'price': {'priceStatus': 'custom'}},
+            'gpt-missing-price': {'slug': 'gpt-missing-price', 'displayName': 'GPT Missing',
+                                  'origin': 'custom', 'enabled': True, 'supportedInApi': True,
+                                  'visibility': 'list', 'userEdited': False,
+                                  'price': {'priceStatus': 'missing'},
+                                  'priceTiers': [],
+                                  'routes': [{'sourceKind': 'account_pool', 'sourceId': 'default',
+                                              'upstreamModel': 'gpt-missing-price', 'enabled': True,
+                                              'priority': 0, 'weight': 1}]},
+        }
+        FakeGateway.authorized = [row('gpt-canary'), row('gpt-missing-price'), row('gpt-server-new')]
+        self.catalog = {'models': [row('gpt-canary'), row('gpt-missing-price')]}
+        self.prices = {'gpt-missing-price': price(), 'gpt-server-new': price()}
+        result = self.run_sync()
+        self.assertEqual(result['added'], ['gpt-server-new'])
+        self.assertEqual(result['price_backfilled'], ['gpt-missing-price'])
+        self.assertEqual(FakeGateway.instances[-1].models['gpt-missing-price']['price']['priceStatus'], 'official')
 
 
 if __name__ == '__main__':

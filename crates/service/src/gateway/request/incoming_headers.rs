@@ -28,6 +28,7 @@ pub(crate) struct IncomingHeaderSnapshot {
     codex_inference_call_id: Option<String>,
     oai_attestation: Option<String>,
     passthrough_codex_headers: Vec<(String, String)>,
+    passthrough_anthropic_headers: Vec<(String, String)>,
     conversation_id: Option<String>,
 }
 
@@ -50,6 +51,13 @@ impl IncomingHeaderSnapshot {
                 continue;
             };
             let name = name.as_str();
+            if should_capture_anthropic_header(name) {
+                remember_passthrough_header_exact(
+                    &mut snapshot.passthrough_anthropic_headers,
+                    name,
+                    raw_value,
+                );
+            }
             let value = raw_value.trim();
             if name.eq_ignore_ascii_case("Authorization") {
                 snapshot.authorization_present = true;
@@ -211,6 +219,14 @@ impl IncomingHeaderSnapshot {
     pub(crate) fn from_request(request: &Request) -> Self {
         let mut snapshot = IncomingHeaderSnapshot::default();
         for header in request.headers() {
+            let header_name = header.field.to_string();
+            if should_capture_anthropic_header(header_name.as_str()) {
+                remember_passthrough_header_exact(
+                    &mut snapshot.passthrough_anthropic_headers,
+                    header_name.as_str(),
+                    header.value.as_str(),
+                );
+            }
             if header.field.equiv("Authorization") {
                 snapshot.authorization_present = true;
                 let value = header.value.as_str().trim();
@@ -347,7 +363,6 @@ impl IncomingHeaderSnapshot {
                 }
                 continue;
             }
-            let header_name = header.field.to_string();
             if should_capture_passthrough_codex_header(header_name.as_str()) {
                 let value = header.value.as_str().trim();
                 if !value.is_empty() {
@@ -665,6 +680,15 @@ impl IncomingHeaderSnapshot {
         self.passthrough_codex_headers.as_slice()
     }
 
+    /// Every non-credential, non-hop-by-hop request header is retained for a
+    /// native Anthropic upstream. The list is deliberately open so Claude Code
+    /// can introduce new `anthropic-*` or `x-claude-code-*` headers without a
+    /// gateway release; duplicate values and their order are preserved.
+    #[allow(dead_code)]
+    pub(crate) fn passthrough_anthropic_headers(&self) -> &[(String, String)] {
+        self.passthrough_anthropic_headers.as_slice()
+    }
+
     pub(crate) fn has_codex_image_turn_id(&self) -> bool {
         self.passthrough_codex_headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case(X_CODEX_IMAGE_TURN_ID_HEADER_NAME) && !value.trim().is_empty()
@@ -740,6 +764,26 @@ fn should_capture_passthrough_codex_header(name: &str) -> bool {
         || name.eq_ignore_ascii_case(X_CODEX_IMAGE_TURN_ID_HEADER_NAME)
 }
 
+fn should_capture_anthropic_header(name: &str) -> bool {
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "x-api-key"
+            | "api-key"
+            | "x-goog-api-key"
+            | "content-length"
+            | "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+    )
+}
+
 fn remember_passthrough_header(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
     if headers
         .iter()
@@ -747,6 +791,10 @@ fn remember_passthrough_header(headers: &mut Vec<(String, String)>, name: &str, 
     {
         return;
     }
+    headers.push((name.to_string(), value.to_string()));
+}
+
+fn remember_passthrough_header_exact(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
     headers.push((name.to_string(), value.to_string()));
 }
 

@@ -30,6 +30,8 @@ pub(crate) struct ChatCompletionsFromResponsesSseReader {
     emitted_tool_calls: bool,
     finish_reason_override: Option<&'static str>,
     emitted_tool_call_indices: HashSet<usize>,
+    tool_index_by_output_index: HashMap<usize, usize>,
+    next_tool_index: usize,
     tool_call_arguments: HashMap<usize, String>,
     emitted_image_urls: HashSet<String>,
     id: Option<String>,
@@ -43,7 +45,11 @@ impl ChatCompletionsFromResponsesSseReader {
         usage_collector: Arc<Mutex<PassthroughSseCollector>>,
         request_started_at: Instant,
     ) -> Self {
-        Self::from_pump(UpstreamSseFramePump::new(upstream), usage_collector, request_started_at)
+        Self::from_pump(
+            UpstreamSseFramePump::new(upstream),
+            usage_collector,
+            request_started_at,
+        )
     }
 
     pub(crate) fn from_stream_response(
@@ -53,7 +59,9 @@ impl ChatCompletionsFromResponsesSseReader {
     ) -> Self {
         let (reader, shutdown) = chat_byte_stream::ChatByteStreamReader::new(upstream.into_body());
         let mut reader = Self::from_pump(
-            UpstreamSseFramePump::from_reader(reader), usage_collector, request_started_at,
+            UpstreamSseFramePump::from_reader(reader),
+            usage_collector,
+            request_started_at,
         );
         reader.stream_shutdown = Some(shutdown);
         reader
@@ -79,6 +87,8 @@ impl ChatCompletionsFromResponsesSseReader {
             emitted_tool_calls: false,
             finish_reason_override: None,
             emitted_tool_call_indices: HashSet::new(),
+            tool_index_by_output_index: HashMap::new(),
+            next_tool_index: 0,
             tool_call_arguments: HashMap::new(),
             emitted_image_urls: HashSet::new(),
             id: None,
@@ -240,23 +250,28 @@ impl ChatCompletionsFromResponsesSseReader {
         }
     }
 
+    fn tool_index(&mut self, output_index: usize) -> usize {
+        if let Some(index) = self.tool_index_by_output_index.get(&output_index) {
+            return *index;
+        }
+        let index = self.next_tool_index;
+        self.next_tool_index = self.next_tool_index.saturating_add(1);
+        self.tool_index_by_output_index.insert(output_index, index);
+        index
+    }
+
     fn tool_call_added_chunk(&mut self, value: &Value) -> Option<Vec<u8>> {
         let item = Self::function_call_item(value)?;
-        let index = Self::output_index(value);
+        let output_index = Self::output_index(value);
+        let index = self.tool_index(output_index);
         let call_id = item
             .get("call_id")
             .and_then(Value::as_str)
             .unwrap_or_default();
         let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
-        let arguments = item
-            .get("arguments")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
         self.emitted_tool_calls = true;
-        self.emitted_tool_call_indices.insert(index);
-        self.tool_call_arguments
-            .entry(index)
-            .or_insert_with(|| arguments.to_string());
+        self.emitted_tool_call_indices.insert(output_index);
+        self.tool_call_arguments.entry(index).or_default();
         Some(self.assistant_delta_chunk(serde_json::json!({
             "tool_calls": [{
                 "index": index,
@@ -264,7 +279,7 @@ impl ChatCompletionsFromResponsesSseReader {
                 "type": "function",
                 "function": {
                     "name": name,
-                    "arguments": arguments
+                    "arguments": ""
                 }
             }]
         })))
@@ -272,7 +287,7 @@ impl ChatCompletionsFromResponsesSseReader {
 
     fn tool_call_arguments_delta_chunk(&mut self, value: &Value) -> Option<Vec<u8>> {
         let delta = value.get("delta").and_then(Value::as_str)?;
-        let index = Self::output_index(value);
+        let index = self.tool_index(Self::output_index(value));
         self.emitted_tool_calls = true;
         self.tool_call_arguments
             .entry(index)
@@ -290,18 +305,23 @@ impl ChatCompletionsFromResponsesSseReader {
 
     fn tool_call_arguments_done_chunk(&mut self, value: &Value) -> Option<Vec<u8>> {
         let arguments = value.get("arguments").and_then(Value::as_str)?;
-        let index = Self::output_index(value);
+        let index = self.tool_index(Self::output_index(value));
         self.remaining_tool_call_arguments_chunk(index, arguments)
     }
 
     fn tool_call_done_chunk(&mut self, value: &Value) -> Option<Vec<u8>> {
-        let index = Self::output_index(value);
-        if self.emitted_tool_call_indices.contains(&index) {
-            let item = Self::function_call_item(value)?;
-            let arguments = item.get("arguments").and_then(Value::as_str)?;
-            return self.remaining_tool_call_arguments_chunk(index, arguments);
+        let output_index = Self::output_index(value);
+        let item = Self::function_call_item(value)?;
+        let arguments = item.get("arguments").and_then(Value::as_str)?;
+        let index = self.tool_index(output_index);
+        let mut out = Vec::new();
+        if !self.emitted_tool_call_indices.contains(&output_index) {
+            out.extend(self.tool_call_added_chunk(value)?);
         }
-        self.tool_call_added_chunk(value)
+        if let Some(chunk) = self.remaining_tool_call_arguments_chunk(index, arguments) {
+            out.extend(chunk);
+        }
+        (!out.is_empty()).then_some(out)
     }
 
     fn remaining_tool_call_arguments_chunk(
@@ -331,18 +351,23 @@ impl ChatCompletionsFromResponsesSseReader {
     fn completed_tool_calls_chunk(&mut self, response: &Value) -> Option<Vec<u8>> {
         let output = response.get("output").and_then(Value::as_array)?;
         let mut out = Vec::new();
-        for (index, item) in output.iter().enumerate() {
+        for (output_index, item) in output.iter().enumerate() {
             if item.get("type").and_then(Value::as_str) != Some("function_call") {
                 continue;
             }
-            if self.emitted_tool_call_indices.contains(&index) {
-                continue;
+            if !self.emitted_tool_call_indices.contains(&output_index) {
+                if let Some(chunk) = self.tool_call_added_chunk(&serde_json::json!({
+                    "output_index": output_index,
+                    "item": item
+                })) {
+                    out.extend(chunk);
+                }
             }
-            if let Some(chunk) = self.tool_call_added_chunk(&serde_json::json!({
-                "output_index": index,
-                "item": item
-            })) {
-                out.extend(chunk);
+            if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+                let index = self.tool_index(output_index);
+                if let Some(chunk) = self.remaining_tool_call_arguments_chunk(index, arguments) {
+                    out.extend(chunk);
+                }
             }
         }
         if out.is_empty() {
@@ -421,9 +446,9 @@ impl ChatCompletionsFromResponsesSseReader {
         let value = Self::data_json(lines)?;
         self.remember_meta(&value);
         let event_type = Self::event_type(lines, &value);
-        if let Some((error, message)) = super::super::body_conversion::chat_response_failure(
-            &value, event_type.as_deref(),
-        ) {
+        if let Some((error, message)) =
+            super::super::body_conversion::chat_response_failure(&value, event_type.as_deref())
+        {
             if let Ok(mut collector) = self.usage_collector.lock() {
                 collector.saw_terminal = true;
                 collector.terminal_error = Some(message.clone());
@@ -431,18 +456,29 @@ impl ChatCompletionsFromResponsesSseReader {
                 collector.last_event_type = event_type;
             }
             self.finished = true;
-            return Some(format!("data: {}\n\ndata: [DONE]\n\n", serde_json::json!({"error": error})).into_bytes());
+            return Some(
+                format!(
+                    "data: {}\n\ndata: [DONE]\n\n",
+                    serde_json::json!({"error": error})
+                )
+                .into_bytes(),
+            );
+        }
+        if event_type.as_deref() == Some("response.created") && !self.emitted_assistant_role {
+            return Some(self.assistant_delta_chunk(serde_json::json!({ "content": "" })));
         }
         let output_limited = super::super::body_conversion::chat_response_reached_output_limit(
-            &value, event_type.as_deref(),
+            &value,
+            event_type.as_deref(),
         );
         if output_limited {
             self.finish_reason_override = Some("length");
         }
-        let is_terminal_event = output_limited || matches!(
-            event_type.as_deref(),
-            Some("response.completed") | Some("response.done")
-        );
+        let is_terminal_event = output_limited
+            || matches!(
+                event_type.as_deref(),
+                Some("response.completed") | Some("response.done")
+            );
         if !is_terminal_event
             && (Self::is_reasoning_delta_event(event_type.as_deref()) || !self.emitted_reasoning)
         {

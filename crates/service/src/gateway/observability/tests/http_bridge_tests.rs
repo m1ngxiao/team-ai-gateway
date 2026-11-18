@@ -549,7 +549,7 @@ fn anthropic_sse_reader_uses_request_model_when_upstream_stream_omits_model() {
     let (response, server) = open_streaming_mock_http_response(
         "text/event-stream",
         &[(
-            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_missing_model_1\"}}\n\n\
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_missing_model_1\"}}\n\n\
              data: [DONE]\n\n",
             0,
         )],

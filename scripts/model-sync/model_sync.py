@@ -479,17 +479,40 @@ def synchronize(config, state_dir, *, apply=False, smoke_new=False):
         managed_result = gateway.rpc('apikey/managedModelListV2', {'includeHidden': True})
         managed_rows = managed_result['items']
         existing = {row['slug']: row for row in managed_rows}
+        cli_slugs = {row['slug'] for row in rows}
+        for up_row in upstream['models']:
+            up_slug = up_row.get('slug')
+            if not (isinstance(up_slug, str) and up_slug not in cli_slugs
+                    and up_slug != 'gpt-reserve'
+                    and up_row.get('visibility') == 'list'
+                    and up_row.get('supported_in_api') is True
+                    and SLUG.fullmatch(up_slug)):
+                continue
+            current_existing = existing.get(up_slug)
+            needs_sync = (current_existing is None
+                          or (not current_existing.get('userEdited')
+                              and current_existing.get('price', {}).get('priceStatus') == 'missing'))
+            if needs_sync:
+                rows.append(up_row)
+                cli_slugs.add(up_slug)
         candidates = []
+        price_backfill_candidates = []
         for row in rows:
             slug = row['slug']
             if slug in existing:
-                report['existing_preserved'].append(slug)
+                current_row = existing[slug]
+                if (not current_row.get('userEdited')
+                        and current_row.get('price', {}).get('priceStatus') == 'missing'
+                        and slug in upstream_ids):
+                    price_backfill_candidates.append((row, current_row))
+                else:
+                    report['existing_preserved'].append(slug)
             elif slug not in upstream_ids:
                 report['pending'].append({'model': slug, 'reason': 'not_authorized_by_official_upstream'})
             else:
                 candidates.append(row)
         prices = {}
-        if candidates:
+        if candidates or price_backfill_candidates:
             from official_prices import parse_official_prices, pricing_component_url
             try:
                 price_raw, _ = fetch(remote, PRICING)
@@ -512,6 +535,30 @@ def synchronize(config, state_dir, *, apply=False, smoke_new=False):
                 checks = gateway.smoke(row, tools=True)
                 report['smoke_checks'].append({'model': row['slug'], 'tests': checks})
                 approved.append(model)
+            except Exception as error:
+                report['pending'].append({'model': row['slug'], 'reason': 'live_verification_failed',
+                                          'error': str(error) if isinstance(error, SyncError) else type(error).__name__})
+        backfill_updates = []
+        for row, current_row in price_backfill_candidates:
+            price = prices.get(row['slug'])
+            if not price:
+                report['pending'].append({'model': row['slug'], 'reason': 'official_price_unconfirmed'})
+                continue
+            if not apply and not smoke_new:
+                report['pending'].append({'model': row['slug'], 'reason': 'awaiting_price_backfill'})
+                continue
+            try:
+                updated_model = dict(current_row)
+                rates = {dest: price.get(source) for source, dest in PRICE_FIELDS.items()}
+                tiers = price.get('price_tiers') or []
+                model_tiers = [{'minInputTokens': tier['min_input_tokens'],
+                                **{dest: tier.get(source) for source, dest in PRICE_FIELDS.items()}}
+                               for tier in tiers]
+                updated_model['price'] = {'priceStatus': 'official', 'priceSource': price['price_source'], **rates}
+                updated_model['priceTiers'] = model_tiers
+                checks = gateway.smoke(row, tools=True)
+                report['smoke_checks'].append({'model': row['slug'], 'tests': checks})
+                backfill_updates.append(updated_model)
             except Exception as error:
                 report['pending'].append({'model': row['slug'], 'reason': 'live_verification_failed',
                                           'error': str(error) if isinstance(error, SyncError) else type(error).__name__})
@@ -551,6 +598,9 @@ def synchronize(config, state_dir, *, apply=False, smoke_new=False):
                     if not saved['enabled'] or not saved['supportedInApi'] or saved['price']['priceStatus'] != 'official' or not any(
                         route['enabled'] and route['sourceKind'] == 'account_pool' and route['upstreamModel'] == slug for route in saved['routes']):
                         raise SyncError('post_import_model_verification_failed')
+            for updated_model in backfill_updates:
+                saved = gateway.rpc('apikey/managedModelUpsertV2', {'model': updated_model})
+                report.setdefault('price_backfilled', []).append(saved['slug'])
             # This local catalog is suitable for model_catalog_json; it contains no credentials.
             verified_managed = gateway.rpc('apikey/managedModelListV2', {'includeHidden': True})['items']
             enabled = {row['slug'] for row in verified_managed if row['enabled'] and row['supportedInApi'] and row['visibility'] == 'list'}
@@ -560,6 +610,8 @@ def synchronize(config, state_dir, *, apply=False, smoke_new=False):
             publish_snapshot(state_dir, catalog, export, report)
         else:
             report['would_add_after_verification'] = [model['slug'] for model in approved]
+            if backfill_updates:
+                report['would_backfill_prices'] = [model['slug'] for model in backfill_updates]
         return report
     except Exception:
         if switched:

@@ -80,6 +80,10 @@ fn classify_known_messages() {
         ErrorCode::NoAvailableAccount
     );
     assert_eq!(
+        classify_message("账号临时不可用(account temporarily unavailable)"),
+        ErrorCode::AccountTemporaryUnavailable
+    );
+    assert_eq!(
         classify_message(
             "code=model_not_found type=invalid_request_error The model 'gpt-5.4' does not exist"
         ),

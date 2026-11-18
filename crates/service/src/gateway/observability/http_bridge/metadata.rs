@@ -55,9 +55,30 @@ pub(super) fn first_upstream_header(
     })
 }
 
+fn is_upstream_account_rate_limit_header(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("x-codex-primary-")
+        || lower.starts_with("x-codex-secondary-")
+        || lower.starts_with("x-codex-credits-")
+        || lower.starts_with("x-codex-rate-limit")
+        || lower == "x-codex-active-limit"
+        || lower == "x-codex-limit-name"
+        || lower == "x-codex-promo-message"
+        || lower.starts_with("x-team-key-")
+}
+
+#[allow(dead_code)]
 pub(super) fn copy_upstream_response_headers(
     upstream_headers: &reqwest::header::HeaderMap,
     trace_id: Option<&str>,
+) -> Vec<Header> {
+    copy_upstream_response_headers_with_extras(upstream_headers, trace_id, &[])
+}
+
+pub(super) fn copy_upstream_response_headers_with_extras(
+    upstream_headers: &reqwest::header::HeaderMap,
+    trace_id: Option<&str>,
+    extra_headers: &[Header],
 ) -> Vec<Header> {
     let mut headers = Vec::new();
     for (name, value) in upstream_headers.iter() {
@@ -65,6 +86,7 @@ pub(super) fn copy_upstream_response_headers(
         if name_str.eq_ignore_ascii_case("transfer-encoding")
             || name_str.eq_ignore_ascii_case("content-length")
             || name_str.eq_ignore_ascii_case("connection")
+            || is_upstream_account_rate_limit_header(name_str)
         {
             continue;
         }
@@ -72,6 +94,7 @@ pub(super) fn copy_upstream_response_headers(
             headers.push(header);
         }
     }
+    headers.extend(extra_headers.iter().cloned());
     push_trace_id_header(&mut headers, trace_id);
     headers
 }

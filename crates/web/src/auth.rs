@@ -266,13 +266,13 @@ fn builtin_login_html(error: Option<&str>) -> String {
     <style>
       :root {{
         color-scheme: light;
-        --bg: #eef3f8;
-        --panel: rgba(255,255,255,.92);
-        --text: #142033;
-        --muted: #627389;
-        --accent: #0f6fff;
-        --accent-strong: #0a57ca;
-        --border: rgba(20,32,51,.12);
+        --bg: #f5f2ec;
+        --panel: rgba(255,253,249,.94);
+        --text: #292724;
+        --muted: #746d63;
+        --accent: #c2603e;
+        --accent-strong: #ad5132;
+        --border: rgba(72,62,50,.14);
         --error-bg: rgba(193, 45, 45, .1);
         --error-fg: #b42318;
       }}
@@ -283,21 +283,21 @@ fn builtin_login_html(error: Option<&str>) -> String {
         display: grid;
         place-items: center;
         padding: 24px;
-        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-family: "Aptos", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         background:
-          radial-gradient(circle at top left, rgba(15,111,255,.18), transparent 32%),
-          radial-gradient(circle at bottom right, rgba(45,164,78,.14), transparent 26%),
-          linear-gradient(160deg, #f6f9fc 0%, #e8eef6 100%);
+          radial-gradient(circle at 8% 0%, rgba(226,210,191,.48), transparent 32%),
+          radial-gradient(circle at 92% 8%, rgba(194,96,62,.08), transparent 26%),
+          linear-gradient(160deg, #f8f4ee 0%, #eee9e1 100%);
         color: var(--text);
       }}
       .card {{
         width: min(100%, 420px);
         padding: 28px;
         border: 1px solid var(--border);
-        border-radius: 20px;
+        border-radius: 24px;
         background: var(--panel);
-        box-shadow: 0 24px 60px rgba(15, 23, 42, .12);
-        backdrop-filter: blur(14px);
+        box-shadow: 0 34px 90px -54px rgba(62,46,29,.5);
+        backdrop-filter: blur(20px);
       }}
       .mark {{
         display: inline-flex;
@@ -306,25 +306,25 @@ fn builtin_login_html(error: Option<&str>) -> String {
         width: 44px;
         height: 44px;
         border-radius: 14px;
-        background: linear-gradient(135deg, #0f6fff, #2bb673);
+        background: linear-gradient(145deg, #332e28, #483b31);
         color: #fff;
         font-weight: 700;
       }}
-      h1 {{ margin: 16px 0 6px; font-size: 22px; }}
+      h1 {{ margin: 16px 0 6px; font-family: "Iowan Old Style", "Palatino Linotype", "Noto Serif CJK SC", Georgia, serif; font-size: 30px; font-weight: 500; letter-spacing: -.035em; }}
       p {{ margin: 0 0 18px; color: var(--muted); line-height: 1.6; }}
       label {{ display: block; margin-bottom: 10px; font-size: 14px; color: var(--muted); }}
       input {{
         width: 100%;
-        border: 1px solid rgba(20,32,51,.16);
+        border: 1px solid rgba(72,62,50,.16);
         border-radius: 14px;
         padding: 13px 14px;
         font-size: 15px;
         outline: none;
-        background: rgba(255,255,255,.92);
+        background: rgba(255,253,249,.88);
       }}
       input:focus {{
-        border-color: rgba(15,111,255,.58);
-        box-shadow: 0 0 0 4px rgba(15,111,255,.12);
+        border-color: rgba(194,96,62,.5);
+        box-shadow: 0 0 0 4px rgba(194,96,62,.09);
       }}
       button {{
         width: 100%;
@@ -402,13 +402,13 @@ fn account_login_html(error: Option<&str>, bootstrap: bool) -> String {
     <style>
       :root {{
         color-scheme: light;
-        --bg: #eef3f8;
-        --panel: rgba(255,255,255,.92);
-        --text: #142033;
-        --muted: #627389;
-        --accent: #0f6fff;
-        --accent-strong: #0a57ca;
-        --border: rgba(20,32,51,.12);
+        --bg: #f5f2ec;
+        --panel: rgba(255,253,249,.94);
+        --text: #292724;
+        --muted: #746d63;
+        --accent: #c2603e;
+        --accent-strong: #ad5132;
+        --border: rgba(72,62,50,.14);
         --error-bg: rgba(193, 45, 45, .1);
         --error-fg: #b42318;
       }}
@@ -419,21 +419,21 @@ fn account_login_html(error: Option<&str>, bootstrap: bool) -> String {
         display: grid;
         place-items: center;
         padding: 24px;
-        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-family: "Aptos", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
         background:
-          radial-gradient(circle at top left, rgba(15,111,255,.18), transparent 32%),
-          radial-gradient(circle at bottom right, rgba(45,164,78,.14), transparent 26%),
-          linear-gradient(160deg, #f6f9fc 0%, #e8eef6 100%);
+          radial-gradient(circle at 8% 0%, rgba(226,210,191,.48), transparent 32%),
+          radial-gradient(circle at 92% 8%, rgba(194,96,62,.08), transparent 26%),
+          linear-gradient(160deg, #f8f4ee 0%, #eee9e1 100%);
         color: var(--text);
       }}
       .card {{
         width: min(100%, 440px);
         padding: 28px;
         border: 1px solid var(--border);
-        border-radius: 20px;
+        border-radius: 24px;
         background: var(--panel);
-        box-shadow: 0 24px 60px rgba(15, 23, 42, .12);
-        backdrop-filter: blur(14px);
+        box-shadow: 0 34px 90px -54px rgba(62,46,29,.5);
+        backdrop-filter: blur(20px);
       }}
       .mark {{
         display: inline-flex;
@@ -442,25 +442,25 @@ fn account_login_html(error: Option<&str>, bootstrap: bool) -> String {
         width: 44px;
         height: 44px;
         border-radius: 14px;
-        background: linear-gradient(135deg, #0f6fff, #2bb673);
+        background: linear-gradient(145deg, #332e28, #483b31);
         color: #fff;
         font-weight: 700;
       }}
-      h1 {{ margin: 16px 0 6px; font-size: 22px; }}
+      h1 {{ margin: 16px 0 6px; font-family: "Iowan Old Style", "Palatino Linotype", "Noto Serif CJK SC", Georgia, serif; font-size: 30px; font-weight: 500; letter-spacing: -.035em; }}
       p {{ margin: 0 0 18px; color: var(--muted); line-height: 1.6; }}
       label {{ display: block; margin: 14px 0 10px; font-size: 14px; color: var(--muted); }}
       input {{
         width: 100%;
-        border: 1px solid rgba(20,32,51,.16);
+        border: 1px solid rgba(72,62,50,.16);
         border-radius: 14px;
         padding: 13px 14px;
         font-size: 15px;
         outline: none;
-        background: rgba(255,255,255,.92);
+        background: rgba(255,253,249,.88);
       }}
       input:focus {{
-        border-color: rgba(15,111,255,.58);
-        box-shadow: 0 0 0 4px rgba(15,111,255,.12);
+        border-color: rgba(194,96,62,.5);
+        box-shadow: 0 0 0 4px rgba(194,96,62,.09);
       }}
       button {{
         width: 100%;

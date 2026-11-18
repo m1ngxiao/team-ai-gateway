@@ -2,6 +2,7 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, VecDeque};
 
+use super::schema_sanitizer::strip_unsupported_schema_patterns;
 use super::{AdaptedGatewayRequest, GeminiStreamOutputMode, ResponseAdapter, ToolNameRestoreMap};
 use crate::apikey_profile::{
     is_anthropic_request_path, is_gemini_generate_content_request_path, PROTOCOL_ANTHROPIC_NATIVE,
@@ -26,6 +27,7 @@ pub(crate) fn adapt_request_for_protocol(
         response_adapter: ResponseAdapter::Passthrough,
         gemini_stream_output_mode: None,
         tool_name_restore_map: ToolNameRestoreMap::new(),
+        context_management: Default::default(),
     })
 }
 
@@ -108,8 +110,13 @@ fn adapt_anthropic_messages_request(
     _path: &str,
     body: Vec<u8>,
 ) -> Result<AdaptedGatewayRequest, String> {
-    let payload = serde_json::from_slice::<Value>(&body)
+    let mut payload = serde_json::from_slice::<Value>(&body)
         .map_err(|err| format!("invalid anthropic request json: {err}"))?;
+    let context_management = if crate::gateway::claude_context_management_enabled() {
+        crate::gateway::anthropic_context_management::prepare_context_management(&mut payload)?
+    } else {
+        Default::default()
+    };
     let obj = payload
         .as_object()
         .ok_or_else(|| "anthropic request body must be an object".to_string())?;
@@ -117,8 +124,27 @@ fn adapt_anthropic_messages_request(
     let mut rewritten = Map::new();
     let mut tool_name_restore_map = ToolNameRestoreMap::new();
     let short_name_map = declared_short_name_map_for_anthropic_tools(obj.get("tools"));
-    copy_string_field(obj, &mut rewritten, "model");
+    if let Some(model) = obj
+        .get("model")
+        .and_then(Value::as_str)
+        .map(crate::gateway::strip_model_context_window_suffix)
+        .filter(|value| !value.is_empty())
+    {
+        rewritten.insert("model".to_string(), Value::String(model.to_string()));
+    }
     rewritten.insert("instructions".to_string(), Value::String(String::new()));
+    if let Some(max_tokens) = obj
+        .get("max_tokens")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+    {
+        rewritten.insert("max_output_tokens".to_string(), Value::from(max_tokens));
+    }
+    for key in ["temperature", "top_p"] {
+        if let Some(value) = obj.get(key).filter(|value| value.is_number()) {
+            rewritten.insert(key.to_string(), value.clone());
+        }
+    }
 
     if let Some(system_message) = anthropic_system_to_developer_message(obj.get("system")) {
         push_input_item(&mut rewritten, system_message);
@@ -137,8 +163,19 @@ fn adapt_anthropic_messages_request(
         &short_name_map,
         &mut tool_name_restore_map,
     )? {
+        let mut tools = tools;
+        if let Some(items) = tools.as_array_mut() {
+            for tool in items {
+                if let Some(parameters) = tool.get_mut("parameters") {
+                    strip_unsupported_schema_patterns(parameters);
+                }
+            }
+        }
         rewritten.insert("tools".to_string(), tools);
-        rewritten.insert("tool_choice".to_string(), Value::String("auto".to_string()));
+        rewritten.insert(
+            "tool_choice".to_string(),
+            anthropic_tool_choice_to_responses(obj.get("tool_choice"), &short_name_map),
+        );
     }
     rewritten.insert(
         "parallel_tool_calls".to_string(),
@@ -147,6 +184,9 @@ fn adapt_anthropic_messages_request(
     let reasoning = anthropic_reasoning_to_responses(obj.get("thinking"), obj.get("output_config"))
         .unwrap_or_else(|| json!({ "effort": "medium", "summary": "auto" }));
     rewritten.insert("reasoning".to_string(), reasoning);
+    if let Some(format) = anthropic_output_format_to_responses_text_format(obj.get("output_config")) {
+        rewritten.insert("text".to_string(), json!({ "format": format }));
+    }
     rewritten.insert("stream".to_string(), Value::Bool(true));
     rewritten.insert("store".to_string(), Value::Bool(false));
     rewritten.insert(
@@ -163,6 +203,7 @@ fn adapt_anthropic_messages_request(
         response_adapter: ResponseAdapter::AnthropicMessagesFromResponses,
         gemini_stream_output_mode: None,
         tool_name_restore_map,
+        context_management,
     })
 }
 
@@ -266,6 +307,7 @@ fn adapt_gemini_generate_content_request(
         response_adapter,
         gemini_stream_output_mode,
         tool_name_restore_map,
+        context_management: Default::default(),
     })
 }
 
@@ -375,15 +417,6 @@ fn backfill_empty_gemini_function_response_names(contents: &Value) -> Value {
     out
 }
 
-fn copy_string_field(source: &Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
-    if let Some(value) = source.get(key).and_then(Value::as_str) {
-        let value = value.trim();
-        if !value.is_empty() {
-            target.insert(key.to_string(), Value::String(value.to_string()));
-        }
-    }
-}
-
 fn push_input_item(target: &mut Map<String, Value>, item: Value) {
     match target.entry("input".to_string()) {
         serde_json::map::Entry::Vacant(entry) => {
@@ -412,6 +445,38 @@ fn responses_message(role: &str, content: Value) -> Value {
         "role": role,
         "content": content,
     })
+}
+
+fn anthropic_output_format_to_responses_text_format(
+    output_config: Option<&Value>,
+) -> Option<Value> {
+    let format = output_config
+        .and_then(Value::as_object)
+        .and_then(|cfg| cfg.get("format"))
+        .and_then(Value::as_object)?;
+    let kind = format.get("type").and_then(Value::as_str)?.trim();
+    if !kind.eq_ignore_ascii_case("json_schema") {
+        return None;
+    }
+    let mut schema = format.get("schema")?.as_object()?.clone();
+    let mut schema_val = Value::Object(std::mem::take(&mut schema));
+    strip_unsupported_schema_patterns(&mut schema_val);
+    let name = format
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("anthropic_output_schema");
+    let strict = format
+        .get("strict")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Some(json!({
+        "type": "json_schema",
+        "name": name,
+        "schema": schema_val,
+        "strict": strict,
+    }))
 }
 
 fn anthropic_message_role_to_responses(role: &str) -> &'static str {
@@ -443,7 +508,9 @@ fn responses_input_to_anthropic_messages(
             responses_input_item_to_anthropic(item, system_parts, messages)?;
         }
         Some(Value::Null) | None => {}
-        Some(_) => return Err("responses input must be text or an array of supported items".to_string()),
+        Some(_) => {
+            return Err("responses input must be text or an array of supported items".to_string())
+        }
     }
     Ok(())
 }
@@ -453,7 +520,8 @@ fn responses_input_item_to_anthropic(
     system_parts: &mut Vec<String>,
     messages: &mut Vec<Value>,
 ) -> Result<(), String> {
-    let obj = item.as_object()
+    let obj = item
+        .as_object()
         .ok_or_else(|| "unsupported responses input item: expected an object".to_string())?;
     match obj.get("type").and_then(Value::as_str).unwrap_or("message") {
         "message" => {
@@ -467,8 +535,13 @@ fn responses_input_item_to_anthropic(
                 return Err(format!("unsupported responses message role: {role}"));
             }
             if matches!(role, "developer" | "system") {
-                if content.iter().any(|part| part.get("type").and_then(Value::as_str) != Some("text")) {
-                    return Err("unsupported non-text system content in responses request".to_string());
+                if content
+                    .iter()
+                    .any(|part| part.get("type").and_then(Value::as_str) != Some("text"))
+                {
+                    return Err(
+                        "unsupported non-text system content in responses request".to_string()
+                    );
                 }
                 let text = anthropic_content_to_text(&content);
                 if !text.trim().is_empty() {
@@ -551,9 +624,9 @@ fn responses_message_content_to_anthropic(content: Option<&Value>) -> Result<Vec
 
 fn responses_content_part_to_anthropic(part: &Value) -> Result<Value, String> {
     let Some(obj) = part.as_object() else {
-        return part.as_str()
-            .map(anthropic_text_block)
-            .ok_or_else(|| "unsupported responses content part: expected text or object".to_string());
+        return part.as_str().map(anthropic_text_block).ok_or_else(|| {
+            "unsupported responses content part: expected text or object".to_string()
+        });
     };
     let kind = obj.get("type").and_then(Value::as_str).unwrap_or("text");
     match kind {
@@ -625,11 +698,21 @@ fn responses_tools_to_anthropic(tools: Option<&Value>) -> Result<Option<Value>, 
             .and_then(Value::as_str)
             .and_then(normalize_text)
             .ok_or_else(|| "responses function tool name is required".to_string())?;
-        if tool.get("description").is_some_and(|value| !value.is_string()) {
-            return Err(format!("responses function tool {name} description must be text"));
+        if tool
+            .get("description")
+            .is_some_and(|value| !value.is_string())
+        {
+            return Err(format!(
+                "responses function tool {name} description must be text"
+            ));
         }
-        if tool.get("parameters").is_some_and(|value| !value.is_object()) {
-            return Err(format!("responses function tool {name} parameters must be an object"));
+        if tool
+            .get("parameters")
+            .is_some_and(|value| !value.is_object())
+        {
+            return Err(format!(
+                "responses function tool {name} parameters must be an object"
+            ));
         }
         let mut mapped = Map::new();
         mapped.insert("name".to_string(), Value::String(name));
@@ -761,8 +844,39 @@ fn anthropic_messages_to_input(
     let items = messages
         .as_array()
         .ok_or_else(|| "anthropic messages must be an array".to_string())?;
+    let latest_compaction = items.iter().enumerate().rev().find_map(|(index, item)| {
+        let blocks = item.get("content")?.as_array()?;
+        blocks
+            .iter()
+            .rev()
+            .find(|block| block.get("type").and_then(Value::as_str) == Some("compaction"))
+            .map(|block| (index, block))
+    });
+    let (messages_for_input, compaction_summary) = match latest_compaction {
+        Some((index, block)) => (
+            &items[index..],
+            block
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        ),
+        None => (&items[..], None),
+    };
     let mut out = Vec::new();
-    for item in items {
+    if let Some(summary) = compaction_summary {
+        out.push(responses_message(
+            "developer",
+            json!([{
+                "type": "input_text",
+                "text": format!(
+                    "<conversation-summary>\n{summary}\n</conversation-summary>"
+                )
+            }]),
+        ));
+    }
+    for item in messages_for_input {
         let Some(message) = item.as_object() else {
             continue;
         };
@@ -820,6 +934,11 @@ fn anthropic_messages_to_input(
                             ) {
                                 out.push(mapped);
                             }
+                        }
+                        "compaction" => {
+                            // The latest summary is represented as a developer message.
+                            // Compaction blocks are history boundaries, so older turns and
+                            // older summary blocks are intentionally omitted.
                         }
                         _ => {}
                     }
@@ -1003,6 +1122,26 @@ fn anthropic_parallel_tool_calls(tool_choice: Option<&Value>) -> bool {
         .and_then(Value::as_bool)
         .map(|disabled| !disabled)
         .unwrap_or(true)
+}
+
+fn anthropic_tool_choice_to_responses(
+    tool_choice: Option<&Value>,
+    short_name_map: &BTreeMap<String, String>,
+) -> Value {
+    let Some(choice) = tool_choice.and_then(Value::as_object) else {
+        return Value::String("auto".to_string());
+    };
+    match choice.get("type").and_then(Value::as_str) {
+        Some("none") => Value::String("none".to_string()),
+        Some("any") | Some("required") => Value::String("required".to_string()),
+        Some("tool") => choice
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|name| resolve_short_tool_name(name, short_name_map))
+            .map(|name| json!({"type": "function", "name": name}))
+            .unwrap_or_else(|| Value::String("auto".to_string())),
+        _ => Value::String("auto".to_string()),
+    }
 }
 
 fn anthropic_reasoning_to_responses(

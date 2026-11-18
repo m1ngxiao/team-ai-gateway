@@ -93,6 +93,7 @@ pub(crate) enum CandidateRotationSource {
     ConversationBinding,
     ManualPreferredAccount,
     ThreadAwareDistribution,
+    QuotaAwareRebalance,
     RouteStrategy,
 }
 
@@ -113,6 +114,7 @@ impl CandidateRotationSource {
             Self::ConversationBinding => "conversation_bound",
             Self::ManualPreferredAccount => "manual_preferred_account",
             Self::ThreadAwareDistribution => "thread_aware_distribution",
+            Self::QuotaAwareRebalance => "quota_aware_rebalance",
             Self::RouteStrategy => "route_strategy",
         }
     }
@@ -453,6 +455,7 @@ pub(crate) fn prepare_conversation_routing_with_source(
 ///
 /// # 返回
 /// 返回函数执行结果
+#[cfg(test)]
 pub(crate) fn apply_candidate_rotation(
     candidates: &mut Vec<(Account, Token)>,
     routing: Option<&ConversationRoutingContext>,
@@ -460,9 +463,29 @@ pub(crate) fn apply_candidate_rotation(
     model_for_log: Option<&str>,
     account_binding_counts: Option<&HashMap<String, usize>>,
 ) -> CandidateRotationPlan {
-    if routing
-        .as_ref()
-        .is_some_and(|routing| routing.binding_selected)
+    apply_candidate_rotation_with_quota(
+        candidates,
+        routing,
+        key_id,
+        model_for_log,
+        account_binding_counts,
+        None,
+    )
+}
+
+pub(crate) fn apply_candidate_rotation_with_quota(
+    candidates: &mut Vec<(Account, Token)>,
+    routing: Option<&ConversationRoutingContext>,
+    key_id: &str,
+    model_for_log: Option<&str>,
+    account_binding_counts: Option<&HashMap<String, usize>>,
+    quota_snapshot: Option<&super::quota_aware::QuotaAwareSnapshot>,
+) -> CandidateRotationPlan {
+    let quota_aware = super::quota_aware_route_active();
+    if !quota_aware
+        && routing
+            .as_ref()
+            .is_some_and(|routing| routing.binding_selected)
     {
         return CandidateRotationPlan {
             source: CandidateRotationSource::ConversationBinding,
@@ -473,7 +496,7 @@ pub(crate) fn apply_candidate_rotation(
     if routing
         .as_ref()
         .and_then(|routing| routing.manual_preferred_account_id.as_deref())
-        .is_some()
+        .is_some_and(|account_id| rotate_to_account_id(candidates.as_mut_slice(), account_id))
     {
         return CandidateRotationPlan {
             source: CandidateRotationSource::ManualPreferredAccount,
@@ -481,15 +504,9 @@ pub(crate) fn apply_candidate_rotation(
             strategy_applied: false,
         };
     }
-    let manual_preferred_account_id = super::manual_preferred_account();
-    super::apply_route_strategy(candidates, key_id, model_for_log);
-    if manual_preferred_account_id
+    if super::manual_preferred_account()
         .as_deref()
-        .is_some_and(|account_id| {
-            candidates
-                .iter()
-                .any(|(account, _)| account.id == account_id)
-        })
+        .is_some_and(|account_id| rotate_to_account_id(candidates.as_mut_slice(), account_id))
     {
         return CandidateRotationPlan {
             source: CandidateRotationSource::ManualPreferredAccount,
@@ -497,6 +514,63 @@ pub(crate) fn apply_candidate_rotation(
             strategy_applied: false,
         };
     }
+    if quota_aware {
+        if let (Some(routing), Some(snapshot)) = (routing, quota_snapshot) {
+            if let Some(binding) = routing.existing_binding.as_ref() {
+                if let Some(target_index) =
+                    super::quota_aware::rebalance_target(candidates, binding, snapshot, now_ts())
+                {
+                    if target_index > 0 {
+                        candidates.rotate_left(target_index);
+                    }
+                    return CandidateRotationPlan {
+                        source: CandidateRotationSource::QuotaAwareRebalance,
+                        strategy_label: "quota_aware_rebalance",
+                        strategy_applied: true,
+                    };
+                }
+                if routing.binding_selected {
+                    return CandidateRotationPlan {
+                        source: CandidateRotationSource::ConversationBinding,
+                        strategy_label: "conversation_bound",
+                        strategy_applied: false,
+                    };
+                }
+            }
+        }
+        if routing
+            .as_ref()
+            .is_some_and(|routing| routing.binding_selected)
+        {
+            return CandidateRotationPlan {
+                source: CandidateRotationSource::ConversationBinding,
+                strategy_label: "conversation_bound",
+                strategy_applied: false,
+            };
+        }
+        let application = super::apply_route_strategy_with_quota_snapshot(
+            candidates,
+            key_id,
+            model_for_log,
+            quota_snapshot,
+        );
+        return CandidateRotationPlan {
+            source: CandidateRotationSource::RouteStrategy,
+            strategy_label: application.strategy_label,
+            strategy_applied: true,
+        };
+    }
+    if routing
+        .as_ref()
+        .is_some_and(|routing| routing.binding_selected)
+    {
+        return CandidateRotationPlan {
+            source: CandidateRotationSource::ConversationBinding,
+            strategy_label: "conversation_bound",
+            strategy_applied: false,
+        };
+    }
+    super::apply_route_strategy(candidates, key_id, model_for_log);
     if should_apply_thread_aware_distribution(routing, account_binding_counts) {
         let strategy_applied = account_binding_counts
             .is_some_and(|counts| rotate_to_least_loaded_thread_account(candidates, counts));

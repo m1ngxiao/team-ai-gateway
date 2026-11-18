@@ -164,6 +164,9 @@ function modelMatchesFilter(model: ManagedModelV2, filter: ModelFilter): boolean
 }
 
 const BUILTIN_MODEL_DESCRIPTION_KEYS: Record<string, string> = {
+  "gpt-6.2-sol": "适合编码与日常工作的高速主力模型。",
+  "gpt-6.2-astra": "适合复杂编码与专业工作的最强旗舰模型。",
+  "gpt-6.1-terra": "擅长视觉理解与计算机操作的高效模型。",
   "gpt-6.1-sol": "适合复杂编程与日常工作的主力模型。",
   "gpt-6-luna": "适合较简单任务的快速、经济模型。",
   "gpt-5.6-sol": "最新的前沿智能体编程模型。",

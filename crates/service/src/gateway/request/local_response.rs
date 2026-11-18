@@ -82,6 +82,25 @@ pub(super) fn respond_local_json(
     respond_local_json_with_headers(request, ctx, body, usage, Vec::new())
 }
 
+fn build_ok_local_response(
+    body: String,
+    content_type: &[u8],
+    trace_id: &str,
+    extra_headers: Vec<tiny_http::Header>,
+) -> Result<Response<std::io::Cursor<Vec<u8>>>, String> {
+    let mut response = super::error_response::with_trace_id_header(
+        Response::from_string(body).with_status_code(200).with_header(
+            tiny_http::Header::from_bytes(b"content-type".as_slice(), content_type)
+                .map_err(|_| "build content-type header failed".to_string())?,
+        ),
+        Some(trace_id),
+    );
+    for header in extra_headers {
+        response = response.with_header(header);
+    }
+    Ok(response)
+}
+
 pub(super) fn respond_local_json_with_headers(
     request: Request,
     ctx: &LocalResponseContext<'_>,
@@ -90,44 +109,59 @@ pub(super) fn respond_local_json_with_headers(
     extra_headers: Vec<tiny_http::Header>,
 ) -> Result<(), String> {
     record_local_result(ctx, 200, usage, None);
-    let mut response = super::error_response::with_trace_id_header(
-        Response::from_string(body)
-            .with_status_code(200)
-            .with_header(
-                tiny_http::Header::from_bytes(
-                    b"content-type".as_slice(),
-                    b"application/json".as_slice(),
-                )
-                .map_err(|_| "build content-type header failed".to_string())?,
-            ),
-        Some(ctx.trace_id),
-    );
-    for header in extra_headers {
-        response = response.with_header(header);
-    }
+    let response =
+        build_ok_local_response(body, b"application/json".as_slice(), ctx.trace_id, extra_headers)?;
     let _ = request.respond(response);
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(super) fn respond_local_text(
     request: Request,
     ctx: &LocalResponseContext<'_>,
     body: String,
     usage: super::request_log::RequestLogUsage,
 ) -> Result<(), String> {
+    respond_local_text_with_headers(request, ctx, body, usage, Vec::new())
+}
+
+pub(super) fn respond_local_text_with_headers(
+    request: Request,
+    ctx: &LocalResponseContext<'_>,
+    body: String,
+    usage: super::request_log::RequestLogUsage,
+    extra_headers: Vec<tiny_http::Header>,
+) -> Result<(), String> {
     record_local_result(ctx, 200, usage, None);
-    let response = super::error_response::with_trace_id_header(
-        Response::from_string(body)
-            .with_status_code(200)
-            .with_header(
-                tiny_http::Header::from_bytes(
-                    b"content-type".as_slice(),
-                    b"text/plain; charset=utf-8".as_slice(),
-                )
-                .map_err(|_| "build content-type header failed".to_string())?,
-            ),
-        Some(ctx.trace_id),
-    );
+    let response = build_ok_local_response(
+        body,
+        b"text/plain; charset=utf-8".as_slice(),
+        ctx.trace_id,
+        extra_headers,
+    )?;
+    let _ = request.respond(response);
+    Ok(())
+}
+
+pub(super) fn respond_local_sse_with_headers(
+    request: Request,
+    ctx: &LocalResponseContext<'_>,
+    body: String,
+    usage: super::request_log::RequestLogUsage,
+    mut extra_headers: Vec<tiny_http::Header>,
+) -> Result<(), String> {
+    if let Ok(cache_ctl) =
+        tiny_http::Header::from_bytes(b"cache-control".as_slice(), b"no-cache".as_slice())
+    {
+        extra_headers.push(cache_ctl);
+    }
+    record_local_result(ctx, 200, usage, None);
+    let response = build_ok_local_response(
+        body,
+        b"text/event-stream; charset=utf-8".as_slice(),
+        ctx.trace_id,
+        extra_headers,
+    )?;
     let _ = request.respond(response);
     Ok(())
 }

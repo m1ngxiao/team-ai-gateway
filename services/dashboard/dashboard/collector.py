@@ -19,6 +19,7 @@ from pathlib import Path
 from .models import Snapshot
 from .account_details import credits_details, email_from_label, positive_int, timestamp
 from .catalog import CATALOG_COLUMNS, collect_catalog, key_metadata, public_text
+from .error_catalog import ERROR_LAYERS, SEVERITY_RANK, classify_failure, safe_failure_message
 
 LOG = logging.getLogger("collector")
 TZ = timezone(timedelta(hours=8))
@@ -36,6 +37,18 @@ REQUEST_ERROR_KINDS = (
     "upstream_error",
     "unknown_error",
 )
+CATEGORY_FALLBACK_LAYER = {
+    "no_available_account": "gateway_pool",
+    "rate_limited": "gateway_pool",
+    "auth_error": "member_policy",
+    "invalid_request": "member_policy",
+    "client_cancelled": "client_cancelled",
+    "timeout": "upstream_openai",
+    "network_error": "upstream_openai",
+    "upstream_overloaded": "upstream_openai",
+    "upstream_error": "upstream_openai",
+    "unknown_error": "upstream_openai",
+}
 ALLOWED_COLUMNS = {
     **CATALOG_COLUMNS,
     "accounts": {"id", "status", "created_at", "updated_at", "label", "sort", "group_name"},
@@ -109,13 +122,8 @@ def request_error_category(status_code, error):
 
 
 def failure_message(status_code, error):
-    text = str(error or "").strip()
-    if not text:
-        text = f"HTTP {status_code}"
-    text = re.sub(r"https?://\S+", "[url]", text)
-    text = re.sub(r"(?i)\b(?:sk-|gk_|bearer\s+)[A-Za-z0-9_\-]{8,}", "[redacted]", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:480]
+    """Build a strictly allowlisted failure message without exposing raw URLs, IDs, or secrets."""
+    return safe_failure_message(status_code, error)
 
 
 def collect_key_weekly_cents(connection, end):
@@ -130,24 +138,49 @@ def collect_key_weekly_cents(connection, end):
           GROUP BY t.key_id
         """, (end - 604800,)).fetchall()
     except sqlite3.OperationalError:
-        return {}
-    return {row["key_id"]: max(0, round(safe_number(row["used_usd"]) * 100)) for row in rows}
+        try:
+            rows = connection.execute("""
+              SELECT t.key_id, SUM(COALESCE(t.estimated_cost_usd, 0)) AS used_usd
+              FROM request_token_stats t
+              WHERE t.usage_included = 1
+                AND t.key_id IS NOT NULL
+                AND t.created_at >= ?
+              GROUP BY t.key_id
+            """, (end - 604800,)).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+    return {row["key_id"]: max(0, round(safe_number(row["used_usd"], floating=True) * 100)) for row in rows}
 
 
-def collect_key_next_release(connection, end):
-    """Return the oldest still-charged request per key and when it leaves the window."""
+def collect_key_next_release(connection, end, key_weekly_cents=None):
+    """Return the oldest meaningful charged request per key and when it leaves the 7d window."""
     try:
-        rows = connection.execute("""
-          SELECT t.key_id, MIN(t.created_at) AS next_ts
-          FROM request_token_stats t
-          LEFT JOIN key_quota_state s ON s.key_id = t.key_id
-          WHERE t.usage_included = 1
-            AND t.key_id IS NOT NULL
-            AND t.created_at >= MAX(?, COALESCE(s.epoch_at, 0))
-          GROUP BY t.key_id
-        """, (end - 604800,)).fetchall()
+        try:
+            rows = connection.execute("""
+              SELECT t.key_id, MIN(t.created_at) AS next_ts
+              FROM request_token_stats t
+              LEFT JOIN key_quota_state s ON s.key_id = t.key_id
+              WHERE t.usage_included = 1
+                AND t.key_id IS NOT NULL
+                AND COALESCE(t.estimated_cost_usd, 0) >= 0.005
+                AND t.created_at >= MAX(?, COALESCE(s.epoch_at, 0))
+              GROUP BY t.key_id
+            """, (end - 604800,)).fetchall()
+        except sqlite3.OperationalError:
+            rows = connection.execute("""
+              SELECT t.key_id, MIN(t.created_at) AS next_ts
+              FROM request_token_stats t
+              WHERE t.usage_included = 1
+                AND t.key_id IS NOT NULL
+                AND COALESCE(t.estimated_cost_usd, 0) >= 0.005
+                AND t.created_at >= ?
+              GROUP BY t.key_id
+            """, (end - 604800,)).fetchall()
         result = {}
         for row in rows:
+            key_id = row["key_id"]
+            if key_weekly_cents is not None and key_weekly_cents.get(key_id, 0) <= 0:
+                continue
             next_ts = safe_number(row["next_ts"])
             if next_ts <= 0:
                 continue
@@ -155,11 +188,9 @@ def collect_key_next_release(connection, end):
               SELECT SUM(COALESCE(estimated_cost_usd, 0)) AS used_usd
               FROM request_token_stats
               WHERE key_id = ? AND created_at = ? AND usage_included = 1
-            """, (row["key_id"], next_ts)).fetchone()
-            result[row["key_id"]] = (
-                next_ts + 604800,
-                max(0, round(safe_number(cost["used_usd"]) * 100) if cost else 0),
-            )
+            """, (key_id, next_ts)).fetchone()
+            cents = max(1, round(safe_number(cost["used_usd"], floating=True) * 100) if cost else 0)
+            result[key_id] = (next_ts + 604800, cents)
         return result
     except sqlite3.OperationalError:
         return {}
@@ -179,32 +210,73 @@ def collect_account_weekly_cents(connection, end):
             for row in rows}
 
 
-def collect_recent_failures(connection, end):
-    try:
-        rows = connection.execute("""
-          SELECT l.created_at, l.status_code, l.error, l.model, l.duration_ms,
-                 k.name AS key_name, a.label AS account_label
-          FROM request_logs l
-          LEFT JOIN api_keys k ON k.id = l.key_id
-          LEFT JOIN accounts a ON a.id = l.account_id
-          WHERE l.created_at < ? AND NOT (l.status_code >= 200 AND l.status_code <= 299)
-          ORDER BY l.created_at DESC LIMIT 40
-        """, (end,)).fetchall()
-    except sqlite3.OperationalError:
-        return []
+def _safe_public_model(value, public_models):
+    if isinstance(value, str) and value in public_models:
+        return value
+    if isinstance(value, str) and value.strip():
+        return "other"
+    return None
+
+
+def collect_recent_failures(connection, start, end, secret, account_labels, key_labels, public_models):
+    include_key = include_account = include_model = include_duration = True
+    while True:
+        key_expr = "key_id" if include_key else "NULL AS key_id"
+        acct_expr = "account_id" if include_account else "NULL AS account_id"
+        model_expr = "model" if include_model else "NULL AS model"
+        dur_expr = "duration_ms" if include_duration else "NULL AS duration_ms"
+        sql = f"""
+          SELECT created_at, status_code, error, {model_expr}, {dur_expr}, {key_expr}, {acct_expr}
+          FROM request_logs
+          WHERE created_at >= ? AND created_at < ? AND NOT (status_code >= 200 AND status_code <= 299)
+          ORDER BY created_at DESC LIMIT 200
+        """
+        try:
+            rows = connection.execute(sql, (start, end)).fetchall()
+            break
+        except sqlite3.OperationalError as exc:
+            msg = str(exc)
+            if msg == "no such table: request_logs":
+                return []
+            if include_key and "no such column: key_id" in msg:
+                include_key = False
+                continue
+            if include_account and "no such column: account_id" in msg:
+                include_account = False
+                continue
+            if include_model and "no such column: model" in msg:
+                include_model = False
+                continue
+            if include_duration and "no such column: duration_ms" in msg:
+                include_duration = False
+                continue
+            raise
+
     failures = []
     for row in rows:
         code = row["status_code"] if type(row["status_code"]) is int and 100 <= row["status_code"] <= 599 else 500
-        category = request_error_category(row["status_code"], row["error"])
+        occurred_at = safe_number(row["created_at"])
+        diag = classify_failure(code, row["error"])
+        raw_key = row["key_id"]
+        raw_acct = row["account_id"]
+        key_pid = public_id("key", raw_key, secret) if isinstance(raw_key, str) and raw_key else None
         failures.append({
-            "occurred_at": safe_number(row["created_at"]),
+            "occurred_at": occurred_at,
+            "date": datetime.fromtimestamp(occurred_at, TZ).date().isoformat(),
             "status_code": code,
-            "category": category,
-            "model": public_text(row["model"], maximum=64),
-            "key_label": public_text(row["key_name"], maximum=128),
-            "account_label": public_text(row["account_label"], maximum=32),
+            "category": request_error_category(row["status_code"], row["error"]),
+            "signature": diag["signature"],
+            "layer": diag["layer"],
+            "severity": diag["severity"],
+            "title": diag["title"],
+            "meaning": diag["meaning"],
+            "action": diag["action"],
+            "model": _safe_public_model(row["model"], public_models),
+            "key_id": key_pid,
+            "key_label": key_labels.get(raw_key) if isinstance(raw_key, str) else None,
+            "account_label": account_labels.get(raw_acct) if isinstance(raw_acct, str) else None,
             "duration_ms": safe_number(row["duration_ms"]) if row["duration_ms"] is not None else None,
-            "message": failure_message(code, row["error"]),
+            "message": safe_failure_message(code, row["error"], diag),
         })
     return failures
 
@@ -214,7 +286,7 @@ def _percentile(values, ratio):
         return None
     ordered = sorted(values)
     index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * ratio))))
-    return round(ordered[index], 1)
+    return float(round(ordered[index], 1))
 
 
 def _speed_point(rows):
@@ -232,7 +304,7 @@ def _speed_point(rows):
     }
 
 
-def collect_speed(connection, end):
+def collect_speed(connection, end, public_models=None):
     """Approximate generation speed from successful requests with recorded durations."""
     try:
         rows = connection.execute("""
@@ -263,8 +335,12 @@ def collect_speed(connection, end):
         decode_s = max(0.0, (duration_ms - first_ms) / 1000.0) if first_ms > 0 else 0.0
         e2e = output / duration_s if duration_s > 0 else None
         decode = visible / decode_s if decode_s > 0 and visible > 0 else None
+        if public_models is not None:
+            model_name = _safe_public_model(row["model"], public_models) or "other"
+        else:
+            model_name = public_text(row["model"], "other", maximum=64)
         points.append({
-            "model": public_text(row["model"], maximum=64),
+            "model": model_name,
             "output_tokens": output,
             "duration_s": duration_s,
             "decode_s": decode_s if decode is not None else 0.0,
@@ -472,8 +548,6 @@ def aggregate(connection, start: int | None, end: int, public_models=frozenset()
           SELECT l.key_id,l.model,NULL AS actual_source_kind,SUM(l.source_rows),SUM(l.input_tokens),SUM(l.cached_input_tokens),
             SUM(l.output_tokens),SUM(l.total_tokens),SUM(l.estimated_cost_usd)
           FROM request_token_stat_rollups l GROUP BY l.key_id,l.model"""
-    # Older gateways lack actual_source_kind. Treat those rows as unattributed
-    # instead of assigning them to a pool based on today's Key configuration.
     for _ in range(3):
         try:
             rows = connection.execute(sql, args)
@@ -491,7 +565,6 @@ def aggregate(connection, start: int | None, end: int, public_models=frozenset()
         item = {field: safe_number(row[field], floating=field == "estimated_usd") for field in FIELDS}
         merge(by_key.setdefault(row["key_id"], zero()), item)
         model = row["model"]
-        # Request model strings are untrusted; only safe, listed local catalogue IDs are public.
         if model not in public_models:
             model = "other"
         merge(by_model.setdefault(model, zero()), item)
@@ -506,6 +579,8 @@ def _request_health_day():
         "requests": 0,
         "success": 0,
         "error_categories": {kind: 0 for kind in REQUEST_ERROR_KINDS},
+        "error_layers": None,
+        "signatures": {},
         "failure_statuses": {},
         "duration_total": 0.0,
         "duration_count": 0,
@@ -516,11 +591,44 @@ def _request_health_day():
     }
 
 
+def _merge_signature_entry(target_map, sig_key, diag, count, status_code, model_name, key_id, last_seen, sample_msg):
+    entry = target_map.get(sig_key)
+    if entry is None:
+        entry = {
+            "signature": diag["signature"],
+            "layer": diag["layer"],
+            "severity": diag["severity"],
+            "title": diag["title"],
+            "meaning": diag["meaning"],
+            "action": diag["action"],
+            "count": 0,
+            "status_codes": set(),
+            "model_counts": {},
+            "key_ids": set(),
+            "last_seen_at": None,
+            "sample_message": "",
+        }
+        target_map[sig_key] = entry
+    entry["count"] += count
+    if status_code is not None:
+        entry["status_codes"].add(status_code)
+    if model_name:
+        entry["model_counts"][model_name] = entry["model_counts"].get(model_name, 0) + count
+    if key_id:
+        entry["key_ids"].add(key_id)
+    if last_seen is not None and (entry["last_seen_at"] is None or last_seen >= entry["last_seen_at"]):
+        entry["last_seen_at"] = last_seen
+        if sample_msg:
+            entry["sample_message"] = sample_msg
+
+
 def _request_health_summary(day_states):
     requests = success = duration_count = first_response_count = 0
     duration_total = first_response_total = 0.0
     categories = {kind: 0 for kind in REQUEST_ERROR_KINDS}
+    layers = {layer: 0 for layer in ERROR_LAYERS}
     statuses = {}
+    sig_merged = {}
     last_success_at = last_failure_at = None
     for state in day_states:
         requests += state["requests"]
@@ -531,6 +639,41 @@ def _request_health_summary(day_states):
         first_response_count += state["first_response_count"]
         for kind, count in state["error_categories"].items():
             categories[kind] += count
+        if state["error_layers"] is not None:
+            for layer, count in state["error_layers"].items():
+                layers[layer] += count
+        else:
+            for kind, count in state["error_categories"].items():
+                layers[CATEGORY_FALLBACK_LAYER.get(kind, "upstream_openai")] += count
+        for sig_key, entry in state["signatures"].items():
+            target = sig_merged.get(sig_key)
+            if target is None:
+                target = {
+                    "signature": entry["signature"],
+                    "layer": entry["layer"],
+                    "severity": entry["severity"],
+                    "title": entry["title"],
+                    "meaning": entry["meaning"],
+                    "action": entry["action"],
+                    "count": 0,
+                    "status_codes": set(),
+                    "model_counts": {},
+                    "key_ids": set(),
+                    "last_seen_at": None,
+                    "sample_message": "",
+                }
+                sig_merged[sig_key] = target
+            target["count"] += entry["count"]
+            target["status_codes"].update(entry["status_codes"])
+            for model_name, model_cnt in entry["model_counts"].items():
+                target["model_counts"][model_name] = target["model_counts"].get(model_name, 0) + model_cnt
+            target["key_ids"].update(entry["key_ids"])
+            if entry["last_seen_at"] is not None and (
+                target["last_seen_at"] is None or entry["last_seen_at"] >= target["last_seen_at"]
+            ):
+                target["last_seen_at"] = entry["last_seen_at"]
+                if entry["sample_message"]:
+                    target["sample_message"] = entry["sample_message"]
         for code, count in state["failure_statuses"].items():
             statuses[code] = statuses.get(code, 0) + count
         if state["last_success_at"] is not None:
@@ -538,23 +681,55 @@ def _request_health_summary(day_states):
         if state["last_failure_at"] is not None:
             last_failure_at = max(last_failure_at or 0, state["last_failure_at"])
     failed = max(0, requests - success)
+    cancelled = min(failed, categories["client_cancelled"])
+    system_failed = max(0, failed - cancelled)
+    effective_denom = max(0, requests - cancelled)
+    effective_rate = float(round(success * 100 / effective_denom, 2)) if effective_denom else (100.0 if requests else 0.0)
+    ordered_sigs = sorted(
+        sig_merged.values(),
+        key=lambda item: (SEVERITY_RANK.get(item["severity"], 9), -item["count"], item["signature"]),
+    )[:25]
+    signatures_out = [
+        {
+            "signature": item["signature"],
+            "layer": item["layer"],
+            "severity": item["severity"],
+            "title": item["title"],
+            "meaning": item["meaning"],
+            "action": item["action"],
+            "count": item["count"],
+            "status_codes": sorted(item["status_codes"])[:12],
+            "top_models": [
+                m for m, _ in sorted(item["model_counts"].items(), key=lambda pair: -pair[1])[:6]
+            ],
+            "affected_keys": len(item["key_ids"]),
+            "last_seen_at": item["last_seen_at"],
+            "sample_message": item["sample_message"][:310],
+        }
+        for item in ordered_sigs
+    ]
     return {
         "requests": requests,
         "success": success,
         "failed": failed,
-        "success_rate": round(success * 100 / requests, 2) if requests else 0.0,
+        "success_rate": float(round(success * 100 / requests, 2)) if requests else 0.0,
+        "effective_success_rate": effective_rate,
+        "client_cancelled_count": cancelled,
+        "system_failed_count": system_failed,
         "error_categories": [{"kind": kind, "count": categories[kind]} for kind in REQUEST_ERROR_KINDS],
+        "error_layers": [{"layer": layer, "count": layers[layer]} for layer in ERROR_LAYERS],
+        "signatures": signatures_out,
         "failure_statuses": [{"status_code": code, "count": statuses[code]} for code in sorted(statuses)],
-        "average_duration_ms": round(duration_total / duration_count, 2) if duration_count else None,
-        "average_first_response_ms": round(first_response_total / first_response_count, 2)
+        "average_duration_ms": float(round(duration_total / duration_count, 2)) if duration_count else None,
+        "average_first_response_ms": float(round(first_response_total / first_response_count, 2))
         if first_response_count else None,
         "last_success_at": last_success_at,
         "last_failure_at": last_failure_at,
     }
 
 
-def collect_request_health(connection, today, end):
-    """Aggregate retained request outcomes without exposing raw errors or URLs."""
+def collect_request_health(connection, today, end, public_models=frozenset()):
+    """Aggregate retained request outcomes and 14d error signatures without exposing raw secrets."""
     include_duration = include_first_response = True
     while True:
         duration_total = ("MAX(COALESCE(duration_ms,0),0)" if include_duration else "0")
@@ -631,9 +806,64 @@ def collect_request_health(connection, today, end):
     local_epoch = int(today.timestamp()) + 8 * 3600
     today_id = local_epoch // 86400
     week_id = today_id - 6
+    history_start_id = today_id - REQUEST_HEALTH_HISTORY_DAYS + 1
+    history_start_ts = history_start_id * 86400 - 8 * 3600
+
+    include_sig_model = include_sig_key = True
+    while True:
+        model_expr = "model" if include_sig_model else "NULL AS model"
+        key_expr = "key_id" if include_sig_key else "NULL AS key_id"
+        sig_sql = f"""
+          SELECT CAST((created_at + 28800) / 86400 AS INTEGER) AS day_id,
+                 status_code, error, {model_expr}, {key_expr}, created_at
+          FROM request_logs
+          WHERE created_at >= ? AND created_at < ?
+            AND NOT (status_code >= 200 AND status_code <= 299)
+          ORDER BY created_at ASC
+        """
+        try:
+            sig_rows = connection.execute(sig_sql, (history_start_ts, end)).fetchall()
+            break
+        except sqlite3.OperationalError as exc:
+            msg = str(exc)
+            if include_sig_model and "no such column: model" in msg:
+                include_sig_model = False
+                continue
+            if include_sig_key and "no such column: key_id" in msg:
+                include_sig_key = False
+                continue
+            sig_rows = []
+            break
+
+    for row in sig_rows:
+        day_id = safe_number(row["day_id"])
+        if day_id < history_start_id or day_id > today_id:
+            continue
+        state = states.setdefault(day_id, _request_health_day())
+        if state["error_layers"] is None:
+            state["error_layers"] = {layer: 0 for layer in ERROR_LAYERS}
+        code = row["status_code"] if type(row["status_code"]) is int and 100 <= row["status_code"] <= 599 else None
+        diag = classify_failure(code, row["error"])
+        state["error_layers"][diag["layer"]] += 1
+        model_name = _safe_public_model(row["model"], public_models)
+        raw_key = row["key_id"] if isinstance(row["key_id"], str) and row["key_id"] else None
+        occurred_at = safe_number(row["created_at"])
+        sample_msg = safe_failure_message(code, row["error"], diag)
+        _merge_signature_entry(
+            state["signatures"],
+            diag["signature"],
+            diag,
+            1,
+            code,
+            model_name,
+            raw_key,
+            occurred_at,
+            sample_msg,
+        )
+
     empty = _request_health_day()
     days = []
-    for day_id in range(today_id - REQUEST_HEALTH_HISTORY_DAYS + 1, today_id + 1):
+    for day_id in range(history_start_id, today_id + 1):
         item = _request_health_summary([states.get(day_id, empty)])
         item["date"] = datetime.fromtimestamp(day_id * 86400, timezone.utc).date().isoformat()
         days.append(item)
@@ -646,9 +876,136 @@ def collect_request_health(connection, today, end):
     }
 
 
+def collect_account_health(connection, today_ts, week_ts, end):
+    """Per-account today/7d request volume and non-cancelled success rate."""
+    try:
+        rows = connection.execute("""
+          SELECT account_id,
+            SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS today_requests,
+            SUM(CASE WHEN created_at >= ? AND status_code >= 200 AND status_code <= 299 THEN 1 ELSE 0 END) AS today_success,
+            SUM(CASE WHEN created_at >= ? AND status_code = 499 THEN 1 ELSE 0 END) AS today_cancelled,
+            COUNT(*) AS week_requests,
+            MAX(created_at) AS last_used_at
+          FROM request_logs
+          WHERE created_at >= ? AND created_at < ? AND account_id IS NOT NULL
+          GROUP BY account_id
+        """, (today_ts, today_ts, today_ts, week_ts, end)).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    result = {}
+    for row in rows:
+        today_req = safe_number(row["today_requests"])
+        today_ok = safe_number(row["today_success"])
+        today_cancel = safe_number(row["today_cancelled"])
+        denom = max(0, today_req - today_cancel)
+        rate = float(round(today_ok * 100 / denom, 1)) if denom else (100.0 if today_req else None)
+        result[row["account_id"]] = {
+            "today_requests": today_req,
+            "today_success_rate": rate,
+            "week_requests": safe_number(row["week_requests"]),
+            "last_used_at": optional_timestamp(row["last_used_at"]),
+        }
+    return result
+
+
+def collect_model_weather(connection, today_ts, week_ts, end, public_models, speed):
+    """Real-time per-model health, overload signals, TTFT P50, and decode tok/s P50."""
+    try:
+        rows = connection.execute("""
+          SELECT model,
+            SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS today_requests,
+            SUM(CASE WHEN created_at >= ? AND status_code >= 200 AND status_code <= 299 THEN 1 ELSE 0 END) AS today_success,
+            SUM(CASE WHEN created_at >= ? AND status_code = 499 THEN 1 ELSE 0 END) AS today_cancelled,
+            SUM(CASE WHEN created_at >= ? AND request_error_category(status_code, error) = 'upstream_overloaded' THEN 1 ELSE 0 END) AS today_overloads,
+            COUNT(*) AS week_requests,
+            SUM(CASE WHEN status_code >= 200 AND status_code <= 299 THEN 1 ELSE 0 END) AS week_success,
+            SUM(CASE WHEN status_code = 499 THEN 1 ELSE 0 END) AS week_cancelled,
+            SUM(CASE WHEN request_error_category(status_code, error) = 'upstream_overloaded' THEN 1 ELSE 0 END) AS week_overloads
+          FROM request_logs
+          WHERE created_at >= ? AND created_at < ? AND model IS NOT NULL
+          GROUP BY model
+        """, (today_ts, today_ts, today_ts, today_ts, week_ts, end)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    by_model = {}
+    for row in rows:
+        raw_model = row["model"]
+        if raw_model not in public_models:
+            continue
+        by_model[raw_model] = {
+            "today_requests": safe_number(row["today_requests"]),
+            "today_success": safe_number(row["today_success"]),
+            "today_cancelled": safe_number(row["today_cancelled"]),
+            "today_overloads": safe_number(row["today_overloads"]),
+            "week_requests": safe_number(row["week_requests"]),
+            "week_success": safe_number(row["week_success"]),
+            "week_cancelled": safe_number(row["week_cancelled"]),
+            "week_overloads": safe_number(row["week_overloads"]),
+        }
+
+    ttft_samples = {}
+    try:
+        ttft_rows = connection.execute("""
+          SELECT model, first_response_ms
+          FROM request_logs
+          WHERE created_at >= ? AND created_at < ?
+            AND status_code >= 200 AND status_code <= 299
+            AND first_response_ms > 0 AND model IS NOT NULL
+        """, (week_ts, end)).fetchall()
+        for row in ttft_rows:
+            m = row["model"]
+            if m in public_models:
+                ttft_samples.setdefault(m, []).append(float(safe_number(row["first_response_ms"])))
+    except sqlite3.OperationalError:
+        pass
+
+    decode_map = {}
+    if speed and speed.get("models"):
+        for item in speed["models"]:
+            decode_map[item["model"]] = item.get("decode_p50")
+
+    weather = []
+    for model_name, item in by_model.items():
+        if model_name == "codex-auto-review":
+            continue
+        t_req = item["today_requests"]
+        t_denom = max(0, t_req - item["today_cancelled"])
+        t_rate = float(round(item["today_success"] * 100 / t_denom, 1)) if t_denom else (100.0 if t_req else None)
+        w_req = item["week_requests"]
+        w_denom = max(0, w_req - item["week_cancelled"])
+        w_rate = float(round(item["week_success"] * 100 / w_denom, 1)) if w_denom else (100.0 if w_req else None)
+        t_overload = item["today_overloads"]
+        if w_req == 0:
+            status = "idle"
+        elif t_overload >= 5 or (t_req >= 5 and t_rate is not None and t_rate < 75.0):
+            status = "degraded"
+        elif t_overload >= 1 or (t_req >= 5 and t_rate is not None and t_rate < 92.0):
+            status = "busy"
+        else:
+            status = "smooth"
+        weather.append({
+            "model": model_name,
+            "today_requests": t_req,
+            "week_requests": w_req,
+            "today_success_rate": t_rate,
+            "week_effective_success_rate": w_rate,
+            "today_overload_count": t_overload,
+            "week_overload_count": item["week_overloads"],
+            "decode_p50": decode_map.get(model_name),
+            "ttft_p50_ms": _percentile(ttft_samples.get(model_name, []), 0.5),
+            "status": status,
+        })
+    weather.sort(key=lambda item: (-item["today_requests"], -item["week_requests"], item["model"]))
+    return weather[:50]
+
+
 def collect(config, now=None):
     now = int(time.time()) if now is None else now
     today = datetime.fromtimestamp(now, TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_ts = int(today.timestamp())
+    week_ts = int((today - timedelta(days=6)).timestamp())
+    history_start_ts = int((today - timedelta(days=REQUEST_HEALTH_HISTORY_DAYS - 1)).timestamp())
     # Day-aligned boundaries include only elapsed data; end is next local midnight.
     end = int((today + timedelta(days=1)).timestamp())
     secret = config["id_secret"]
@@ -705,19 +1062,35 @@ def collect(config, now=None):
             if str(exc) != "no such column: k.upstream_provider":
                 raise
             raw_keys = connection.execute(key_sql.replace("k.upstream_provider", "'unknown'")).fetchall()
+
         catalog, unlisted = collect_catalog(connection)
         public_models = frozenset(item["model"] for item in catalog)
         periods = {
-            "today": aggregate(connection, int(today.timestamp()), end, public_models),
-            "week": aggregate(connection, int((today - timedelta(days=6)).timestamp()), end, public_models),
+            "today": aggregate(connection, today_ts, end, public_models),
+            "week": aggregate(connection, week_ts, end, public_models),
             "recorded": aggregate(connection, None, end, public_models),
         }
-        request_health = collect_request_health(connection, today, end)
+        request_health = collect_request_health(connection, today, end, public_models)
         key_weekly_cents = collect_key_weekly_cents(connection, end)
-        key_next_release = collect_key_next_release(connection, end)
+        key_next_release = collect_key_next_release(connection, end, key_weekly_cents)
         account_weekly_cents = collect_account_weekly_cents(connection, end)
-        recent_failures = collect_recent_failures(connection, end)
-        speed = collect_speed(connection, end)
+        account_health = collect_account_health(connection, today_ts, week_ts, end)
+        speed = collect_speed(connection, end, public_models)
+        model_weather = collect_model_weather(connection, today_ts, week_ts, end, public_models, speed)
+
+        account_labels = {}
+        for row in raw_accounts:
+            pid = public_id("acct", row["id"], secret)
+            account_labels[row["id"]] = safe_label(config.get("account_aliases", {}).get(row["id"]), "账号 " + pid[-6:])
+        key_labels = {}
+        for row in raw_keys:
+            pid = public_id("key", row["id"], secret)
+            key_labels[row["id"]] = public_text(row["name"], "Key " + pid[-6:])
+
+        recent_failures = collect_recent_failures(
+            connection, history_start_ts, end, secret, account_labels, key_labels, public_models
+        )
+
     accounts = []
     for row in raw_accounts:
         pid = public_id("acct", row["id"], secret)
@@ -729,7 +1102,8 @@ def collect(config, now=None):
                 break
         capacity_primary = positive_int(row["primary_window_tokens"])
         capacity_secondary = positive_int(row["secondary_window_tokens"])
-        accounts.append({"id": pid, "label": safe_label(config.get("account_aliases", {}).get(row["id"]), "账号 " + pid[-6:]),
+        ah = account_health.get(row["id"], {})
+        accounts.append({"id": pid, "label": account_labels[row["id"]],
                          "group_name": group_identity(row["group_name"], secret)[1],
                          "plan": plan, "status": safe_status(row["status"]),
                          "primary": quota_window(row), "secondary": quota_window(row, "secondary_"),
@@ -745,9 +1119,11 @@ def collect(config, now=None):
                          "weekly_limit_cents": None,
                          "weekly_remaining_cents": None,
                          "weekly_reset_at": optional_timestamp(row["resets_at"]),
+                         "today_requests": ah.get("today_requests", 0),
+                         "today_success_rate": ah.get("today_success_rate"),
+                         "week_requests": ah.get("week_requests", 0),
+                         "last_used_at": ah.get("last_used_at"),
                          **credits_details(row["credits_json"], optional_timestamp(row["captured_at"]))})
-    # The table stores one latest row per account. If an older installation has
-    # duplicate rows, the most recently captured one wins without exposing IDs.
     claude_usage_by_account = {}
     for usage_row in raw_claude_usage:
         claude_usage_by_account.setdefault(usage_row["account_id"], usage_row)
@@ -773,16 +1149,12 @@ def collect(config, now=None):
             "next_attempt_at": timestamp(usage["next_attempt_at"]) if usage else None,
             "last_error": claude_usage_error(usage["last_error"]) if usage else None,
         })
-    # Only current keys belong in the list. Deleted/unattributed usage remains
-    # in the independently aggregated team totals and model usage above.
     keys = []
     for row in raw_keys:
         key_id = row["id"]
         pid = public_id("key", key_id, secret)
         release = key_next_release.get(key_id)
-        # Display the administrator's name, never credential-looking content.
-        # Empty/invalid names retain the existing stable, non-secret code.
-        keys.append({"id": pid, "label": public_text(row["name"], "Key " + pid[-6:]),
+        keys.append({"id": pid, "label": key_labels[key_id],
                      "group_name": group_identity(row["account_group_filter"], secret)[1],
                      "status": safe_status(row["status"]),
                      "last_used_at": optional_timestamp(row["last_used_at"]),
@@ -794,7 +1166,6 @@ def collect(config, now=None):
                      "next_release_cents": release[1] if release else 0,
                      **key_metadata(row, public_models)})
     models = sorted(periods["week"][1].items(), key=lambda pair: pair[1]["total_tokens"], reverse=True)
-    # Keep the top 49 plus one explicit 'other' bucket rather than silently losing usage.
     if len(models) > 50:
         tail = zero()
         for _, item in models[49:]:
@@ -808,8 +1179,22 @@ def collect(config, now=None):
                 "pool_usage": {pool: {name: data[3][pool] for name, data in periods.items()}
                                for pool in ("openai", "claude", "unattributed")},
                 "models_week": [{"model": model, "usage": item} for model, item in models],
+                "model_weather": model_weather,
                 "request_health": request_health, "recent_failures": recent_failures,
                 "speed": speed}
+    raw_origins = config.get("terminal_origins")
+    if isinstance(raw_origins, dict) and isinstance(raw_origins.get("public"), dict):
+        pub = raw_origins["public"]
+        origins_obj = {
+            "public": {"label": str(pub.get("label", "")).strip(), "url": str(pub.get("url", "")).strip().rstrip("/")},
+        }
+        if isinstance(raw_origins.get("intranet"), dict):
+            lan = raw_origins["intranet"]
+            origins_obj["intranet"] = {
+                "label": str(lan.get("label", "")).strip(),
+                "url": str(lan.get("url", "")).strip().rstrip("/"),
+            }
+        snapshot["terminal_origins"] = origins_obj
     return Snapshot.model_validate(snapshot).model_dump()
 
 

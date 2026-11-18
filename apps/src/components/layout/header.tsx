@@ -178,10 +178,9 @@ export function Header() {
 
   return (
     <>
-      <header className="sticky top-0 z-30 flex min-h-[68px] items-center justify-between gap-2 glass-header px-2 sm:gap-3 sm:px-4 xl:min-h-[96px] xl:gap-5 xl:pl-9 xl:pr-[45px]">
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/30 to-transparent" />
+      <header className="sticky top-0 z-30 flex min-h-[68px] items-center justify-between gap-2 glass-header px-2 sm:gap-3 sm:px-4 xl:min-h-[84px] xl:gap-5 xl:px-8">
         <div className="header-title-group flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-4 xl:gap-5">
-          <h1 className="header-page-title min-w-0 truncate text-lg font-semibold tracking-[-0.015em] text-foreground sm:text-[21px] xl:text-[27px]">
+          <h1 className="header-page-title min-w-0 truncate text-[18px] font-semibold tracking-[-0.025em] text-foreground sm:text-[20px] xl:text-[24px]">
             {getPageTitle()}
           </h1>
           <span className="header-page-date hidden shrink-0 items-center gap-2 whitespace-nowrap text-sm text-muted-foreground md:flex xl:text-[15px]" suppressHydrationWarning>
@@ -191,7 +190,7 @@ export function Header() {
         </div>
 
         <div className="header-action-cluster ml-auto flex max-w-full min-w-0 shrink-0 items-center gap-1.5 sm:gap-2">
-          <div className={`header-service-strip hidden h-10 min-w-0 items-center rounded-full border border-border/55 bg-background/70 px-1.5 shadow-[0_14px_30px_-22px_rgb(15_23_42/0.45)] backdrop-blur-2xl sm:flex xl:h-12 xl:px-2 ${isCommandCenter ? "min-w-[320px] justify-center xl:min-w-[430px]" : ""}`}>
+          <div className={`header-service-strip hidden h-9 min-w-0 items-center rounded-full border border-border/60 bg-background/70 px-1.5 shadow-[0_12px_28px_-24px_rgb(40_30_20/0.45)] backdrop-blur-xl sm:flex xl:h-10 xl:px-1.5 ${isCommandCenter ? "min-w-[300px] justify-center xl:min-w-[370px]" : ""}`}>
             <Badge
               variant="secondary"
               className="header-service-badge h-8 shrink-0 rounded-full border-0 bg-transparent px-2.5 text-xs font-medium text-foreground shadow-none xl:h-9 xl:px-3.5 xl:text-sm"

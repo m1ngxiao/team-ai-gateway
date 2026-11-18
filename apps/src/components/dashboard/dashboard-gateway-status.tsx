@@ -25,6 +25,8 @@ interface DashboardGatewayStatusProps {
     cachedTokens: number;
     reasoningTokens: number;
     todayCost: number;
+    todayRequests?: number;
+    successRate?: number | null;
   };
   isLoading: boolean;
 }
@@ -41,40 +43,6 @@ interface DashboardPoolRemainingProps {
 
 function formatUsd(value: number): string {
   return `$${Math.max(0, value || 0).toFixed(2)}`;
-}
-
-function StatusMetric({
-  label,
-  value,
-  tone = "text-foreground",
-  className,
-  valueClassName,
-}: {
-  label: string;
-  value: string;
-  tone?: string;
-  className?: string;
-  valueClassName?: string;
-}) {
-  return (
-    <div
-      className={cn(
-        "flex min-h-[68px] flex-col justify-center border-t border-border/55 px-4 first:border-t-0 sm:border-l sm:border-t-0 sm:first:border-l-0 xl:min-h-[76px] xl:px-5",
-        className,
-      )}
-    >
-      <span className="truncate text-compact text-muted-foreground">{label}</span>
-      <span
-        className={cn(
-          "mt-0.5 truncate font-mono text-2xl font-semibold leading-none",
-          tone,
-          valueClassName,
-        )}
-      >
-        {value}
-      </span>
-    </div>
-  );
 }
 
 export function DashboardGatewayStatus({
@@ -101,71 +69,102 @@ export function DashboardGatewayStatus({
       : t("正在等待服务连接。");
   const actionHref = directMode ? "/platform-mode" : "/logs";
   const actionLabel = directMode ? t("去切换为本地网关") : t("查看异常请求");
+  const successRate =
+    stats.successRate == null ? "--" : `${Math.round(stats.successRate * 100)}%`;
 
   return (
-    <Card className="dashboard-primary-panel routing-command-card glass-card overflow-hidden rounded-xl border-border/60 py-0 xl:rounded-2xl">
-      <CardContent className="p-0">
-        <div className="flex min-h-[80px] flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between xl:min-h-[92px] xl:gap-4 xl:px-5 xl:py-4">
-          <div className="flex min-w-0 items-center gap-3 xl:gap-4">
-            <div
-              className={cn(
-                "flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 bg-background/75 shadow-[0_8px_24px_-18px_currentColor] xl:h-10 xl:w-10",
-                connected && !directMode
-                  ? "border-emerald-500 text-emerald-600"
-                  : "border-amber-500/45 text-amber-600",
-              )}
-            >
-              {connected && !directMode ? (
-                <Check className="h-[18px] w-[18px] stroke-[2.5] xl:h-5 xl:w-5" />
-              ) : (
-                <AlertTriangle className="h-[18px] w-[18px] xl:h-5 xl:w-5" />
-              )}
+    <Card className="dashboard-primary-panel dashboard-hero routing-command-card glass-card relative overflow-hidden rounded-[20px] border-border/70 py-0">
+      <CardContent className="relative z-10 p-0">
+        <div className="grid gap-6 px-5 py-5 lg:grid-cols-[minmax(0,1.08fr)_minmax(460px,0.92fr)] lg:px-7 lg:py-7">
+          <div className="flex min-w-0 flex-col justify-between gap-7">
+            <div>
+              <span className="dashboard-hero-status" data-warning={!connected || directMode}>
+                {connected ? t("实时运行") : t("等待连接")}
+              </span>
+              <div className="mt-5 flex items-start gap-4">
+                <div
+                  className={cn(
+                    "mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border",
+                    connected && !directMode
+                      ? "border-[#7f9a82]/35 bg-[#7f9a82]/10 text-[#607b64]"
+                      : "border-amber-600/25 bg-amber-500/8 text-amber-700",
+                  )}
+                >
+                  {connected && !directMode ? (
+                    <Check className="h-[18px] w-[18px] stroke-[2]" />
+                  ) : (
+                    <AlertTriangle className="h-[18px] w-[18px]" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <h2 className="font-display text-[2.15rem] font-medium leading-[1.05] tracking-[-0.045em] text-foreground xl:text-[2.65rem]">
+                    {title}
+                  </h2>
+                  <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">
+                    {description}
+                  </p>
+                </div>
+              </div>
             </div>
-            <div className="min-w-0">
-              <h2 className="text-xl font-semibold leading-tight tracking-[-0.02em] text-foreground">
-                {title}
-              </h2>
-              <p className="mt-1 max-w-2xl text-sm leading-5 text-muted-foreground xl:mt-2 xl:leading-6">
-                {description}
-              </p>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+              <a
+                href={buildStaticRouteUrl(actionHref)}
+                className={cn(
+                  buttonVariants({ size: "sm" }),
+                  "command-center-primary-action h-9 rounded-full px-4 text-xs",
+                )}
+              >
+                {actionLabel}
+                <ArrowRight className="ml-0.5 h-3.5 w-3.5" />
+              </a>
+              <span className="text-xs text-muted-foreground">
+                {t("服务连接")} · {connected ? t("正常") : t("离线")}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {t("账号")} {stats.total} · {t("可用")} {stats.available} · {t("异常")} {stats.unavailable}
+              </span>
             </div>
           </div>
-          <a
-            href={buildStaticRouteUrl(actionHref)}
-            className={cn(
-              buttonVariants({ size: "lg" }),
-              "command-center-primary-action h-9 min-w-[124px] shrink-0 rounded-lg px-4 text-sm xl:h-10 xl:min-w-[136px] xl:px-5",
-            )}
-          >
-            {actionLabel}
-            <ArrowRight className="ml-1 h-3.5 w-3.5" />
-          </a>
-        </div>
 
-        <div className="grid border-t border-border/55 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7">
-          <StatusMetric
-            label={t("服务连接")}
-            value={connected ? t("正常") : t("离线")}
-            tone={connected ? "text-emerald-600" : "text-rose-600"}
-          />
-          <StatusMetric label={t("账号")} value={String(stats.total)} />
-          <StatusMetric label={t("可用")} value={String(stats.available)} tone="text-emerald-600" />
-          <StatusMetric
-            label={t("异常")}
-            value={String(stats.unavailable)}
-            tone={stats.unavailable > 0 ? "text-rose-600" : "text-foreground"}
-          />
-          <StatusMetric
-            className="lg:col-span-2"
-            label={t("今日/缓存/推理 用量")}
-            value={`${formatCompactTokenAmount(stats.todayTokens)} / ${formatCompactTokenAmount(stats.cachedTokens)} / ${formatCompactTokenAmount(stats.reasoningTokens)}`}
-            valueClassName="text-dense tracking-[-0.035em]"
-          />
-          <StatusMetric
-            label={t("预计费用")}
-            value={formatUsd(stats.todayCost)}
-            valueClassName="text-metric-emphasis"
-          />
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <div className="dashboard-stat-tile p-4 sm:col-span-2">
+              <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                <span>{t("今日 Token")}</span>
+                <span>{t("成功")} {successRate}</span>
+              </div>
+              <div className="mt-2 flex items-end justify-between gap-4">
+                <strong className="font-display text-[2.1rem] font-medium leading-none tracking-[-0.04em] text-foreground">
+                  {formatCompactTokenAmount(stats.todayTokens)}
+                </strong>
+                {stats.todayRequests != null ? (
+                  <span className="pb-1 text-xs text-muted-foreground">
+                    {stats.todayRequests.toLocaleString()} {t("请求数")}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            <div className="dashboard-stat-tile p-4">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                {t("预计费用")}
+              </span>
+              <strong className="mt-2 block font-mono text-xl font-semibold text-foreground">
+                {formatUsd(stats.todayCost)}
+              </strong>
+            </div>
+            <a
+              href={buildStaticRouteUrl("/logs")}
+              className="dashboard-stat-tile group p-4 transition-colors hover:bg-foreground/[0.035]"
+            >
+              <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                {t("今日/缓存/推理 用量")}
+              </span>
+              <strong className="mt-2 block font-mono text-[13px] font-semibold text-foreground">
+                {formatCompactTokenAmount(stats.todayTokens)} ·{" "}
+                {formatCompactTokenAmount(stats.cachedTokens)} ·{" "}
+                {formatCompactTokenAmount(stats.reasoningTokens)}
+              </strong>
+            </a>
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -185,16 +184,17 @@ function PoolBucket({
   bucketCount: number;
   tone: "emerald" | "blue";
 }) {
+  const { t } = useI18n();
   const normalizedValue = value == null ? 0 : Math.max(0, Math.min(100, value));
   const isEmerald = tone === "emerald";
 
   return (
     <div className="min-w-0">
-      <div className="mb-1.5 flex items-center justify-between gap-3 text-xs xl:mb-2 xl:text-sm">
-        <span className="font-medium text-muted-foreground">{label}</span>
+      <div className="mb-2 flex items-end justify-between gap-3">
+        <span className="text-xs font-medium text-muted-foreground">{label}</span>
         <span
           className={cn(
-            "font-mono font-semibold",
+            "font-display text-[1.8rem] font-medium leading-none tracking-[-0.04em]",
             isEmerald ? "text-emerald-600" : "text-blue-600",
           )}
         >
@@ -205,13 +205,13 @@ function PoolBucket({
         value={normalizedValue}
         className="gap-0"
         trackClassName={cn(
-          "h-1.5 xl:h-2",
-          isEmerald ? "bg-emerald-500/18" : "bg-blue-500/18",
+          "h-1.5",
+          isEmerald ? "bg-[#6f8b72]/15" : "bg-[#6d8290]/15",
         )}
-        indicatorClassName={isEmerald ? "bg-emerald-500" : "bg-blue-500"}
+        indicatorClassName={isEmerald ? "bg-[#6f8b72]" : "bg-[#6d8290]"}
       />
-      <div className="mt-1.5 truncate font-mono text-[10px] text-muted-foreground xl:mt-2 xl:text-xs">
-        {knownCount}/{bucketCount}
+      <div className="mt-2 truncate text-[10px] text-muted-foreground">
+        {knownCount} / {bucketCount} {t("个账号有可用数据")}
       </div>
     </div>
   );
@@ -233,21 +233,28 @@ export function DashboardPoolRemaining({
   }
 
   return (
-    <Card className="dashboard-pool-remaining dashboard-primary-panel glass-card overflow-hidden rounded-xl border-border/60 py-0 xl:rounded-2xl">
-      <CardContent className="grid gap-4 px-4 py-4 md:grid-cols-[200px_minmax(0,1fr)] md:items-center xl:grid-cols-[210px_minmax(0,1fr)_minmax(0,1fr)]">
-        <div className="flex min-w-0 items-center gap-3">
-          <PieChart className="h-5 w-5 shrink-0 text-emerald-600 xl:h-6 xl:w-6" />
-          <span className="truncate text-sm font-semibold text-foreground xl:text-lg">
-            {t("账号池剩余")}
-          </span>
+    <Card className="dashboard-pool-remaining dashboard-primary-panel dashboard-rail-card glass-card overflow-hidden border-border/70 py-0">
+      <CardContent className="grid gap-6">
+        <div className="flex min-w-0 items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <PieChart className="h-4 w-4 shrink-0 text-[#6f8b72]" />
+              <span className="text-sm font-semibold text-foreground">
+                {t("账号池剩余")}
+              </span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              {t("按账号最近一次成功同步的额度窗口汇总")}
+            </p>
+          </div>
           <Badge
             variant="outline"
-            className="h-6 shrink-0 rounded-md border-emerald-500/25 bg-emerald-500/8 px-2 text-[10px] font-semibold text-emerald-700 xl:h-7 xl:text-xs"
+            className="h-6 shrink-0 rounded-full border-[#6f8b72]/25 bg-[#6f8b72]/8 px-2.5 text-[9px] font-semibold tracking-[0.08em] text-[#5e7b63]"
           >
-            POOL
+            LIVE
           </Badge>
         </div>
-        <div className="grid min-w-0 gap-4 sm:grid-cols-2 md:col-span-1 xl:col-span-2">
+        <div className="grid gap-5">
           <PoolBucket
             label={t("5小时内")}
             value={primary}
@@ -255,6 +262,7 @@ export function DashboardPoolRemaining({
             bucketCount={primaryBucketCount}
             tone="emerald"
           />
+          <div className="h-px bg-border/60" />
           <PoolBucket
             label={t("7天内")}
             value={secondary}
@@ -262,6 +270,9 @@ export function DashboardPoolRemaining({
             bucketCount={secondaryBucketCount}
             tone="blue"
           />
+        </div>
+        <div className="rounded-xl border border-border/60 bg-background/35 px-3 py-2.5 text-[11px] leading-5 text-muted-foreground">
+          {t("剩余比例按各账号窗口平均值估算，不代表单次请求限制。")}
         </div>
       </CardContent>
     </Card>

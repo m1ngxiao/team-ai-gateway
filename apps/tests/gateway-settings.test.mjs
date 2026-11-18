@@ -191,7 +191,7 @@ test("readGatewayUpstreamProxySettings 与 readGatewayRouteStrategySettings 对�
     manualPreferredAccountId: "acc-1",
   });
   assert.equal(route.strategy, "balanced");
-  assert.deepEqual(route.options, ["ordered", "balanced"]);
+  assert.deepEqual(route.options, ["ordered", "balanced", "quota_aware"]);
   assert.equal(route.manualPreferredAccountId, "acc-1");
 });
 

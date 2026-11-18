@@ -2,7 +2,9 @@ use bytes::Bytes;
 use codexmanager_core::storage::Account;
 use std::collections::HashMap;
 
-use super::super::support::payload_rewrite::strip_encrypted_content_from_body;
+use super::super::support::payload_rewrite::{
+    strip_account_scoped_context_from_body, strip_encrypted_content_from_body,
+};
 use super::request_setup::UpstreamRequestSetup;
 
 #[derive(Default)]
@@ -219,6 +221,40 @@ impl CandidateExecutionState {
         } else {
             rewritten
         }
+    }
+
+    /// Build a best-effort backup body by removing account-scoped references
+    /// that cannot be interpreted by another account.
+    pub(in super::super) fn aggressive_body_for_attempt(
+        &mut self,
+        path: &str,
+        body: &Bytes,
+        setup: &UpstreamRequestSetup,
+        model_override: Option<&str>,
+        prompt_cache_key: Option<&str>,
+    ) -> Bytes {
+        let rewritten =
+            self.rewrite_body_for_model(path, body, setup, model_override, prompt_cache_key);
+        if let Some(cache_key) = Self::rewrite_cache_key(model_override, prompt_cache_key) {
+            return self
+                .stripped_rewritten_bodies
+                .entry(cache_key)
+                .or_insert_with(|| {
+                    strip_account_scoped_context_from_body(rewritten.as_ref())
+                        .map(Bytes::from)
+                        .unwrap_or_else(|| rewritten.clone())
+                })
+                .clone();
+        }
+        if self.stripped_body.is_none() {
+            self.stripped_body = strip_account_scoped_context_from_body(rewritten.as_ref())
+                .map(Bytes::from)
+                .or_else(|| Some(rewritten.clone()));
+        }
+        self.stripped_body
+            .as_ref()
+            .expect("stripped body should be initialized")
+            .clone()
     }
 
     /// 函数 `retry_body`

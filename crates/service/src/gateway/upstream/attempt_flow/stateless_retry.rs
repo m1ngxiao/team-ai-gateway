@@ -82,6 +82,9 @@ pub(super) fn retry_stateless_then_optional_alt(
     ) {
         return StatelessRetryResult::NotTriggered;
     }
+    if super::super::generation_budget::current().is_some_and(|budget| !budget.can_send()) {
+        return StatelessRetryResult::NotTriggered;
+    }
     if debug {
         log::warn!(
             "event=gateway_upstream_stateless_retry path={} status={} account_id={}",
@@ -129,7 +132,9 @@ pub(super) fn retry_stateless_then_optional_alt(
     };
 
     if let Some(alt_url) = alt_url {
-        if matches!(response.status().as_u16(), 400 | 404) {
+        if matches!(response.status().as_u16(), 400 | 404)
+            && super::super::generation_budget::current().map_or(true, |budget| budget.can_send())
+        {
             if !backoff::sleep_with_exponential_jitter(
                 Duration::from_millis(80),
                 Duration::from_millis(500),

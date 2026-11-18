@@ -1,8 +1,8 @@
 use super::*;
 use codexmanager_core::rpc::types::{ModelInfo, ModelServiceTier, ModelsResponse};
 use codexmanager_core::storage::{
-    now_ts, AggregateApi, ApiKey, ClaudeSubscriptionAccount, ManagedModelV2Upsert,
-    ModelRouteV2, UpstreamProvider,
+    now_ts, AggregateApi, ApiKey, ClaudeSubscriptionAccount, ManagedModelV2Upsert, ModelRouteV2,
+    UpstreamProvider,
 };
 use serde_json::Value;
 
@@ -219,7 +219,10 @@ fn claude_models_list_matches_active_claude_aggregate_routes_across_pool() {
     let (openai_models, _, openai_key) =
         read_models_response_for_key(&storage, "gk-openai-catalog").expect("read OpenAI catalog");
     assert_eq!(openai_key.upstream_provider, UpstreamProvider::Openai);
-    assert!(openai_models.models.iter().any(|model| model.slug == "gpt-6-sol"));
+    assert!(openai_models
+        .models
+        .iter()
+        .any(|model| model.slug == "gpt-6-sol"));
 }
 
 #[test]
@@ -262,7 +265,10 @@ fn openai_managed_models_list_only_same_pool_or_hybrid_account_routes() {
     let listed = |key_id| {
         let (cached, policy, key) =
             read_models_response_for_key(&storage, key_id).expect("read managed catalog");
-        assert_eq!(policy, crate::codex_model_catalog::GatewayCatalogPolicy::Managed);
+        assert_eq!(
+            policy,
+            crate::codex_model_catalog::GatewayCatalogPolicy::Managed
+        );
         let (allowed, _) = filter_models_for_catalog_policy(&storage, key_id, cached, policy)
             .expect("apply key permissions");
         filter_models_for_openai_managed_upstreams(&storage, allowed, &key)
@@ -289,7 +295,8 @@ fn openai_managed_models_list_only_same_pool_or_hybrid_account_routes() {
     // The legacy API-key profile schema cannot persist gemini_native yet; test
     // the protocol-aware route selection with a request-time Key value.
     let (cached, policy, mut gemini_key) =
-        read_models_response_for_key(&storage, "gk-openai-aggregate").expect("read Gemini base key");
+        read_models_response_for_key(&storage, "gk-openai-aggregate")
+            .expect("read Gemini base key");
     gemini_key.protocol_type = "gemini_native".to_string();
     let (allowed, _) =
         filter_models_for_catalog_policy(&storage, "gk-openai-aggregate", cached, policy)
@@ -349,10 +356,9 @@ fn managed_codex_catalog_only_contains_models_reachable_by_its_key() {
             crate::codex_model_catalog::GatewayCatalogPolicy::Managed,
         )
         .expect("write filtered Codex catalog");
-        let catalog: Value = serde_json::from_str(
-            &std::fs::read_to_string(&path).expect("read Codex catalog"),
-        )
-        .expect("parse Codex catalog");
+        let catalog: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read Codex catalog"))
+                .expect("parse Codex catalog");
         std::fs::remove_file(&path).expect("remove test catalog");
 
         assert_eq!(count, 1);
@@ -462,7 +468,10 @@ fn serialize_models_response_outputs_codex_and_api_shapes() {
         models[1].get("visibility").and_then(Value::as_str),
         Some("list")
     );
-    assert_eq!(value.as_object().map(|object| object.len()), Some(3));
+    assert_eq!(value.as_object().map(|object| object.len()), Some(6));
+    assert_eq!(value["has_more"], false);
+    assert_eq!(value["first_id"], "gpt-5.3-codex");
+    assert_eq!(value["last_id"], "gpt-4o");
     assert!(value.get("etag").is_none());
 }
 
@@ -635,6 +644,48 @@ fn serialize_models_response_filters_api_data_to_supported_models() {
 }
 
 #[test]
+fn anthropic_model_shapes_include_context_metadata_and_pagination_fields() {
+    let items = ModelsResponse {
+        models: vec![ModelInfo {
+            slug: "gpt-6-astra".to_string(),
+            display_name: "GPT-6 Astra".to_string(),
+            supported_in_api: true,
+            visibility: Some("list".to_string()),
+            context_window: Some(400_000),
+            effective_context_window_percent: Some(95),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let output: Value =
+        serde_json::from_str(&serialize_models_response(&items)).expect("models json");
+    assert_eq!(output["has_more"], false);
+    assert_eq!(output["first_id"], "gpt-6-astra");
+    assert_eq!(output["last_id"], "gpt-6-astra");
+    assert_eq!(output["data"][0]["type"], "model");
+    assert_eq!(output["data"][0]["context_window"], 400_000);
+    assert_eq!(output["data"][0]["max_input_tokens"], 400_000);
+    assert_eq!(output["data"][0]["effective_context_window_percent"], 95);
+
+    let detail: Value =
+        serde_json::from_str(&serialize_model_info(&items.models[0])).expect("model detail");
+    assert_eq!(detail["id"], "gpt-6-astra");
+    assert_eq!(detail["type"], "model");
+    assert_eq!(detail["context_window"], 400_000);
+}
+
+#[test]
+fn model_detail_path_only_accepts_a_single_non_empty_slug() {
+    assert_eq!(
+        model_detail_id("/v1/models/gpt-6-astra?version=1"),
+        Some("gpt-6-astra")
+    );
+    assert_eq!(model_detail_id("/v1/models"), None);
+    assert_eq!(model_detail_id("/v1/models/"), None);
+    assert_eq!(model_detail_id("/v1/models/a/b"), None);
+}
+
+#[test]
 fn models_etag_header_uses_extra_etag_value() {
     let items = ModelsResponse {
         models: vec![],
@@ -660,9 +711,18 @@ fn local_models_lists_image_model_once_with_image_only_capabilities() {
     let response = crate::models_v2::models_response_with_storage(&storage)
         .expect("read managed local models");
     assert_eq!(response.models.len(), 12);
-    assert!(response.models.iter().any(|model| model.slug == "gpt-6-sol"));
-    assert!(response.models.iter().any(|model| model.slug == "gpt-6.1-sol"));
-    assert!(response.models.iter().any(|model| model.slug == "gpt-6-luna"));
+    assert!(response
+        .models
+        .iter()
+        .any(|model| model.slug == "gpt-6-sol"));
+    assert!(response
+        .models
+        .iter()
+        .any(|model| model.slug == "gpt-6.1-sol"));
+    assert!(response
+        .models
+        .iter()
+        .any(|model| model.slug == "gpt-6-luna"));
     let image_models = response
         .models
         .iter()

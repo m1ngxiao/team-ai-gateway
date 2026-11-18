@@ -35,6 +35,36 @@ fn anthropic_messages_are_rewritten_to_responses() {
 }
 
 #[test]
+fn anthropic_generation_and_tool_choice_controls_reach_responses() {
+    let body = json!({
+        "model": "gpt-6-astra",
+        "max_tokens": 8192,
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "messages": [{"role": "user", "content": "inspect"}],
+        "tools": [{
+            "name": "Read",
+            "description": "Read a file",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}
+        }],
+        "tool_choice": {"type": "tool", "name": "Read", "disable_parallel_tool_use": true}
+    });
+    let adapted = adapt_request_for_protocol(
+        PROTOCOL_ANTHROPIC_NATIVE,
+        "/v1/messages",
+        serde_json::to_vec(&body).expect("body"),
+    )
+    .expect("adapt request");
+    let payload: Value = serde_json::from_slice(&adapted.body).expect("payload");
+    assert_eq!(payload["max_output_tokens"], 8192);
+    assert_eq!(payload["temperature"], 0.2);
+    assert_eq!(payload["top_p"], 0.9);
+    assert_eq!(payload["tool_choice"]["type"], "function");
+    assert_eq!(payload["tool_choice"]["name"], "Read");
+    assert_eq!(payload["parallel_tool_calls"], false);
+}
+
+#[test]
 fn anthropic_mid_conversation_system_messages_map_to_developer() {
     let body = serde_json::json!({
         "model": "claude-sonnet",
@@ -546,7 +576,8 @@ fn anthropic_disable_parallel_tool_use_and_unique_short_names_follow_cpa_shape()
         serde_json::from_slice(&adapted.body).expect("parse adapted body");
     assert_eq!(payload["parallel_tool_calls"], false);
     assert_ne!(payload["tools"][0]["name"], payload["tools"][1]["name"]);
-    assert_eq!(payload["tool_choice"], "auto");
+    assert_eq!(payload["tool_choice"]["type"], "function");
+    assert_eq!(payload["tool_choice"]["name"], payload["tools"][1]["name"]);
     assert_eq!(payload["input"][0]["name"], payload["tools"][1]["name"]);
     assert_eq!(payload["tools"][0]["parameters"]["type"], "object");
     assert!(payload["tools"][0]["parameters"]["properties"].is_object());
@@ -822,8 +853,10 @@ fn responses_request_rejects_unknown_content_in_anthropic_bridge() {
         "input": [{"type":"message","role":"user","content":[{"type":"input_audio","audio":"data:audio/wav;base64,AA=="}]}]
     });
     let error = adapt_openai_responses_to_anthropic_messages(
-        serde_json::to_vec(&body).expect("body").as_slice(), None,
-    ).expect_err("unknown content must not be dropped");
+        serde_json::to_vec(&body).expect("body").as_slice(),
+        None,
+    )
+    .expect_err("unknown content must not be dropped");
     assert!(error.contains("unsupported responses content part type: input_audio"));
 }
 
@@ -835,8 +868,10 @@ fn responses_request_rejects_unsupported_tool_in_anthropic_bridge() {
         "tools": [{"type":"code_interpreter","container":{"type":"auto"}}]
     });
     let error = adapt_openai_responses_to_anthropic_messages(
-        serde_json::to_vec(&body).expect("body").as_slice(), None,
-    ).expect_err("unsupported tool must not be dropped");
+        serde_json::to_vec(&body).expect("body").as_slice(),
+        None,
+    )
+    .expect_err("unsupported tool must not be dropped");
     assert!(error.contains("unsupported responses tool type: code_interpreter"));
 }
 
@@ -845,14 +880,22 @@ fn responses_request_rejects_malformed_tools_in_anthropic_bridge() {
     let cases = [
         (json!(null), "responses tool entry must be an object"),
         (json!({"name":"lookup"}), "responses tool type is required"),
-        (json!({"type":"function"}), "responses function tool name is required"),
-        (json!({"type":"function","name":"lookup","parameters":"invalid"}), "parameters must be an object"),
+        (
+            json!({"type":"function"}),
+            "responses function tool name is required",
+        ),
+        (
+            json!({"type":"function","name":"lookup","parameters":"invalid"}),
+            "parameters must be an object",
+        ),
     ];
     for (tool, expected_error) in cases {
         let body = json!({"model":"claude-test","input":"find this","tools":[tool]});
         let error = adapt_openai_responses_to_anthropic_messages(
-            serde_json::to_vec(&body).expect("body").as_slice(), None,
-        ).expect_err("malformed tool must not be dropped");
+            serde_json::to_vec(&body).expect("body").as_slice(),
+            None,
+        )
+        .expect_err("malformed tool must not be dropped");
         assert!(error.contains(expected_error), "unexpected error: {error}");
     }
 }
@@ -966,4 +1009,190 @@ fn anthropic_web_search_tool_maps_to_codex_web_search_like_cpa() {
         serde_json::from_slice(&adapted.body).expect("parse adapted body");
     assert_eq!(payload["tools"][0]["type"], "web_search");
     assert!(payload["tools"][0].get("name").is_none());
+}
+
+#[test]
+fn strips_artifact_tool_patterns_rejected_by_openai_upstreams() {
+    let body = serde_json::json!({
+        "model": "gpt-6-astra",
+        "max_tokens": 32,
+        "messages": [{"role": "user", "content": "publish a page"}],
+        "tools": [{
+            "name": "Artifact",
+            "description": "Render an HTML file to an Artifact",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "pattern": "^[^\\0]*$"
+                    },
+                    "asset_id": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{32}$"
+                    }
+                }
+            }
+        }]
+    });
+
+    let adapted = adapt_request_for_protocol(
+        PROTOCOL_ANTHROPIC_NATIVE,
+        "/v1/messages",
+        serde_json::to_vec(&body).expect("body"),
+    )
+    .expect("adapt anthropic request");
+
+    let payload: Value = serde_json::from_slice(&adapted.body).expect("parse adapted body");
+    assert!(payload
+        .pointer("/tools/0/parameters/properties/file_path/pattern")
+        .is_none());
+    assert_eq!(
+        payload
+            .pointer("/tools/0/parameters/properties/asset_id/pattern")
+            .and_then(Value::as_str),
+        Some("^[0-9a-f]{32}$")
+    );
+}
+
+#[test]
+fn uses_latest_compaction_block_as_history_boundary_and_summary() {
+    let body = serde_json::json!({
+        "model": "gpt-6-astra",
+        "max_tokens": 32,
+        "messages": [
+            {"role": "user", "content": "old request that must be dropped"},
+            {"role": "assistant", "content": [{"type": "text", "text": "old response"}]},
+            {"role": "assistant", "content": [
+                {"type": "compaction", "content": "The task is to fix the parser."}
+            ]},
+            {"role": "user", "content": "continue"}
+        ]
+    });
+
+    let adapted = adapt_request_for_protocol(
+        PROTOCOL_ANTHROPIC_NATIVE,
+        "/v1/messages",
+        serde_json::to_vec(&body).expect("body"),
+    )
+    .expect("adapt anthropic request");
+
+    let payload: Value = serde_json::from_slice(&adapted.body).expect("parse adapted body");
+    let input = payload
+        .get("input")
+        .and_then(Value::as_array)
+        .expect("input");
+    assert!(input.iter().any(|item| {
+        item.pointer("/content/0/text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| text.contains("The task is to fix the parser."))
+    }));
+    let input_json = serde_json::to_string(input).expect("input json");
+    assert!(!input_json.contains("old request that must be dropped"));
+    assert!(input_json.contains("continue"));
+}
+
+#[test]
+fn applies_context_management_before_anthropic_to_responses_conversion() {
+    let body = serde_json::json!({
+        "model": "gpt-6-astra",
+        "max_tokens": 32,
+        "messages": [
+            {"role": "user", "content": "inspect files"},
+            {"role": "assistant", "content": [{
+                "type": "tool_use",
+                "id": "toolu_old",
+                "name": "Read",
+                "input": {"file_path": "old.rs"}
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_old",
+                "content": "old file contents that are no longer needed and can be safely cleared from context"
+            }]},
+            {"role": "assistant", "content": [{
+                "type": "tool_use",
+                "id": "toolu_new",
+                "name": "Read",
+                "input": {"file_path": "new.rs"}
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_new",
+                "content": "latest file contents that must remain available for the current turn"
+            }]}
+        ],
+        "context_management": {
+            "edits": [{
+                "type": "clear_tool_uses_20250919",
+                "trigger": {"type": "tool_uses", "value": 0},
+                "keep": {"type": "tool_uses", "value": 1}
+            }]
+        }
+    });
+    let adapted = adapt_request_for_protocol(
+        PROTOCOL_ANTHROPIC_NATIVE,
+        "/v1/messages",
+        serde_json::to_vec(&body).expect("body"),
+    )
+    .expect("adapt request");
+    let payload: Value = serde_json::from_slice(&adapted.body).expect("adapted body");
+    let payload_text = serde_json::to_string(&payload).expect("payload text");
+    assert!(payload_text.contains("[Cleared by context management]"));
+    assert!(!payload_text.contains("old file contents that are no longer needed"));
+    assert!(payload_text.contains("latest file contents"));
+    let enrichment = adapted
+        .context_management
+        .response_enrichment()
+        .expect("context management enrichment");
+    assert_eq!(enrichment.applied_edits[0]["cleared_tool_uses"], 1);
+}
+
+
+#[test]
+fn adapts_anthropic_output_config_format_and_strips_window_suffix() {
+    let body = serde_json::json!({
+        "model": "gpt-6-astra[272k]",
+        "max_tokens": 128,
+        "thinking": { "type": "adaptive" },
+        "output_config": {
+            "effort": "high",
+            "format": {
+                "type": "json_schema",
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "ok": { "type": "boolean" },
+                        "name": { "type": "string", "pattern": "^[^\\0]*$" },
+                        "code": { "type": "string", "pattern": "^[0-9a-f]{8}$" }
+                    },
+                    "required": ["ok"]
+                }
+            }
+        },
+        "messages": [
+            { "role": "user", "content": "return json" }
+        ]
+    });
+    let adapted = adapt_request_for_protocol(
+        PROTOCOL_ANTHROPIC_NATIVE,
+        "/v1/messages?beta=true",
+        serde_json::to_vec(&body).expect("body"),
+    )
+    .expect("adapt request");
+    let payload: Value = serde_json::from_slice(&adapted.body).expect("adapted json");
+    assert_eq!(payload["model"], "gpt-6-astra");
+    assert_eq!(payload["reasoning"]["effort"], "high");
+    assert_eq!(payload["text"]["format"]["type"], "json_schema");
+    assert_eq!(payload["text"]["format"]["name"], "anthropic_output_schema");
+    assert_eq!(payload["text"]["format"]["strict"], false);
+    assert_eq!(payload["text"]["format"]["schema"]["type"], "object");
+    assert!(payload["text"]["format"]["schema"]["properties"]["name"]
+        .get("pattern")
+        .is_none());
+    assert_eq!(
+        payload["text"]["format"]["schema"]["properties"]["code"]["pattern"],
+        "^[0-9a-f]{8}$"
+    );
 }

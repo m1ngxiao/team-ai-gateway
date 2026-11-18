@@ -673,7 +673,9 @@ async fn send_request_for_response_headers(
     generation_budget: Option<&super::super::generation_budget::GenerationBudget>,
 ) -> Result<reqwest::Response, AsyncStreamRequestError> {
     if let Some(budget) = generation_budget {
-        budget.before_send().map_err(AsyncStreamRequestError::BudgetExhausted)?;
+        budget
+            .before_send()
+            .map_err(AsyncStreamRequestError::BudgetExhausted)?;
     }
     match timeout {
         Some(timeout) => match tokio::time::timeout(timeout, builder.send()).await {
@@ -698,7 +700,8 @@ pub(in crate::gateway) fn send_async_stream_request(
     is_stream: bool,
 ) -> Result<super::super::GatewayStreamResponse, AsyncStreamRequestError> {
     let generation_budget = (method == &reqwest::Method::POST)
-        .then(super::super::generation_budget::current).flatten();
+        .then(super::super::generation_budget::current)
+        .flatten();
     let client = client.clone();
     let method = method.clone();
     let adapted_chat_stream = request_path.split('?').next() == Some("/v1/chat/completions")
@@ -736,7 +739,13 @@ pub(in crate::gateway) fn send_async_stream_request(
             if !request_body.is_empty() {
                 builder = builder.body(request_body);
             }
-            match send_request_for_response_headers(builder, send_timeout, generation_budget.as_deref()).await {
+            match send_request_for_response_headers(
+                builder,
+                send_timeout,
+                generation_budget.as_deref(),
+            )
+            .await
+            {
                 Ok(response) => {
                     let status = response.status();
                     let headers = response.headers().clone();
@@ -759,7 +768,8 @@ pub(in crate::gateway) fn send_async_stream_request(
                     let mut stream = response.bytes_stream();
                     let mut chat_deadline_wait = Box::pin(async move {
                         if let Some(deadline) = chat_body_deadline {
-                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))
+                                .await;
                         } else {
                             std::future::pending::<()>().await;
                         }
@@ -1011,7 +1021,8 @@ fn send_upstream_request_with_compression_override(
     compression_override: Option<RequestCompression>,
 ) -> Result<GatewayUpstreamResponse, String> {
     let generation_budget = (method == &reqwest::Method::POST)
-        .then(super::super::generation_budget::current).flatten();
+        .then(super::super::generation_budget::current)
+        .flatten();
     let attempt_started_at = Instant::now();
     let is_compact_request = is_compact_request_path(request_ctx.request_path);
     let chatgpt_account_header = resolve_chatgpt_account_header(account, target_url);
@@ -1203,11 +1214,8 @@ fn send_upstream_request_with_compression_override(
         builder
     };
 
-    let use_async_stream_transport = should_wrap_upstream_as_stream_response(
-        request_ctx.request_path,
-        target_url,
-        is_stream,
-    );
+    let use_async_stream_transport =
+        should_wrap_upstream_as_stream_response(request_ctx.request_path, target_url, is_stream);
     // Keep the existing WebSocket eligibility; the adapted Chat fix only
     // changes its HTTP body transport from blocking to cancellable streaming.
     let use_websocket_upstream = use_async_stream_transport
@@ -1281,7 +1289,10 @@ fn send_upstream_request_with_compression_override(
         ) {
             Ok(resp) => Ok(GatewayUpstreamResponse::Stream(resp)),
             Err(first_err) => {
-                if generation_budget.as_ref().is_some_and(|budget| !budget.can_send()) {
+                if generation_budget
+                    .as_ref()
+                    .is_some_and(|budget| !budget.can_send())
+                {
                     return Err(first_err.to_string());
                 }
                 let fresh_async = match super::super::super::fresh_async_upstream_client_for_account(
@@ -1376,10 +1387,17 @@ fn send_upstream_request_with_compression_override(
             }
             builder.send().map_err(|err| err.to_string())
         };
-        match send_request(build_request(client, upstream_headers.as_slice(), &body_for_request)) {
+        match send_request(build_request(
+            client,
+            upstream_headers.as_slice(),
+            &body_for_request,
+        )) {
             Ok(resp) => Ok(resp.into()),
             Err(first_err) => {
-                if generation_budget.as_ref().is_some_and(|budget| !budget.can_send()) {
+                if generation_budget
+                    .as_ref()
+                    .is_some_and(|budget| !budget.can_send())
+                {
                     return Err(first_err);
                 }
                 let fresh = match super::super::super::fresh_upstream_client_for_account(
@@ -1401,8 +1419,11 @@ fn send_upstream_request_with_compression_override(
                         target_url,
                         first_err
                     );
-                    match send_request(build_request(&fresh, upstream_headers_uncompressed.as_slice(), body))
-                    {
+                    match send_request(build_request(
+                        &fresh,
+                        upstream_headers_uncompressed.as_slice(),
+                        body,
+                    )) {
                         Ok(resp) => {
                             log::warn!(
                                 "event=gateway_transport_retry_without_compression_succeeded path={} account_id={} target_url={}",
@@ -1425,8 +1446,11 @@ fn send_upstream_request_with_compression_override(
                         }
                     }
                 } else {
-                    match send_request(build_request(&fresh, upstream_headers.as_slice(), &body_for_request))
-                    {
+                    match send_request(build_request(
+                        &fresh,
+                        upstream_headers.as_slice(),
+                        &body_for_request,
+                    )) {
                         Ok(resp) => {
                             log::info!(
                                 "event=gateway_transport_retry_with_fresh_client_succeeded path={} account_id={} target_url={}",
@@ -1452,8 +1476,13 @@ fn send_upstream_request_with_compression_override(
             }
         }
     };
-    let duration_ms = super::super::super::duration_to_millis(attempt_started_at.elapsed());
-    super::super::super::metrics::record_gateway_upstream_attempt(duration_ms, result.is_err());
+    let budget_denied = result
+        .as_ref()
+        .is_err_and(|err| super::super::generation_budget::is_budget_error_message(err));
+    if !budget_denied {
+        let duration_ms = super::super::super::duration_to_millis(attempt_started_at.elapsed());
+        super::super::super::metrics::record_gateway_upstream_attempt(duration_ms, result.is_err());
+    }
     result
 }
 

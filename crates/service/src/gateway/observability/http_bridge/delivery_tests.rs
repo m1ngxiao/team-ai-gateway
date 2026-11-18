@@ -1,8 +1,6 @@
 use super::super::body_conversion::{
-    chat_completion_body_to_single_sse, chat_responses_sse_failure,
-    chat_responses_sse_length_body,
-    convert_chat_completions_body_to_compact,
-    convert_responses_body_to_chat_completions,
+    chat_completion_body_to_single_sse, chat_responses_sse_failure, chat_responses_sse_length_body,
+    convert_chat_completions_body_to_compact, convert_responses_body_to_chat_completions,
     convert_responses_body_to_gemini_generate_content, convert_responses_body_to_images,
     gemini_cli_wrap_response_envelope, merge_usage_from_body_without_output_text,
 };
@@ -15,9 +13,108 @@ use super::{
     response_adapter_uses_manual_chunked_streaming, write_streaming_chunked_response,
     ImagesResponseFormat, ResponseAdapter, StatusCode,
 };
-use serde_json::json;
+use crate::gateway::anthropic_safeguards::{
+    available_results, SafeguardEvaluator, SafeguardToolUse,
+};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::sync::Arc;
 use tiny_http::{HTTPVersion, Header};
+
+struct StaticSafeguardEvaluator;
+
+impl SafeguardEvaluator for StaticSafeguardEvaluator {
+    fn evaluate(&self, tool_uses: &[SafeguardToolUse]) -> Value {
+        available_results(
+            tool_uses
+                .iter()
+                .map(|tool_use| {
+                    (
+                        tool_use.id.clone(),
+                        json!({"type": "evaluated", "outcome": "not_flagged"}),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>(),
+        )
+    }
+}
+
+#[test]
+fn non_stream_anthropic_response_gets_safeguard_results() {
+    let evaluator: Arc<dyn SafeguardEvaluator> = Arc::new(StaticSafeguardEvaluator);
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "gpt-6-astra",
+        "content": [{
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "Bash",
+            "input": {"command": "pwd"}
+        }],
+        "stop_reason": "tool_use",
+        "stop_sequence": null
+    }))
+    .expect("body");
+
+    let mapped = super::apply_safeguard_results_to_response(
+        ResponseAdapter::AnthropicMessagesFromResponses,
+        body,
+        Some(&evaluator),
+    );
+    let value: Value = serde_json::from_slice(&mapped).expect("mapped body");
+    assert_eq!(
+        value["safeguard_results"][0]["status"]["tool_uses"]["toolu_1"]["outcome"],
+        "not_flagged"
+    );
+}
+
+#[test]
+fn non_stream_anthropic_response_gets_compaction_and_context_metadata() {
+    let enrichment = Arc::new(
+        crate::gateway::anthropic_context_management::AnthropicContextEnrichment {
+            applied_edits: vec![
+                json!({"type": "clear_tool_uses_20250919", "cleared_tool_uses": 2}),
+            ],
+            compaction: Some(
+                crate::gateway::anthropic_context_management::CompactionBlock {
+                    summary: "state retained".to_string(),
+                    input_tokens: 80,
+                    output_tokens: 12,
+                },
+            ),
+        },
+    );
+    let body = serde_json::to_vec(&json!({
+        "id": "msg_compact",
+        "type": "message",
+        "role": "assistant",
+        "model": "gpt-6-astra",
+        "content": [{"type": "text", "text": "continue"}],
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {"input_tokens": 20, "output_tokens": 4}
+    }))
+    .expect("body");
+
+    let mapped = super::apply_anthropic_context_to_response(
+        ResponseAdapter::AnthropicMessagesFromResponses,
+        body,
+        Some(&enrichment),
+    );
+    let value: Value = serde_json::from_slice(&mapped).expect("mapped body");
+    assert_eq!(value["content"][0]["type"], "compaction");
+    assert_eq!(value["content"][0]["content"], "state retained");
+    assert_eq!(value["content"][1]["text"], "continue");
+    assert_eq!(
+        value["context_management"]["applied_edits"][0]["type"],
+        "clear_tool_uses_20250919"
+    );
+    assert_eq!(value["usage"]["iterations"][0]["type"], "compaction");
+    assert_eq!(value["usage"]["iterations"][1]["type"], "message");
+}
 
 struct ChunkedTestReader {
     chunks: Vec<&'static [u8]>,
@@ -432,14 +529,22 @@ fn non_stream_chat_completion_preserves_function_call_identity_and_arguments() {
     assert_eq!(message["tool_calls"][0]["id"], "call_a");
     assert_eq!(message["tool_calls"][0]["type"], "function");
     assert_eq!(message["tool_calls"][0]["function"]["name"], "lookup");
-    assert_eq!(message["tool_calls"][0]["function"]["arguments"], "{\"query\":\"first\"}");
+    assert_eq!(
+        message["tool_calls"][0]["function"]["arguments"],
+        "{\"query\":\"first\"}"
+    );
     assert_eq!(message["tool_calls"][1]["id"], "call_b");
-    assert_eq!(message["tool_calls"][1]["function"]["arguments"], "{\"text\":\"second\"}");
+    assert_eq!(
+        message["tool_calls"][1]["function"]["arguments"],
+        "{\"text\":\"second\"}"
+    );
     assert_eq!(value["choices"][0]["finish_reason"], "tool_calls");
     assert_eq!(value["usage"]["completion_tokens"], 4);
 
     let sse = String::from_utf8(chat_completion_body_to_single_sse(&converted)).unwrap();
-    let frames = sse.lines().filter_map(|line| line.strip_prefix("data: "))
+    let frames = sse
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
         .filter(|data| *data != "[DONE]")
         .map(|data| serde_json::from_str::<serde_json::Value>(data).unwrap())
         .collect::<Vec<_>>();
@@ -463,8 +568,14 @@ fn non_stream_chat_completion_preserves_text_alongside_function_calls() {
     let converted = convert_responses_body_to_chat_completions(&serde_json::to_vec(&body).unwrap())
         .expect("convert mixed text and call");
     let value: serde_json::Value = serde_json::from_slice(&converted).unwrap();
-    assert_eq!(value["choices"][0]["message"]["content"], "I will check that.");
-    assert_eq!(value["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "lookup");
+    assert_eq!(
+        value["choices"][0]["message"]["content"],
+        "I will check that."
+    );
+    assert_eq!(
+        value["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        "lookup"
+    );
     assert_eq!(value["choices"][0]["finish_reason"], "tool_calls");
 }
 
@@ -473,7 +584,8 @@ fn chat_failure_conversion_preserves_structured_error_in_json_and_sse() {
     let failure = json!({"type":"response.failed", "error":null,
         "response":{"status":"failed","error":{"code":"server_is_overloaded",
             "message":"synthetic model capacity error"}}});
-    let converted = convert_responses_body_to_chat_completions(&serde_json::to_vec(&failure).unwrap()).unwrap();
+    let converted =
+        convert_responses_body_to_chat_completions(&serde_json::to_vec(&failure).unwrap()).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&converted).unwrap();
     assert_eq!(value["error"]["code"], "server_is_overloaded");
     assert_eq!(value["error"]["message"], "synthetic model capacity error");
@@ -485,11 +597,14 @@ fn chat_failure_conversion_preserves_structured_error_in_json_and_sse() {
     let (error, hint) = chat_responses_sse_failure(raw_sse.as_bytes()).unwrap();
     assert_eq!(error["code"], "server_is_overloaded");
     assert!(hint.contains("server_is_overloaded"));
-    let ordinary = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"server_is_overloaded\"}\n\n";
+    let ordinary =
+        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"server_is_overloaded\"}\n\n";
     assert!(chat_responses_sse_failure(ordinary).is_none());
     let budget_boundary = b"data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"error\":null,\"output_text\":\"partial answer\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n";
-    assert!(chat_responses_sse_failure(budget_boundary).is_none(),
-        "an output budget boundary is not a new gateway error");
+    assert!(
+        chat_responses_sse_failure(budget_boundary).is_none(),
+        "an output budget boundary is not a new gateway error"
+    );
 }
 
 #[test]
@@ -498,19 +613,28 @@ fn chat_nonstream_output_budget_returns_partial_json_with_length_finish() {
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial answer\"}\n\n",
         "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_limit\",\"status\":\"incomplete\",\"output\":[],\"error\":null,\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n\n"
     );
-    let partial = chat_responses_sse_length_body(sse.as_bytes()).expect("aggregate partial deltas without a terminal output snapshot");
+    let partial = chat_responses_sse_length_body(sse.as_bytes())
+        .expect("aggregate partial deltas without a terminal output snapshot");
     let converted = convert_responses_body_to_chat_completions(&partial).unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&converted).expect("valid Chat JSON, not raw SSE");
+    let json: serde_json::Value =
+        serde_json::from_slice(&converted).expect("valid Chat JSON, not raw SSE");
     assert_eq!(json["choices"][0]["message"]["content"], "partial answer");
     assert_eq!(json["choices"][0]["finish_reason"], "length");
     assert_eq!(json["usage"]["total_tokens"], 5);
     assert!(json.get("error").is_none());
     let tool = serde_json::json!({"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},
         "output":[{"type":"function_call","call_id":"call_partial","name":"lookup","arguments":"{\"partial\":"}]});
-    let converted = convert_responses_body_to_chat_completions(&serde_json::to_vec(&tool).unwrap()).unwrap();
+    let converted =
+        convert_responses_body_to_chat_completions(&serde_json::to_vec(&tool).unwrap()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&converted).unwrap();
-    assert_eq!(json["choices"][0]["finish_reason"], "length", "truncated arguments are not a completed tool call");
-    assert_eq!(json["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"], "{\"partial\":");
+    assert_eq!(
+        json["choices"][0]["finish_reason"], "length",
+        "truncated arguments are not a completed tool call"
+    );
+    assert_eq!(
+        json["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        "{\"partial\":"
+    );
     let cancelled = b"data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"cancelled\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n";
     assert!(chat_responses_sse_length_body(cancelled).is_none());
     assert!(chat_responses_sse_failure(cancelled).is_some());

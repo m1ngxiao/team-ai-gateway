@@ -158,8 +158,9 @@ struct OAuthProfile {
 fn oauth_http_client(account_id: Option<&str>) -> Result<Client, String> {
     // Login has no account identity yet, so use a stable pool assignment for its
     // token exchange and profile request. Refresh uses the actual account ID.
-    crate::gateway::upstream_client_for_account(account_id.unwrap_or("claude:oauth-login"))
-        .map_err(|_| "Claude upstream HTTP client unavailable; check proxy configuration".to_string())
+    crate::gateway::upstream_client_for_account(account_id.unwrap_or("claude:oauth-login")).map_err(
+        |_| "Claude upstream HTTP client unavailable; check proxy configuration".to_string(),
+    )
 }
 
 fn build_authorize_url(state: &str, code_challenge: &str) -> Result<String, String> {
@@ -201,8 +202,7 @@ pub(crate) fn login_start() -> Result<ClaudeLoginStart, String> {
 
 fn parse_code_and_state(input: &str) -> Result<(&str, &str), String> {
     let (code, state) = input.trim().split_once('#').ok_or_else(|| {
-        "Claude authorization code must include the #state suffix shown by the browser"
-            .to_string()
+        "Claude authorization code must include the #state suffix shown by the browser".to_string()
     })?;
     if code.trim().is_empty() || state.trim().is_empty() {
         return Err("Claude authorization code or state is empty".to_string());
@@ -210,7 +210,11 @@ fn parse_code_and_state(input: &str) -> Result<(&str, &str), String> {
     Ok((code.trim(), state.trim()))
 }
 
-fn exchange_code(client: &Client, code: &str, session: &ClaudeSubscriptionLoginSession) -> Result<OAuthTokenResponse, String> {
+fn exchange_code(
+    client: &Client,
+    code: &str,
+    session: &ClaudeSubscriptionLoginSession,
+) -> Result<OAuthTokenResponse, String> {
     let response = client
         .post(TOKEN_URL)
         .timeout(Duration::from_secs(30))
@@ -225,7 +229,10 @@ fn exchange_code(client: &Client, code: &str, session: &ClaudeSubscriptionLoginS
         .send()
         .map_err(|err| format!("Claude token exchange failed: {err}"))?;
     if !response.status().is_success() {
-        return Err(format!("Claude token exchange returned HTTP {}", response.status()));
+        return Err(format!(
+            "Claude token exchange returned HTTP {}",
+            response.status()
+        ));
     }
     response
         .json()
@@ -241,14 +248,20 @@ fn fetch_profile(client: &Client, access_token: &str) -> Result<OAuthProfile, St
         .send()
         .map_err(|err| format!("Claude profile request failed: {err}"))?;
     if !response.status().is_success() {
-        return Err(format!("Claude profile returned HTTP {}", response.status()));
+        return Err(format!(
+            "Claude profile returned HTTP {}",
+            response.status()
+        ));
     }
     response
         .json()
         .map_err(|err| format!("invalid Claude profile response: {err}"))
 }
 
-pub(crate) fn login_complete(login_id: &str, pasted_code: &str) -> Result<ClaudeLoginComplete, String> {
+pub(crate) fn login_complete(
+    login_id: &str,
+    pasted_code: &str,
+) -> Result<ClaudeLoginComplete, String> {
     let (code, state) = parse_code_and_state(pasted_code)?;
     if state != login_id.trim() {
         return Err("Claude authorization state mismatch".to_string());
@@ -264,7 +277,10 @@ pub(crate) fn login_complete(login_id: &str, pasted_code: &str) -> Result<Claude
         if token.access_token.trim().is_empty() || token.expires_in <= 0 {
             return Err("Claude token exchange returned unusable credentials".to_string());
         }
-        let refresh_token = token.refresh_token.as_deref().filter(|value| !value.is_empty())
+        let refresh_token = token
+            .refresh_token
+            .as_deref()
+            .filter(|value| !value.is_empty())
             .ok_or_else(|| "Claude login did not provide a refresh token".to_string())?;
         let profile = fetch_profile(&client, &token.access_token)?;
         let account_uuid = profile.account.uuid.trim();
@@ -274,64 +290,99 @@ pub(crate) fn login_complete(login_id: &str, pasted_code: &str) -> Result<Claude
         }
         let account_id = format!("claude:{account_uuid}:{organization_uuid}");
         let now = now_ts();
-        let label = profile.account.email_address.as_deref().filter(|value| !value.trim().is_empty())
-            .unwrap_or(account_uuid).to_string();
-        let existing = storage.find_claude_subscription_account(&account_id)
+        let label = profile
+            .account
+            .email_address
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(account_uuid)
+            .to_string();
+        let existing = storage
+            .find_claude_subscription_account(&account_id)
             .map_err(|err| format!("read Claude account failed: {err}"))?;
-        storage.upsert_claude_subscription_account(&ClaudeSubscriptionAccount {
-            id: account_id.clone(),
-            label,
-            email: profile.account.email_address.or_else(|| token.account.and_then(|identity| identity.email_address)),
-            account_uuid: Some(account_uuid.to_string()),
-            organization_uuid: Some(organization_uuid.to_string()),
-            subscription_type: profile.organization.organization_type.or_else(|| token.organization.and_then(|organization| organization.organization_type)),
-            status: "disabled".to_string(),
-            sort: existing.as_ref().map_or(0, |account| account.sort),
-            access_token: token.access_token,
-            refresh_token: refresh_token.to_string(),
-            scopes: token.scope.unwrap_or_else(|| SCOPES.to_string()),
-            expires_at: now.saturating_add(token.expires_in),
-            last_error: None,
-            created_at: existing.as_ref().map_or(now, |account| account.created_at),
-            updated_at: now,
-        }).map_err(|err| format!("save Claude account failed: {err}"))?;
-        let status = storage.find_claude_subscription_account(&account_id)
+        storage
+            .upsert_claude_subscription_account(&ClaudeSubscriptionAccount {
+                id: account_id.clone(),
+                label,
+                email: profile
+                    .account
+                    .email_address
+                    .or_else(|| token.account.and_then(|identity| identity.email_address)),
+                account_uuid: Some(account_uuid.to_string()),
+                organization_uuid: Some(organization_uuid.to_string()),
+                subscription_type: profile.organization.organization_type.or_else(|| {
+                    token
+                        .organization
+                        .and_then(|organization| organization.organization_type)
+                }),
+                status: "disabled".to_string(),
+                sort: existing.as_ref().map_or(0, |account| account.sort),
+                access_token: token.access_token,
+                refresh_token: refresh_token.to_string(),
+                scopes: token.scope.unwrap_or_else(|| SCOPES.to_string()),
+                expires_at: now.saturating_add(token.expires_in),
+                last_error: None,
+                created_at: existing.as_ref().map_or(now, |account| account.created_at),
+                updated_at: now,
+            })
+            .map_err(|err| format!("save Claude account failed: {err}"))?;
+        let status = storage
+            .find_claude_subscription_account(&account_id)
             .map_err(|err| format!("read Claude account after login failed: {err}"))?
             .ok_or_else(|| "Claude account disappeared after login".to_string())?
             .status;
-        if !storage.finish_claude_subscription_login_session(login_id, "completed", None, Some(&account_id), now)
-            .map_err(|err| format!("finish Claude login failed: {err}"))? {
+        if !storage
+            .finish_claude_subscription_login_session(
+                login_id,
+                "completed",
+                None,
+                Some(&account_id),
+                now,
+            )
+            .map_err(|err| format!("finish Claude login failed: {err}"))?
+        {
             return Err("Claude login session expired during completion".to_string());
         }
         Ok(ClaudeLoginComplete { account_id, status })
     })();
     if let Err(error) = &completed {
-        let _ = storage.finish_claude_subscription_login_session(login_id, "failed", Some(error), None, now_ts());
+        let _ = storage.finish_claude_subscription_login_session(
+            login_id,
+            "failed",
+            Some(error),
+            None,
+            now_ts(),
+        );
     }
     completed
 }
 
 pub(crate) fn list_accounts() -> Result<Vec<ClaudeAccountSummary>, String> {
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    let accounts = storage.list_claude_subscription_accounts()
+    let accounts = storage
+        .list_claude_subscription_accounts()
         .map_err(|err| format!("list Claude accounts failed: {err}"))?;
-    accounts.into_iter().map(|account| {
-        let usage = storage.find_claude_subscription_usage(&account.id)
-            .map_err(|err| format!("read Claude usage failed: {err}"))?
-            .map(ClaudeUsageSummary::from);
-        Ok(ClaudeAccountSummary {
-            id: account.id,
-            label: account.label,
-            email: account.email,
-            organization_uuid: account.organization_uuid,
-            subscription_type: account.subscription_type,
-            status: account.status,
-            sort: account.sort,
-            expires_at: account.expires_at,
-            last_error: account.last_error,
-            usage,
+    accounts
+        .into_iter()
+        .map(|account| {
+            let usage = storage
+                .find_claude_subscription_usage(&account.id)
+                .map_err(|err| format!("read Claude usage failed: {err}"))?
+                .map(ClaudeUsageSummary::from);
+            Ok(ClaudeAccountSummary {
+                id: account.id,
+                label: account.label,
+                email: account.email,
+                organization_uuid: account.organization_uuid,
+                subscription_type: account.subscription_type,
+                status: account.status,
+                sort: account.sort,
+                expires_at: account.expires_at,
+                last_error: account.last_error,
+                usage,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 #[derive(Debug)]
@@ -341,17 +392,26 @@ struct UsageFetchFailure {
 }
 
 fn parse_usage_percent(value: Option<&Value>) -> Option<f64> {
-    value.and_then(Value::as_f64).filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+    value
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
 }
 
 fn parse_usage_reset(value: Option<&Value>) -> Option<i64> {
     let value = value?;
     if let Some(timestamp) = value.as_i64() {
-        let seconds = if timestamp >= 1_000_000_000_000 { timestamp / 1000 } else { timestamp };
+        let seconds = if timestamp >= 1_000_000_000_000 {
+            timestamp / 1000
+        } else {
+            timestamp
+        };
         return (seconds > 0).then_some(seconds);
     }
-    value.as_str().and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
-        .map(|date| date.timestamp()).filter(|timestamp| *timestamp > 0)
+    value
+        .as_str()
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        .map(|date| date.timestamp())
+        .filter(|timestamp| *timestamp > 0)
 }
 
 fn parse_usage_window(value: Option<&Value>) -> (Option<f64>, Option<i64>) {
@@ -364,9 +424,15 @@ fn parse_usage_window(value: Option<&Value>) -> (Option<f64>, Option<i64>) {
     (percent, reset)
 }
 
-fn parse_usage_body(body: &Value, account_id: &str, captured_at: i64) -> Option<ClaudeSubscriptionUsage> {
-    let (five_hour, seven_day) = if let Some(entries) = body.as_array()
-        .or_else(|| body.get("usage").and_then(Value::as_array)) {
+fn parse_usage_body(
+    body: &Value,
+    account_id: &str,
+    captured_at: i64,
+) -> Option<ClaudeSubscriptionUsage> {
+    let (five_hour, seven_day) = if let Some(entries) = body
+        .as_array()
+        .or_else(|| body.get("usage").and_then(Value::as_array))
+    {
         let mut session = None;
         let mut weekly_all = None;
         for entry in entries {
@@ -380,7 +446,9 @@ fn parse_usage_body(body: &Value, account_id: &str, captured_at: i64) -> Option<
             return None;
         }
         (session, weekly_all)
-    } else if body.is_object() && (body.get("five_hour").is_some() || body.get("seven_day").is_some()) {
+    } else if body.is_object()
+        && (body.get("five_hour").is_some() || body.get("seven_day").is_some())
+    {
         (body.get("five_hour"), body.get("seven_day"))
     } else {
         return None;
@@ -408,35 +476,46 @@ fn retry_after_secs(headers: &HeaderMap, now: i64) -> Option<i64> {
     if let Ok(seconds) = value.parse::<i64>() {
         return Some(seconds.max(0));
     }
-    chrono::DateTime::parse_from_rfc2822(value).ok()
+    chrono::DateTime::parse_from_rfc2822(value)
+        .ok()
         .map(|date| date.timestamp().saturating_sub(now).max(0))
 }
 
-fn fetch_usage(account: &ClaudeSubscriptionAccount, now: i64) -> Result<ClaudeSubscriptionUsage, UsageFetchFailure> {
+fn fetch_usage(
+    account: &ClaudeSubscriptionAccount,
+    now: i64,
+) -> Result<ClaudeSubscriptionUsage, UsageFetchFailure> {
     let client = oauth_http_client(Some(&account.id)).map_err(|_| UsageFetchFailure {
-        category: "network_error".to_string(), retry_after_secs: None,
+        category: "network_error".to_string(),
+        retry_after_secs: None,
     })?;
-    let response = client.get(USAGE_URL)
+    let response = client
+        .get(USAGE_URL)
         .timeout(Duration::from_secs(20))
         .bearer_auth(&account.access_token)
         .header("anthropic-beta", USAGE_BETA)
         .header("Cache-Control", "no-cache")
         .send()
         .map_err(|_| UsageFetchFailure {
-            category: "network_error".to_string(), retry_after_secs: None,
+            category: "network_error".to_string(),
+            retry_after_secs: None,
         })?;
     let status = response.status();
     if !status.is_success() {
         return Err(UsageFetchFailure {
             category: format!("HTTP {}", status.as_u16()),
-            retry_after_secs: (status.as_u16() == 429).then(|| retry_after_secs(response.headers(), now)).flatten(),
+            retry_after_secs: (status.as_u16() == 429)
+                .then(|| retry_after_secs(response.headers(), now))
+                .flatten(),
         });
     }
     let body: Value = response.json().map_err(|_| UsageFetchFailure {
-        category: "invalid_response".to_string(), retry_after_secs: None,
+        category: "invalid_response".to_string(),
+        retry_after_secs: None,
     })?;
     parse_usage_body(&body, &account.id, now).ok_or_else(|| UsageFetchFailure {
-        category: "invalid_response".to_string(), retry_after_secs: None,
+        category: "invalid_response".to_string(),
+        retry_after_secs: None,
     })
 }
 
@@ -451,15 +530,18 @@ pub(crate) fn refresh_usage_for_account(account_id: &str) -> Result<ClaudeUsageS
     let lock = usage_refresh_lock(account_id);
     let _guard = crate::lock_utils::lock_recover(lock.as_ref(), "claude_usage_refresh_lock");
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    let account = storage.find_claude_subscription_account(account_id)
+    let account = storage
+        .find_claude_subscription_account(account_id)
         .map_err(|err| format!("read Claude account failed: {err}"))?
         .ok_or_else(|| "Claude account not found".to_string())?;
     if account.status != "active" {
         return Err("Claude account is not active".to_string());
     }
     let now = now_ts();
-    if let Some(existing) = storage.find_claude_subscription_usage(account_id)
-        .map_err(|err| format!("read Claude usage failed: {err}"))? {
+    if let Some(existing) = storage
+        .find_claude_subscription_usage(account_id)
+        .map_err(|err| format!("read Claude usage failed: {err}"))?
+    {
         if existing.next_attempt_at.is_some_and(|next| next > now) {
             return Ok(existing.into());
         }
@@ -467,17 +549,24 @@ pub(crate) fn refresh_usage_for_account(account_id: &str) -> Result<ClaudeUsageS
     let refreshed = match refresh_account_token(&storage, &account) {
         Ok(account) => account,
         Err(_) => {
-            storage.record_claude_subscription_usage_failure(
-                account_id, now, now.saturating_add(USAGE_FAILURE_BACKOFF_SECS), "token_refresh_error",
-            ).map_err(|err| format!("save Claude usage failure failed: {err}"))?;
-            return storage.find_claude_subscription_usage(account_id)
+            storage
+                .record_claude_subscription_usage_failure(
+                    account_id,
+                    now,
+                    now.saturating_add(USAGE_FAILURE_BACKOFF_SECS),
+                    "token_refresh_error",
+                )
+                .map_err(|err| format!("save Claude usage failure failed: {err}"))?;
+            return storage
+                .find_claude_subscription_usage(account_id)
                 .map_err(|err| format!("read Claude usage failed: {err}"))?
                 .map(ClaudeUsageSummary::from)
                 .ok_or_else(|| "Claude usage status unavailable".to_string());
         }
     };
     match fetch_usage(&refreshed, now) {
-        Ok(usage) => storage.save_claude_subscription_usage_success(&usage)
+        Ok(usage) => storage
+            .save_claude_subscription_usage_success(&usage)
             .map_err(|err| format!("save Claude usage failed: {err}"))?,
         Err(failure) => {
             let minimum = if failure.category == "HTTP 429" {
@@ -486,12 +575,18 @@ pub(crate) fn refresh_usage_for_account(account_id: &str) -> Result<ClaudeUsageS
                 USAGE_FAILURE_BACKOFF_SECS
             };
             let retry_after = failure.retry_after_secs.unwrap_or(0);
-            storage.record_claude_subscription_usage_failure(
-                account_id, now, now.saturating_add(minimum.max(retry_after)), &failure.category,
-            ).map_err(|err| format!("save Claude usage failure failed: {err}"))?;
+            storage
+                .record_claude_subscription_usage_failure(
+                    account_id,
+                    now,
+                    now.saturating_add(minimum.max(retry_after)),
+                    &failure.category,
+                )
+                .map_err(|err| format!("save Claude usage failure failed: {err}"))?;
         }
     }
-    storage.find_claude_subscription_usage(account_id)
+    storage
+        .find_claude_subscription_usage(account_id)
         .map_err(|err| format!("read Claude usage failed: {err}"))?
         .map(ClaudeUsageSummary::from)
         .ok_or_else(|| "Claude usage status unavailable".to_string())
@@ -501,13 +596,16 @@ pub(crate) fn refresh_usage_for_account(account_id: &str) -> Result<ClaudeUsageS
 /// enforces a provider-wide cooldown after a usage-endpoint HTTP 429.
 pub(crate) fn refresh_one_due_usage_for_polling() -> Result<(), String> {
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    let account_id = storage.next_claude_subscription_usage_poll_account(now_ts())
+    let account_id = storage
+        .next_claude_subscription_usage_poll_account(now_ts())
         .map_err(|err| format!("select Claude usage poll account failed: {err}"))?;
     drop(storage);
     if let Some(account_id) = account_id {
         let usage = refresh_usage_for_account(&account_id)?;
         if usage.last_error.as_deref() == Some("HTTP 429") {
-            log::info!("Claude usage polling rate limited; automatic probes paused until retry time");
+            log::info!(
+                "Claude usage polling rate limited; automatic probes paused until retry time"
+            );
         }
     }
     Ok(())
@@ -519,7 +617,8 @@ pub(crate) fn set_account_status(account_id: &str, status: &str) -> Result<(), S
     }
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     if status == "active" {
-        let account = storage.find_claude_subscription_account(account_id)
+        let account = storage
+            .find_claude_subscription_account(account_id)
             .map_err(|err| err.to_string())?
             .ok_or_else(|| "Claude account not found".to_string())?;
         if account.access_token.is_empty() || account.refresh_token.is_empty() {
@@ -529,8 +628,10 @@ pub(crate) fn set_account_status(account_id: &str, status: &str) -> Result<(), S
             return Err("Claude account needs a new login before activation".to_string());
         }
     }
-    if !storage.update_claude_subscription_account_status(account_id, status, now_ts())
-        .map_err(|err| err.to_string())? {
+    if !storage
+        .update_claude_subscription_account_status(account_id, status, now_ts())
+        .map_err(|err| err.to_string())?
+    {
         return Err("Claude account not found".to_string());
     }
     Ok(())
@@ -538,7 +639,10 @@ pub(crate) fn set_account_status(account_id: &str, status: &str) -> Result<(), S
 
 pub(crate) fn delete_account(account_id: &str) -> Result<(), String> {
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    if !storage.delete_claude_subscription_account(account_id).map_err(|err| err.to_string())? {
+    if !storage
+        .delete_claude_subscription_account(account_id)
+        .map_err(|err| err.to_string())?
+    {
         return Err("Claude account not found".to_string());
     }
     Ok(())
@@ -549,7 +653,9 @@ enum RefreshFailure {
     Other(String),
 }
 
-fn request_refreshed_token(account: &ClaudeSubscriptionAccount) -> Result<OAuthTokenResponse, RefreshFailure> {
+fn request_refreshed_token(
+    account: &ClaudeSubscriptionAccount,
+) -> Result<OAuthTokenResponse, RefreshFailure> {
     let response = oauth_http_client(Some(&account.id))
         .map_err(RefreshFailure::Other)?
         .post(TOKEN_URL)
@@ -567,17 +673,21 @@ fn request_refreshed_token(account: &ClaudeSubscriptionAccount) -> Result<OAuthT
         if matches!(status, 400 | 401) {
             return Err(RefreshFailure::Authentication(status));
         }
-        return Err(RefreshFailure::Other(format!("Claude token refresh returned HTTP {status}")));
+        return Err(RefreshFailure::Other(format!(
+            "Claude token refresh returned HTTP {status}"
+        )));
     }
-    response.json()
-        .map_err(|err| RefreshFailure::Other(format!("invalid Claude token refresh response: {err}")))
+    response.json().map_err(|err| {
+        RefreshFailure::Other(format!("invalid Claude token refresh response: {err}"))
+    })
 }
 
 fn newer_active_account(
     storage: &Storage,
     previous: &ClaudeSubscriptionAccount,
 ) -> Result<Option<ClaudeSubscriptionAccount>, String> {
-    let latest = storage.find_claude_subscription_account(&previous.id)
+    let latest = storage
+        .find_claude_subscription_account(&previous.id)
         .map_err(|err| format!("read Claude account after refresh failed: {err}"))?;
     Ok(latest.filter(|account| {
         account.status == "active"
@@ -596,14 +706,16 @@ where
 {
     let lock = account_refresh_lock(&account.id);
     let _guard = crate::lock_utils::lock_recover(lock.as_ref(), "claude_account_refresh_lock");
-    let current = storage.find_claude_subscription_account(&account.id)
+    let current = storage
+        .find_claude_subscription_account(&account.id)
         .map_err(|err| format!("read Claude account before refresh failed: {err}"))?
         .ok_or_else(|| "Claude account was deleted before refresh".to_string())?;
     if current.status == "disabled" || account.status != "active" {
         return Err("Claude account was disabled before refresh".to_string());
     }
     if current.access_token != account.access_token
-        || current.refresh_token != account.refresh_token {
+        || current.refresh_token != account.refresh_token
+    {
         return if current.status == "active" {
             Ok(current)
         } else {
@@ -620,10 +732,15 @@ where
     let token = match fetch_token(&current) {
         Ok(token) => token,
         Err(RefreshFailure::Authentication(status)) => {
-            let _ = storage.mark_claude_subscription_account_needs_login(
-                &current.id, &current.access_token, &current.refresh_token,
-                "Claude login expired", now_ts(),
-            ).map_err(|err| format!("update Claude login status failed: {err}"))?;
+            let _ = storage
+                .mark_claude_subscription_account_needs_login(
+                    &current.id,
+                    &current.access_token,
+                    &current.refresh_token,
+                    "Claude login expired",
+                    now_ts(),
+                )
+                .map_err(|err| format!("update Claude login status failed: {err}"))?;
             if let Some(latest) = newer_active_account(storage, &current)? {
                 return Ok(latest);
             }
@@ -640,21 +757,36 @@ where
         return Err("Claude token refresh returned unusable credentials".to_string());
     }
     let now = now_ts();
-    let next_refresh = token.refresh_token.as_deref().filter(|value| !value.is_empty())
+    let next_refresh = token
+        .refresh_token
+        .as_deref()
+        .filter(|value| !value.is_empty())
         .unwrap_or(&current.refresh_token);
-    let next_scopes = token.scope.as_deref().filter(|value| !value.is_empty())
+    let next_scopes = token
+        .scope
+        .as_deref()
+        .filter(|value| !value.is_empty())
         .unwrap_or(&current.scopes);
-    let rotated = storage.rotate_claude_subscription_token(
-        &current.id, &current.access_token, &current.refresh_token, &token.access_token,
-        next_refresh, next_scopes, now.saturating_add(token.expires_in), now,
-    ).map_err(|err| format!("save Claude token refresh failed: {err}"))?;
+    let rotated = storage
+        .rotate_claude_subscription_token(
+            &current.id,
+            &current.access_token,
+            &current.refresh_token,
+            &token.access_token,
+            next_refresh,
+            next_scopes,
+            now.saturating_add(token.expires_in),
+            now,
+        )
+        .map_err(|err| format!("save Claude token refresh failed: {err}"))?;
     if !rotated {
         if let Some(latest) = newer_active_account(storage, &current)? {
             return Ok(latest);
         }
         return Err("Claude account changed during refresh".to_string());
     }
-    let current = storage.find_claude_subscription_account(&account.id)
+    let current = storage
+        .find_claude_subscription_account(&account.id)
         .map_err(|err| format!("read refreshed Claude account failed: {err}"))?
         .ok_or_else(|| "Claude account was deleted during refresh".to_string())?;
     if current.status != "active" {
@@ -678,18 +810,27 @@ pub(crate) fn mark_account_needs_login_after_401(
 ) -> Result<bool, String> {
     let lock = account_refresh_lock(account_id);
     let _guard = crate::lock_utils::lock_recover(lock.as_ref(), "claude_account_refresh_lock");
-    let current = storage.find_claude_subscription_account(account_id)
+    let current = storage
+        .find_claude_subscription_account(account_id)
         .map_err(|err| format!("read Claude account after HTTP 401 failed: {err}"))?;
-    let Some(current) = current else { return Ok(false); };
+    let Some(current) = current else {
+        return Ok(false);
+    };
     if current.status != "active"
         || current.access_token != expected_access_token
-        || current.refresh_token != expected_refresh_token {
+        || current.refresh_token != expected_refresh_token
+    {
         return Ok(false);
     }
-    storage.mark_claude_subscription_account_needs_login(
-        account_id, expected_access_token, expected_refresh_token,
-        "Claude upstream rejected subscription login", now_ts(),
-    ).map_err(|err| format!("mark Claude account after HTTP 401 failed: {err}"))
+    storage
+        .mark_claude_subscription_account_needs_login(
+            account_id,
+            expected_access_token,
+            expected_refresh_token,
+            "Claude upstream rejected subscription login",
+            now_ts(),
+        )
+        .map_err(|err| format!("mark Claude account after HTTP 401 failed: {err}"))
 }
 
 #[cfg(test)]
@@ -729,18 +870,33 @@ mod tests {
 
     #[test]
     fn manual_code_must_match_session_state() {
-        assert_eq!(parse_code_and_state("authorization#state").unwrap(), ("authorization", "state"));
+        assert_eq!(
+            parse_code_and_state("authorization#state").unwrap(),
+            ("authorization", "state")
+        );
         assert!(parse_code_and_state("authorization").is_err());
         assert!(parse_code_and_state("authorization#").is_err());
     }
 
     #[test]
     fn authorize_url_contains_pkce_and_manual_callback() {
-        let url = Url::parse(&build_authorize_url("state-value", "challenge-value").unwrap()).unwrap();
-        let params = url.query_pairs().collect::<std::collections::HashMap<_, _>>();
-        assert_eq!(params.get("state").map(|value| value.as_ref()), Some("state-value"));
-        assert_eq!(params.get("code_challenge").map(|value| value.as_ref()), Some("challenge-value"));
-        assert_eq!(params.get("redirect_uri").map(|value| value.as_ref()), Some(REDIRECT_URI));
+        let url =
+            Url::parse(&build_authorize_url("state-value", "challenge-value").unwrap()).unwrap();
+        let params = url
+            .query_pairs()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            params.get("state").map(|value| value.as_ref()),
+            Some("state-value")
+        );
+        assert_eq!(
+            params.get("code_challenge").map(|value| value.as_ref()),
+            Some("challenge-value")
+        );
+        assert_eq!(
+            params.get("redirect_uri").map(|value| value.as_ref()),
+            Some(REDIRECT_URI)
+        );
     }
 
     #[test]
@@ -751,10 +907,17 @@ mod tests {
         });
         let usage = parse_usage_body(&body, "claude:test", 100).expect("valid five-hour meter");
         assert_eq!(usage.five_hour_used_percent, Some(27.5));
-        assert!(usage.five_hour_resets_at.is_some_and(|timestamp| timestamp > 0));
+        assert!(usage
+            .five_hour_resets_at
+            .is_some_and(|timestamp| timestamp > 0));
         assert_eq!(usage.seven_day_used_percent, None);
         assert_eq!(usage.seven_day_resets_at, None);
-        assert!(parse_usage_body(&serde_json::json!({"five_hour": {"utilization": -1}}), "claude:test", 100).is_none());
+        assert!(parse_usage_body(
+            &serde_json::json!({"five_hour": {"utilization": -1}}),
+            "claude:test",
+            100
+        )
+        .is_none());
     }
 
     #[test]
@@ -768,8 +931,15 @@ mod tests {
         let usage = parse_usage_body(&body, "claude:test", 100).expect("valid meters");
         assert_eq!(usage.five_hour_used_percent, Some(5.0));
         assert_eq!(usage.seven_day_used_percent, Some(14.0));
-        assert!(usage.seven_day_resets_at.is_some_and(|timestamp| timestamp > 0));
-        assert!(parse_usage_body(&serde_json::json!([{"kind": "weekly_scoped", "percent": 99}]), "claude:test", 100).is_none());
+        assert!(usage
+            .seven_day_resets_at
+            .is_some_and(|timestamp| timestamp > 0));
+        assert!(parse_usage_body(
+            &serde_json::json!([{"kind": "weekly_scoped", "percent": 99}]),
+            "claude:test",
+            100
+        )
+        .is_none());
         assert!(parse_usage_body(&serde_json::json!({"unknown": 0}), "claude:test", 100).is_none());
     }
 
@@ -778,7 +948,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, "120".parse().unwrap());
         assert_eq!(retry_after_secs(&headers, 100), Some(120));
-        headers.insert(RETRY_AFTER, "Thu, 24 Sep 2026 15:00:00 GMT".parse().unwrap());
+        headers.insert(
+            RETRY_AFTER,
+            "Thu, 24 Sep 2026 15:00:00 GMT".parse().unwrap(),
+        );
         assert!(retry_after_secs(&headers, 1_000_000).is_some_and(|seconds| seconds > 0));
     }
 
@@ -787,12 +960,15 @@ mod tests {
         use std::sync::mpsc;
         use std::thread;
 
-        let path = std::env::temp_dir().join(format!("team-ai-claude-refresh-{}.db", generate_state()));
+        let path =
+            std::env::temp_dir().join(format!("team-ai-claude-refresh-{}.db", generate_state()));
         let account_id = format!("claude:test:{}", generate_state());
         let original = expired_account(&account_id);
         let storage = Storage::open(&path).expect("open test database");
         storage.init().expect("initialize test database");
-        storage.upsert_claude_subscription_account(&original).expect("insert account");
+        storage
+            .upsert_claude_subscription_account(&original)
+            .expect("insert account");
         drop(storage);
 
         let (first_started_tx, first_started_rx) = mpsc::channel();
@@ -807,7 +983,9 @@ mod tests {
                 Ok(refreshed_token())
             })
         });
-        first_started_rx.recv().expect("wait for first refresh to hold account lock");
+        first_started_rx
+            .recv()
+            .expect("wait for first refresh to hold account lock");
 
         let second_path = path.clone();
         let second_original = original.clone();
@@ -818,13 +996,26 @@ mod tests {
             })
         });
         release_first_tx.send(()).expect("complete first refresh");
-        let first_result = first.join().expect("join first request").expect("first refresh succeeds");
-        let second_result = second.join().expect("join second request").expect("second reuses fresh token");
+        let first_result = first
+            .join()
+            .expect("join first request")
+            .expect("first refresh succeeds");
+        let second_result = second
+            .join()
+            .expect("join second request")
+            .expect("second reuses fresh token");
         assert_eq!(first_result.access_token, "access-new");
         assert_eq!(second_result.access_token, "access-new");
         assert_eq!(second_result.status, "active");
         let storage = Storage::open(&path).expect("reopen test database");
-        assert_eq!(storage.find_claude_subscription_account(&account_id).unwrap().unwrap().status, "active");
+        assert_eq!(
+            storage
+                .find_claude_subscription_account(&account_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "active"
+        );
         drop(storage);
         let _ = std::fs::remove_file(&path);
     }
@@ -834,21 +1025,41 @@ mod tests {
         let storage = Storage::open_in_memory().expect("open database");
         storage.init().expect("initialize database");
         let original = expired_account(&format!("claude:test:{}", generate_state()));
-        storage.upsert_claude_subscription_account(&original).expect("insert account");
+        storage
+            .upsert_claude_subscription_account(&original)
+            .expect("insert account");
         assert!(mark_account_needs_login_after_401(
-            &storage, &original.id, &original.access_token, &original.refresh_token,
-        ).expect("mark old token unauthorized"));
+            &storage,
+            &original.id,
+            &original.access_token,
+            &original.refresh_token,
+        )
+        .expect("mark old token unauthorized"));
 
         let recovered = refresh_account_token_with(&storage, &original, |_| Ok(refreshed_token()))
             .expect("refresh after old-token 401");
         assert_eq!(recovered.status, "active");
         assert_eq!(recovered.access_token, "access-new");
         assert!(!mark_account_needs_login_after_401(
-            &storage, &original.id, &original.access_token, &original.refresh_token,
-        ).expect("stale old-token 401"));
-        assert!(storage.update_claude_subscription_account_status(&original.id, "disabled", now_ts())
+            &storage,
+            &original.id,
+            &original.access_token,
+            &original.refresh_token,
+        )
+        .expect("stale old-token 401"));
+        assert!(storage
+            .update_claude_subscription_account_status(&original.id, "disabled", now_ts())
             .expect("admin disables account"));
-        assert!(refresh_account_token_with(&storage, &recovered, |_| Ok(refreshed_token())).is_err());
-        assert_eq!(storage.find_claude_subscription_account(&original.id).unwrap().unwrap().status, "disabled");
+        assert!(
+            refresh_account_token_with(&storage, &recovered, |_| Ok(refreshed_token())).is_err()
+        );
+        assert_eq!(
+            storage
+                .find_claude_subscription_account(&original.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "disabled"
+        );
     }
 }

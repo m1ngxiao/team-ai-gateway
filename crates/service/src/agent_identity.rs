@@ -1234,7 +1234,10 @@ mod tests {
             None,
         )
         .expect_err("first task registration must fail");
-        assert!(first.contains("status 503"), "unexpected task registration error: {first}");
+        assert!(
+            first.contains("status 503"),
+            "unexpected task registration error: {first}"
+        );
         let second = resolve_or_bootstrap_account_agent_identity_authorization_with_base_url(
             &storage,
             &reqwest::blocking::Client::new(),

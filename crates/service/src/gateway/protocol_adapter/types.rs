@@ -32,4 +32,6 @@ pub(crate) struct AdaptedGatewayRequest {
     pub(crate) response_adapter: ResponseAdapter,
     pub(crate) gemini_stream_output_mode: Option<GeminiStreamOutputMode>,
     pub(crate) tool_name_restore_map: ToolNameRestoreMap,
+    pub(crate) context_management:
+        crate::gateway::anthropic_context_management::ContextManagementState,
 }

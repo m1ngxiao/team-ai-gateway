@@ -1887,7 +1887,11 @@ fn ensure_profile_dir_valid(profile_dir: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn resolve_profile_dir(codex_home: Option<&str>) -> Result<PathBuf, String> {
-    if TEAM_GATEWAY_SERVER_ONLY { return Err("permission_denied: client profile management is disabled in Docker".to_string()); }
+    if TEAM_GATEWAY_SERVER_ONLY {
+        return Err(
+            "permission_denied: client profile management is disabled in Docker".to_string(),
+        );
+    }
     if let Some(input) = codex_home.map(str::trim).filter(|value| !value.is_empty()) {
         return Ok(expand_home_prefix(input));
     }
@@ -2123,7 +2127,9 @@ fn set_provider_http_header(provider: &mut Table, name: &str, value: &str) -> Re
 }
 
 pub(crate) fn sync_active_gateway_profile_from_storage(storage: &Storage) -> Result<bool, String> {
-    if TEAM_GATEWAY_SERVER_ONLY { return Ok(false); }
+    if TEAM_GATEWAY_SERVER_ONLY {
+        return Ok(false);
+    }
     let Some(mut state) = load_state() else {
         return Ok(false);
     };
@@ -2178,7 +2184,9 @@ pub(crate) fn sync_active_gateway_profile_for_api_key(
     storage: &Storage,
     api_key_id: &str,
 ) -> Result<bool, String> {
-    if TEAM_GATEWAY_SERVER_ONLY { return Ok(false); }
+    if TEAM_GATEWAY_SERVER_ONLY {
+        return Ok(false);
+    }
     let Some(state) = load_state() else {
         return Ok(false);
     };

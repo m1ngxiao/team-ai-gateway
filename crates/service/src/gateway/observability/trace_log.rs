@@ -889,6 +889,72 @@ pub(crate) fn log_client_service_tier(
     buffer_trace_line(trace_id, line);
 }
 
+pub(crate) fn log_messages_ingress(
+    trace_id: &str,
+    request: &tiny_http::Request,
+    payload: Option<&Value>,
+) {
+    if !gateway_trace_stdout_enabled() {
+        return;
+    }
+    let header = |name: &'static str| {
+        request
+            .headers()
+            .iter()
+            .find(|header| header.field.equiv(name))
+            .map(|header| header.value.as_str())
+    };
+    // Emit immediately: normal traces are buffered until request completion,
+    // which makes an origin still working after a downstream timeout invisible.
+    log::info!(
+        "{}",
+        messages_ingress_line(
+            trace_id,
+            payload,
+            header("x-claude-code-request-class"),
+            header("x-claude-code-compaction"),
+            header("x-claude-code-session-id"),
+        )
+    );
+}
+
+fn messages_ingress_line(
+    trace_id: &str,
+    payload: Option<&Value>,
+    request_class: Option<&str>,
+    compaction: Option<&str>,
+    session: Option<&str>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let request_class = match request_class {
+        Some("compaction") => "compaction",
+        _ => "-",
+    };
+    let compaction = match compaction {
+        Some("auto") => "auto",
+        Some("manual") => "manual",
+        Some("reactive") => "reactive",
+        _ => "-",
+    };
+    let session_fp = session
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("{:x}", Sha256::digest(value.as_bytes()))[..16].to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let stream = payload
+        .and_then(|value| value.get("stream"))
+        .and_then(Value::as_bool);
+    let max_tokens = payload
+        .and_then(|value| value.get("max_tokens"))
+        .and_then(Value::as_u64);
+    format!(
+        "ts={} event=MESSAGES_INGRESS trace_id={} path=/v1/messages client_stream={} max_tokens={} request_class={} compaction={} session_fp={}",
+        current_trace_ts(), sanitize_text(trace_id),
+        match stream { Some(true) => "true", Some(false) => "false", None => "omitted" },
+        max_tokens.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string()),
+        request_class, compaction, session_fp,
+    )
+}
+
 /// 函数 `log_request_body_preview`
 ///
 /// 作者: gaohongshun

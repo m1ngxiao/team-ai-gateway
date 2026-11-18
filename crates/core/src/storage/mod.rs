@@ -47,11 +47,13 @@ pub use model_billing_v2::{
 pub use model_catalog_v2::{
     ManagedModelBatchStateV2Update, ManagedModelRouteEnsureResultV2, ManagedModelRouteEnsureV2,
     ManagedModelStateV2Update, ManagedModelV2, ManagedModelV2Upsert, ModelCatalogV2Stats,
-    ModelFastPolicyV2, ModelPriceV2, ModelRouteV2,
+    ModelFastPolicyV2, ModelPriceV2, ModelRouteV2, OfficialCatalogModelSyncV2,
+    OfficialCatalogReconcileResultV2,
 };
 pub use proxy_profiles::derive_proxy_profile_url_metadata;
 pub use quota_ledger::{
-    AccountWeeklyUsage, KeyQuotaState, QuotaResetEvent, DEFAULT_ACCOUNT_WEEKLY_LIMIT_CENTS,
+    AccountWeeklyUsage, KeyQuotaState, KeyRollingUsageSummary, QuotaResetEvent,
+    DEFAULT_ACCOUNT_WEEKLY_LIMIT_CENTS,
     DEFAULT_KEY_WEEKLY_LIMIT_CENTS, SECONDS_PER_HOUR, SECONDS_PER_WEEK,
 };
 
@@ -1708,7 +1710,7 @@ pub struct Storage {
 impl Storage {
     fn configure_connection(conn: &Connection) -> Result<()> {
         // 中文注释：并发写入时给 SQLite 一点等待时间，避免瞬时 lock 导致请求直接失败。
-        conn.busy_timeout(Duration::from_millis(3000))?;
+        conn.busy_timeout(Duration::from_millis(10_000))?;
         // 中文注释：复杂筛选/聚合的临时 B-tree 优先走内存，减少报表查询落盘开销。
         conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA foreign_keys=ON;")?;
         Ok(())
@@ -2387,6 +2389,7 @@ impl Storage {
             "140_quota_ledger_usage_included",
             include_str!("../../migrations/140_quota_ledger_usage_included.sql"),
         )?;
+        self.apply_model_catalog_gpt62_models_migration()?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_api_key_account_group_filter_column()?;
         self.ensure_aggregate_apis_table()?;

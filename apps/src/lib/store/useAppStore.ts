@@ -92,7 +92,7 @@ export const useAppStore = create<AppState>((set) => ({
     serviceListenMode: "loopback",
     serviceListenModeOptions: ["loopback", "all_interfaces"],
     routeStrategy: "ordered",
-    routeStrategyOptions: ["ordered", "balanced"],
+    routeStrategyOptions: ["ordered", "balanced", "quota_aware"],
     freeAccountMaxModel: "auto",
     freeAccountMaxModelOptions: [
       "auto",

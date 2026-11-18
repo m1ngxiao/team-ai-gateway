@@ -7,17 +7,33 @@ struct CompatibleModelsResponse<'a> {
     object: &'static str,
     data: Vec<ApiModelInfo<'a>>,
     models: &'a [ModelInfo],
+    has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_id: Option<&'a str>,
 }
 
 #[derive(serde::Serialize)]
 struct ApiModelInfo<'a> {
     id: &'a str,
+    #[serde(rename = "type")]
+    model_type: &'static str,
     object: &'static str,
     created: i64,
+    created_at: &'static str,
     owned_by: &'static str,
     display_name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_window: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_context_window_percent: Option<i64>,
 }
 
 fn serialize_models_response_body(models: &ModelsResponse) -> String {
@@ -25,27 +41,63 @@ fn serialize_models_response_body(models: &ModelsResponse) -> String {
         .models
         .iter()
         .filter(|model| model.supported_in_api)
-        .map(|model| ApiModelInfo {
-            id: model.slug.as_str(),
-            object: "model",
-            created: 0,
-            owned_by: "codexmanager",
-            display_name: model.display_name.as_str(),
-            description: model.description.as_deref(),
-        })
+        .map(api_model_info)
         .collect::<Vec<_>>();
+    let first_id = data.first().map(|model| model.id);
+    let last_id = data.last().map(|model| model.id);
     serde_json::to_string(&CompatibleModelsResponse {
         object: "list",
         data,
         // Codex CLI consumes the private `models` catalog while generic OpenAI
         // clients consume `data`, so both representations must stay populated.
         models: &models.models,
+        has_more: false,
+        first_id,
+        last_id,
     })
     .unwrap_or_else(|_| "{\"object\":\"list\",\"data\":[],\"models\":[]}".to_string())
 }
 
+fn api_model_info(model: &ModelInfo) -> ApiModelInfo<'_> {
+    let context_window = model.context_window.or_else(|| {
+        model
+            .extra
+            .get("max_context_window")
+            .and_then(serde_json::Value::as_i64)
+    });
+    let max_output_tokens = model
+        .extra
+        .get("max_output_tokens")
+        .and_then(serde_json::Value::as_i64);
+    ApiModelInfo {
+        id: model.slug.as_str(),
+        model_type: "model",
+        object: "model",
+        created: 0,
+        created_at: "1970-01-01T00:00:00Z",
+        owned_by: "codexmanager",
+        display_name: model.display_name.as_str(),
+        description: model.description.as_deref(),
+        context_window,
+        max_input_tokens: context_window,
+        max_output_tokens,
+        effective_context_window_percent: model.effective_context_window_percent,
+    }
+}
+
 fn serialize_models_response(models: &ModelsResponse) -> String {
     serialize_models_response_body(models)
+}
+
+fn serialize_model_info(model: &ModelInfo) -> String {
+    serde_json::to_string(&api_model_info(model))
+        .unwrap_or_else(|_| "{\"type\":\"model\",\"id\":\"unknown\"}".to_string())
+}
+
+fn model_detail_id(path: &str) -> Option<&str> {
+    let path = path.split('?').next().unwrap_or(path);
+    let id = path.strip_prefix("/v1/models/")?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
 fn filter_models_for_key(
@@ -147,9 +199,7 @@ fn filter_models_for_claude_accounts(
         .into_iter()
         .filter(|model| {
             model.routes.iter().any(|route| {
-                route.enabled
-                    && route.source_kind == "account_pool"
-                    && route.source_id == "claude"
+                route.enabled && route.source_kind == "account_pool" && route.source_id == "claude"
             })
         })
         .map(|model| model.slug)
@@ -303,9 +353,10 @@ pub(super) fn maybe_respond_local_models(
     reasoning_for_log: Option<&str>,
     storage: &codexmanager_core::storage::Storage,
 ) -> Result<Option<tiny_http::Request>, String> {
-    let is_models_list = request_method.eq_ignore_ascii_case("GET")
-        && (path == "/v1/models" || path.starts_with("/v1/models?"));
-    if !is_models_list {
+    let is_get = request_method.eq_ignore_ascii_case("GET");
+    let is_models_list = is_get && (path == "/v1/models" || path.starts_with("/v1/models?"));
+    let detail_model_id = is_get.then(|| model_detail_id(path)).flatten();
+    if !is_models_list && detail_model_id.is_none() {
         return Ok(Some(request));
     }
     let context = super::local_response::LocalResponseContext {
@@ -347,6 +398,29 @@ pub(super) fn maybe_respond_local_models(
         }
         _ => output_models,
     };
+    if let Some(model_id) = detail_model_id {
+        let Some(model) = output_models
+            .models
+            .iter()
+            .find(|model| model.supported_in_api && model.slug == model_id)
+        else {
+            let message = crate::gateway::bilingual_error(
+                "模型不存在",
+                format!("model not found: {model_id}"),
+            );
+            super::local_response::respond_local_terminal_error(request, &context, 404, message)?;
+            return Ok(None);
+        };
+        let extra_headers = models_etag_header(&output_models)?.into_iter().collect();
+        super::local_response::respond_local_json_with_headers(
+            request,
+            &context,
+            serialize_model_info(model),
+            super::request_log::RequestLogUsage::default(),
+            extra_headers,
+        )?;
+        return Ok(None);
+    }
     let output = if include_implicit_models {
         serialize_models_response(&output_models)
     } else {

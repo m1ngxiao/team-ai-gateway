@@ -1,5 +1,8 @@
-use tiny_http::Request;
+use std::sync::Arc;
+use tiny_http::{Header, Request};
 
+use super::super::super::anthropic_context_management::AnthropicContextEnrichment;
+use super::super::super::anthropic_safeguards::SafeguardEvaluator;
 use super::super::super::request_log::RequestLogUsage;
 use super::super::GatewayUpstreamResponse;
 use super::execution_context::GatewayUpstreamExecutionContext;
@@ -36,6 +39,59 @@ pub(in super::super) fn respond_terminal(
     );
     let _ = request.respond(response);
     Ok(())
+}
+
+pub(in super::super) fn respond_temporary_unavailable(
+    request: Request,
+    message: String,
+    retry_after_secs: u64,
+    trace_id: Option<&str>,
+) -> Result<(), String> {
+    let response = temporary_unavailable_response(
+        super::super::super::prefers_raw_errors_for_tiny_http_request(&request),
+        message,
+        retry_after_secs,
+        trace_id,
+    );
+    let _ = request.respond(response);
+    Ok(())
+}
+
+pub(in super::super) fn respond_conversation_rebind_required(
+    request: Request,
+    message: String,
+    trace_id: Option<&str>,
+) -> Result<(), String> {
+    let response_message = super::super::super::error_message_for_client(
+        super::super::super::prefers_raw_errors_for_tiny_http_request(&request),
+        message,
+    );
+    let response = super::super::super::error_response::terminal_text_response(
+        409,
+        response_message,
+        trace_id,
+    );
+    let _ = request.respond(response);
+    Ok(())
+}
+
+fn temporary_unavailable_response(
+    raw_errors: bool,
+    message: String,
+    retry_after_secs: u64,
+    trace_id: Option<&str>,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let response_message = super::super::super::error_message_for_client(raw_errors, message);
+    let mut response = super::super::super::error_response::terminal_text_response(
+        429,
+        response_message,
+        trace_id,
+    );
+    let retry_after = retry_after_secs.max(1).to_string();
+    if let Ok(header) = Header::from_bytes(b"Retry-After", retry_after.as_bytes()) {
+        response.add_header(header);
+    }
+    response
 }
 
 /// 函数 `is_client_disconnect_error`
@@ -228,22 +284,35 @@ pub(super) fn finalize_upstream_response(
     mut dynamic_permit: Option<crate::gateway::dynamic_pool::DynamicAccountPermit>,
     health_observer: Option<super::super::semantic_health::HealthObserver>,
     health_retry_after: Option<std::time::Duration>,
+    safeguards_evaluator: Option<Arc<dyn SafeguardEvaluator>>,
+    context_enrichment: Option<Arc<AnthropicContextEnrichment>>,
 ) -> Result<FinalizeUpstreamResponseOutcome, String> {
     let status_code = response.status().as_u16();
     // Diagnostic only: retain the old header predicate to distinguish header
     // incompatibility from missing bytes/framing without logging header text.
-    let health_header_sse = response.headers().get(reqwest::header::CONTENT_TYPE)
+    let health_header_sse = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("text/event-stream"));
     let health_header_kind = match response.headers().get(reqwest::header::CONTENT_TYPE) {
         None => "missing",
-        Some(value) => match value.to_str().ok().and_then(|value| value.split(';').next()).map(str::trim) {
+        Some(value) => match value
+            .to_str()
+            .ok()
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+        {
             Some(value) if value.eq_ignore_ascii_case("text/event-stream") => "sse",
             Some(value) if value.eq_ignore_ascii_case("application/json") => "json",
             _ => "other",
         },
     };
 
+    let quota_headers = super::super::super::local_usage::build_key_quota_response_headers(
+        context.storage(),
+        context.key_id(),
+    );
     let bridge = super::super::super::respond_with_upstream(
         request,
         response,
@@ -260,12 +329,20 @@ pub(super) fn finalize_upstream_response(
         Some(trace_id),
         model_for_log,
         started_at,
+        safeguards_evaluator,
+        context_enrichment,
+        &quota_headers,
     );
     let bridge = match bridge {
         Ok(bridge) => bridge,
         Err(err) => {
-            if health_observer.as_ref().is_some_and(|observer| observer.snapshot().overloaded) {
-                if let Some(permit) = dynamic_permit.as_mut() { permit.record_overload(health_retry_after); }
+            if health_observer
+                .as_ref()
+                .is_some_and(|observer| observer.snapshot().overloaded)
+            {
+                if let Some(permit) = dynamic_permit.as_mut() {
+                    permit.record_overload(health_retry_after);
+                }
             }
             return Err(err);
         }
@@ -333,10 +410,7 @@ pub(super) fn finalize_upstream_response(
     );
     let status_for_binding = binding_status(
         status_for_log,
-        bridge_ok
-            && final_error.is_none()
-            && !upstream_stream_failed
-            && !client_delivery_failed,
+        bridge_ok && final_error.is_none() && !upstream_stream_failed && !client_delivery_failed,
     );
 
     let semantic_health = health_observer.as_ref().map(|observer| observer.snapshot());

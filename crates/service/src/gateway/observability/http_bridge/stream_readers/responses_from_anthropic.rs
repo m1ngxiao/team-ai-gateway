@@ -122,7 +122,8 @@ impl ResponsesFromAnthropicSseReader {
                     }
                 }
                 Ok(UpstreamSseFramePumpItem::Eof) => {
-                    let finished = self.fail_stream("Claude upstream stream ended before message_stop");
+                    let finished =
+                        self.fail_stream("Claude upstream stream ended before message_stop");
                     if !finished.is_empty() {
                         mark_first_response_ms_on_usage(
                             &self.usage_collector,
@@ -132,14 +133,19 @@ impl ResponsesFromAnthropicSseReader {
                     return Ok(finished);
                 }
                 Ok(UpstreamSseFramePumpItem::Error(error)) => {
-                    return Ok(self.fail_stream(&format!("Claude upstream stream read failed: {error}")));
+                    return Ok(
+                        self.fail_stream(&format!("Claude upstream stream read failed: {error}"))
+                    );
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Ok(self.fail_stream("Claude upstream stream disconnected before message_stop"));
+                    return Ok(
+                        self.fail_stream("Claude upstream stream disconnected before message_stop")
+                    );
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if stream_idle_timed_out(self.last_upstream_activity) {
-                        let finished = self.fail_stream("Claude upstream stream timed out before message_stop");
+                        let finished = self
+                            .fail_stream("Claude upstream stream timed out before message_stop");
                         if !finished.is_empty() {
                             mark_first_response_ms_on_usage(
                                 &self.usage_collector,
@@ -223,7 +229,8 @@ impl ResponsesFromAnthropicSseReader {
                 out.push_str(String::from_utf8_lossy(&self.finish_stream()).as_ref());
             }
             "error" => {
-                let message = value.get("error")
+                let message = value
+                    .get("error")
                     .and_then(|error| error.get("message"))
                     .or_else(|| value.get("message"))
                     .and_then(Value::as_str)
@@ -554,10 +561,14 @@ impl ResponsesFromAnthropicSseReader {
         }
         let mut response = self.response_payload("failed");
         response["error"] = json!({"code":"upstream_error","message":message});
-        append_sse_event(&mut out, "response.failed", &json!({
-            "type":"response.failed",
-            "response":response,
-        }));
+        append_sse_event(
+            &mut out,
+            "response.failed",
+            &json!({
+                "type":"response.failed",
+                "response":response,
+            }),
+        );
         out.into_bytes()
     }
 

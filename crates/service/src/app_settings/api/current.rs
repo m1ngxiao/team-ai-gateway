@@ -362,7 +362,7 @@ fn current_app_settings_value_inner(
             SERVICE_BIND_MODE_ALL_INTERFACES
         ],
         "routeStrategy": route_strategy,
-        "routeStrategyOptions": ["ordered", "balanced"],
+        "routeStrategyOptions": ["ordered", "balanced", "quota_aware"],
         "freeAccountMaxModel": free_account_max_model,
         "modelForwardRules": model_forward_rules,
         "compactModelForwardRules": compact_model_forward_rules,

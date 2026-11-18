@@ -14,6 +14,7 @@ export const EN_DASHBOARD_MESSAGES: MessageCatalog = {
   个启用: "enabled",
   个来源: "sources",
   今日: "Today",
+  "今日 · UTC+8": "Today · UTC+8",
   "今日/缓存/推理 用量": "Today / cached / reasoning usage",
   今日用量: "Usage today",
   今日请求: "Requests today",
@@ -108,10 +109,22 @@ export const EN_DASHBOARD_MESSAGES: MessageCatalog = {
   钱包余额: "Wallet balance",
   额度分发未启用: "Quota distribution is not enabled",
   路由指挥中心: "Routing command center",
+  "账号状态、模型用量与容量在一处查看。":
+    "Account health, model usage, and capacity in one calm workspace.",
+  "余额、用量与个人密钥保持在一个清晰的工作面上。":
+    "Balance, usage, and personal keys in one clear workspace.",
+  实时运行: "Live",
+  "个账号有可用数据": "accounts reporting",
+  "按账号最近一次成功同步的额度窗口汇总":
+    "Aggregated from each account's latest successful quota snapshot.",
+  "剩余比例按各账号窗口平均值估算，不代表单次请求限制。":
+    "Remaining percentages are averaged across account windows, not a per-request limit.",
   "账号池 · 路由管理": "Account pool · Routing",
   网关运行正常: "Gateway operating normally",
   网关运行需关注: "Gateway needs attention",
   正在等待网关连接: "Waiting for gateway connection",
+  等待连接: "Waiting for connection",
+  暖砂: "Warm sand",
   查看异常请求: "View failed requests",
   需要关注: "Needs attention",
   账号池健康: "Account pool health",

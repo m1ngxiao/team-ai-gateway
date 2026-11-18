@@ -1,10 +1,9 @@
 use crate::apikey::service_tier::normalize_service_tier_owned;
 use crate::apikey_profile::{
-    normalize_protocol_type, normalize_rotation_strategy,
-    normalize_static_headers_json, normalize_upstream_base_url, normalize_upstream_provider,
-    profile_from_protocol, validate_claude_model_route, validate_claude_protocol,
-    validate_openai_model_route, validate_upstream_provider_route,
-    ROTATION_AGGREGATE_API,
+    normalize_protocol_type, normalize_rotation_strategy, normalize_static_headers_json,
+    normalize_upstream_base_url, normalize_upstream_provider, profile_from_protocol,
+    validate_claude_model_route, validate_claude_protocol, validate_openai_model_route,
+    validate_upstream_provider_route, ROTATION_AGGREGATE_API,
 };
 use crate::reasoning_effort::normalize_reasoning_effort;
 use crate::storage_helpers::open_storage;
@@ -129,7 +128,10 @@ pub(crate) fn update_api_key_model(
         && effective_rotation_strategy == crate::apikey_profile::ROTATION_ACCOUNT
         && has_openai_account_filters
     {
-        return Err("Claude subscription account pool does not support OpenAI plan or group filters".to_string());
+        return Err(
+            "Claude subscription account pool does not support OpenAI plan or group filters"
+                .to_string(),
+        );
     }
     if update_routing_config || update_upstream_provider {
         validate_upstream_provider_route(
@@ -144,7 +146,8 @@ pub(crate) fn update_api_key_model(
         Some(value) => normalize_protocol_type(Some(value.to_string()))?,
         None => current_key.protocol_type.clone(),
     };
-    if update_model_config || update_routing_config || update_upstream_provider || has_protocol_type {
+    if update_model_config || update_routing_config || update_upstream_provider || has_protocol_type
+    {
         let effective_model_slug = if update_model_config {
             normalized
         } else {
@@ -187,19 +190,21 @@ pub(crate) fn update_api_key_model(
         && (update_routing_config || update_upstream_provider || update_account_group_filter)
     {
         Some(None)
-    } else { match effective_group_rotation_strategy.as_deref() {
-        Some(ROTATION_AGGREGATE_API) => Some(None),
-        Some(crate::apikey_profile::ROTATION_ACCOUNT)
-        | Some(crate::apikey_profile::ROTATION_HYBRID)
-        | Some(crate::apikey_profile::ROTATION_HYBRID_AGGREGATE_FIRST)
-            if update_account_group_filter =>
-        {
-            Some(crate::account_group::normalize_account_group_filter(
-                account_group_filter,
-            ))
+    } else {
+        match effective_group_rotation_strategy.as_deref() {
+            Some(ROTATION_AGGREGATE_API) => Some(None),
+            Some(crate::apikey_profile::ROTATION_ACCOUNT)
+            | Some(crate::apikey_profile::ROTATION_HYBRID)
+            | Some(crate::apikey_profile::ROTATION_HYBRID_AGGREGATE_FIRST)
+                if update_account_group_filter =>
+            {
+                Some(crate::account_group::normalize_account_group_filter(
+                    account_group_filter,
+                ))
+            }
+            _ => None,
         }
-        _ => None,
-    }};
+    };
 
     // Normalize every fallible profile input before changing the provider or
     // rotation fields. An invalid header must not leave a Key on a new pool.
@@ -264,7 +269,9 @@ pub(crate) fn update_api_key_model(
                 key_id,
                 normalized_rotation_strategy.as_str(),
                 normalized_aggregate_api_id.as_deref(),
-                if normalized_upstream_provider == codexmanager_core::storage::UpstreamProvider::Claude {
+                if normalized_upstream_provider
+                    == codexmanager_core::storage::UpstreamProvider::Claude
+                {
                     None
                 } else {
                     normalized_account_plan_filter.as_deref()
@@ -297,7 +304,15 @@ pub(crate) fn update_api_key_model(
             .map_err(|e| e.to_string())?;
     }
 
-    if let Some((next_client, next_protocol, next_auth, next_upstream_base_url, next_static_headers_json, next_service_tier)) = profile_update {
+    if let Some((
+        next_client,
+        next_protocol,
+        next_auth,
+        next_upstream_base_url,
+        next_static_headers_json,
+        next_service_tier,
+    )) = profile_update
+    {
         storage
             .update_api_key_profile_config(
                 key_id,
@@ -310,7 +325,11 @@ pub(crate) fn update_api_key_model(
             )
             .map_err(|e| e.to_string())?;
     }
-    if update_routing_config || update_upstream_provider || has_protocol_type || has_upstream_base_url {
+    if update_routing_config
+        || update_upstream_provider
+        || has_protocol_type
+        || has_upstream_base_url
+    {
         crate::codex_profile::sync_active_gateway_profile_for_api_key(&storage, key_id)?;
     }
     if confirm_route_review {

@@ -6,8 +6,7 @@ use crate::apikey_profile::{
     infer_upstream_provider, normalize_protocol_type, normalize_rotation_strategy,
     normalize_static_headers_json, normalize_upstream_base_url, normalize_upstream_provider,
     profile_from_protocol, validate_claude_model_route, validate_claude_protocol,
-    validate_openai_model_route,
-    validate_upstream_provider_route,
+    validate_openai_model_route, validate_upstream_provider_route,
 };
 use crate::reasoning_effort::normalize_reasoning_effort_owned;
 use crate::storage_helpers::{
@@ -126,10 +125,17 @@ pub(crate) fn create_api_key(
     )?;
     validate_claude_protocol(upstream_provider, &protocol_type)?;
     if upstream_provider == codexmanager_core::storage::UpstreamProvider::Claude
-        && (account_plan_filter.as_deref().is_some_and(|value| !value.trim().is_empty())
-            || account_group_filter.as_deref().is_some_and(|value| !value.trim().is_empty()))
+        && (account_plan_filter
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+            || account_group_filter
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()))
     {
-        return Err("Claude subscription account pool does not support OpenAI plan or group filters".to_string());
+        return Err(
+            "Claude subscription account pool does not support OpenAI plan or group filters"
+                .to_string(),
+        );
     }
     validate_claude_model_route(
         &storage,

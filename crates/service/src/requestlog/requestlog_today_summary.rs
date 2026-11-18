@@ -21,7 +21,7 @@ fn resolve_day_bounds_ts(
     day_start_ts: Option<i64>,
     day_end_ts: Option<i64>,
 ) -> Result<(i64, i64), String> {
-    time_bounds::resolve_bounded_local_day_bounds_ts(
+    time_bounds::resolve_bounded_business_day_bounds_ts(
         day_start_ts,
         day_end_ts,
         MAX_REQUESTED_DAY_RANGE_SECS,

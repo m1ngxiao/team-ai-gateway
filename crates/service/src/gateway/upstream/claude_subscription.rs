@@ -1,7 +1,9 @@
 use bytes::Bytes;
-use codexmanager_core::storage::{ClaudeSubscriptionAccount, ManagedModelV2, ModelRouteV2, Storage};
+use codexmanager_core::storage::{
+    ClaudeSubscriptionAccount, ManagedModelV2, ModelRouteV2, Storage,
+};
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use reqwest::header::{HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use reqwest::{Method, Url};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -9,8 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tiny_http::Request;
 
-use super::GatewayUpstreamResponse;
 use super::super::{PassthroughSseProtocol, ResponseAdapter};
+use super::GatewayUpstreamResponse;
 
 const CLAUDE_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 const CLAUDE_CODE_SYSTEM_PREFIX: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
@@ -74,10 +76,11 @@ fn build_messages_body(
             if has_server_scoped_reference(&original) {
                 return Err("Claude subscription routing cannot migrate server-side conversation or file references".to_string());
             }
-            let converted = super::super::protocol_adapter::adapt_openai_responses_to_anthropic_messages(
-                body,
-                model_override,
-            )?;
+            let converted =
+                super::super::protocol_adapter::adapt_openai_responses_to_anthropic_messages(
+                    body,
+                    model_override,
+                )?;
             let mut converted: Value = serde_json::from_slice(&converted)
                 .map_err(|err| format!("invalid converted Claude messages JSON: {err}"))?;
             converted["stream"] = Value::Bool(client_is_stream);
@@ -98,35 +101,49 @@ fn build_messages_body(
                 return Ok((body.to_vec(), ResponseAdapter::Passthrough));
             };
             let mut value = original;
-            let object = value.as_object_mut()
+            let object = value
+                .as_object_mut()
                 .ok_or_else(|| "Claude messages request must be a JSON object".to_string())?;
-            object.insert("model".to_string(), Value::String(model_override.to_string()));
+            object.insert(
+                "model".to_string(),
+                Value::String(model_override.to_string()),
+            );
             let body = serde_json::to_vec(&value)
                 .map_err(|err| format!("serialize Claude messages request failed: {err}"))?;
             Ok((body, ResponseAdapter::Passthrough))
         }
-        _ => Err(format!("Claude subscription pool does not support path: {path_only}")),
+        _ => Err(format!(
+            "Claude subscription pool does not support path: {path_only}"
+        )),
     }
 }
 
 fn add_claude_code_system_prefix(body: &[u8]) -> Result<Vec<u8>, String> {
     let mut value: Value = serde_json::from_slice(body)
         .map_err(|err| format!("invalid Claude messages request JSON: {err}"))?;
-    let object = value.as_object_mut()
+    let object = value
+        .as_object_mut()
         .ok_or_else(|| "Claude messages request must be a JSON object".to_string())?;
     let existing = object.remove("system");
     let mut blocks = match existing {
         None => Vec::new(),
         Some(Value::String(text)) => vec![serde_json::json!({"type": "text", "text": text})],
         Some(Value::Array(blocks)) => blocks,
-        Some(_) => return Err("Claude messages system must be text or an array of content blocks".to_string()),
+        Some(_) => {
+            return Err(
+                "Claude messages system must be text or an array of content blocks".to_string(),
+            )
+        }
     };
     let already_present = blocks.first().is_some_and(|block| {
         block.get("type").and_then(Value::as_str) == Some("text")
             && block.get("text").and_then(Value::as_str) == Some(CLAUDE_CODE_SYSTEM_PREFIX)
     });
     if !already_present {
-        blocks.insert(0, serde_json::json!({"type": "text", "text": CLAUDE_CODE_SYSTEM_PREFIX}));
+        blocks.insert(
+            0,
+            serde_json::json!({"type": "text", "text": CLAUDE_CODE_SYSTEM_PREFIX}),
+        );
     }
     object.insert("system".to_string(), Value::Array(blocks));
     serde_json::to_vec(&value)
@@ -139,7 +156,8 @@ fn messages_url(path: &str) -> Result<Url, String> {
     if let Some((_, query)) = path.split_once('?') {
         url.set_query(Some(query));
     }
-    let query = url.query_pairs()
+    let query = url
+        .query_pairs()
         .filter(|(key, _)| key != "beta")
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect::<Vec<_>>();
@@ -154,19 +172,33 @@ fn messages_url(path: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn merged_beta_header(request: &Request) -> String {
-    let mut features = vec![
-        "claude-code-20250219".to_string(),
-        "oauth-2025-04-20".to_string(),
-    ];
-    for header in request.headers().iter().filter(|header| header.field.equiv("anthropic-beta")) {
-        for feature in header.value.as_str().split(',').map(str::trim).filter(|item| !item.is_empty()) {
-            if !features.iter().any(|known| known.eq_ignore_ascii_case(feature)) {
-                features.push(feature.to_string());
-            }
-        }
-    }
-    features.join(",")
+const DEFAULT_ANTHROPIC_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
+
+fn should_forward_claude_request_header(name: &str) -> bool {
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "x-api-key"
+            | "api-key"
+            | "x-goog-api-key"
+            | "content-length"
+            | "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+    )
+}
+
+fn request_has_header(request: &Request, name: &str) -> bool {
+    request
+        .headers()
+        .iter()
+        .any(|header| header.field.to_string().eq_ignore_ascii_case(name))
 }
 
 fn build_upstream_request(
@@ -184,17 +216,76 @@ fn build_upstream_request(
     let mut builder = client
         .request(method.clone(), url)
         .bearer_auth(access_token)
-        .header("anthropic-version", "2023-06-01")
-        .header("anthropic-beta", merged_beta_header(request))
-        .header("x-app", "cli")
-        .header("user-agent", "claude-code/2.1.280")
-        .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "application/json, text/event-stream")
         .body(body.to_vec());
-    if let Some(remaining) = deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now())) {
+    if let Some(remaining) =
+        deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now()))
+    {
         builder = builder.timeout(remaining);
     }
-    builder.build().map_err(|err| format!("build Claude upstream request failed: {err}"))
+    let mut upstream_request = builder
+        .build()
+        .map_err(|err| format!("build Claude upstream request failed: {err}"))?;
+
+    // Forward the open Anthropic header surface verbatim. In particular, do not
+    // merge or normalize duplicate anthropic-beta values: Claude Code uses the
+    // safeguards beta value as a protocol signal.
+    let mut has_anthropic_version = false;
+    let mut has_anthropic_beta = false;
+    for header in request.headers() {
+        let raw_name = header.field.to_string();
+        if !should_forward_claude_request_header(raw_name.as_str()) {
+            continue;
+        }
+        let Ok(name) = HeaderName::from_bytes(raw_name.as_bytes()) else {
+            continue;
+        };
+        let Ok(value) = HeaderValue::from_str(header.value.as_str()) else {
+            continue;
+        };
+        has_anthropic_version |= name.as_str().eq_ignore_ascii_case("anthropic-version");
+        has_anthropic_beta |= name.as_str().eq_ignore_ascii_case("anthropic-beta");
+        upstream_request.headers_mut().append(name, value);
+    }
+    if !has_anthropic_version {
+        upstream_request.headers_mut().insert(
+            HeaderName::from_static("anthropic-version"),
+            HeaderValue::from_static("2023-06-01"),
+        );
+    }
+    // Keep the OAuth/Claude Code negotiation for older clients that omit all
+    // beta headers. If Claude Code supplied any value, its complete set is
+    // forwarded unchanged.
+    if !has_anthropic_beta {
+        upstream_request.headers_mut().append(
+            HeaderName::from_static("anthropic-beta"),
+            HeaderValue::from_static(DEFAULT_ANTHROPIC_BETA),
+        );
+    }
+    if !request_has_header(request, "x-app") {
+        upstream_request.headers_mut().insert(
+            HeaderName::from_static("x-app"),
+            HeaderValue::from_static("cli"),
+        );
+    }
+    if !request_has_header(request, "user-agent") {
+        upstream_request.headers_mut().insert(
+            HeaderName::from_static("user-agent"),
+            HeaderValue::from_static("claude-code/2.1.280"),
+        );
+    }
+    if !request_has_header(request, CONTENT_TYPE.as_str()) {
+        upstream_request.headers_mut().insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+    }
+    if !request_has_header(request, ACCEPT.as_str()) {
+        upstream_request.headers_mut().insert(
+            HeaderName::from_static("accept"),
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
+    }
+    Ok(upstream_request)
 }
 
 fn choose_candidate_id(
@@ -210,9 +301,7 @@ fn choose_candidate_id(
     (0..accounts.len())
         .map(|offset| &accounts[(start + offset) % accounts.len()])
         .filter(|account| !attempted.contains(&account.id))
-        .filter(|account| {
-            limit == 0 || inflight.get(&account.id).copied().unwrap_or(0) < limit
-        })
+        .filter(|account| limit == 0 || inflight.get(&account.id).copied().unwrap_or(0) < limit)
         .min_by_key(|account| inflight.get(&account.id).copied().unwrap_or(0))
         .map(|account| account.id.clone())
 }
@@ -222,13 +311,18 @@ fn is_retryable_status(status: u16) -> bool {
 }
 
 fn has_server_scoped_reference(value: &Value) -> bool {
-    let Some(request) = value.as_object() else { return false; };
+    let Some(request) = value.as_object() else {
+        return false;
+    };
     if ["previous_response_id", "conversation", "container"]
-        .into_iter().any(|field| request.get(field).is_some_and(|value| !value.is_null()))
+        .into_iter()
+        .any(|field| request.get(field).is_some_and(|value| !value.is_null()))
     {
         return true;
     }
-    request.get("messages").or_else(|| request.get("input"))
+    request
+        .get("messages")
+        .or_else(|| request.get("input"))
         .is_some_and(content_has_server_scoped_file)
 }
 
@@ -236,23 +330,31 @@ fn content_has_server_scoped_file(value: &Value) -> bool {
     match value {
         Value::Array(items) => items.iter().any(content_has_server_scoped_file),
         Value::Object(object) => {
-            let kind = object.get("type").and_then(Value::as_str).unwrap_or_default();
+            let kind = object
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if matches!(kind, "input_file" | "file")
                 && object.get("file_id").and_then(Value::as_str).is_some()
             {
                 return true;
             }
             if matches!(kind, "document" | "image")
-                && object.get("source").and_then(Value::as_object).is_some_and(|source| {
-                    source.get("type").and_then(Value::as_str) == Some("file")
-                        && source.get("file_id").and_then(Value::as_str).is_some()
-                })
+                && object
+                    .get("source")
+                    .and_then(Value::as_object)
+                    .is_some_and(|source| {
+                        source.get("type").and_then(Value::as_str) == Some("file")
+                            && source.get("file_id").and_then(Value::as_str).is_some()
+                    })
             {
                 return true;
             }
             // Only inspect message/content structure. Tool schemas and tool arguments may
             // legitimately contain ordinary properties named file_id or container.
-            object.get("content").is_some_and(content_has_server_scoped_file)
+            object
+                .get("content")
+                .is_some_and(content_has_server_scoped_file)
         }
         _ => false,
     }
@@ -264,10 +366,16 @@ fn safe_to_retry_before_delivery(body: &[u8]) -> bool {
         .is_some_and(|value| !has_server_scoped_reference(&value))
 }
 
-fn active_account_now(storage: &Storage, account_id: &str) -> Result<Option<ClaudeSubscriptionAccount>, String> {
-    storage.find_claude_subscription_account(account_id)
+fn active_account_now(
+    storage: &Storage,
+    account_id: &str,
+) -> Result<Option<ClaudeSubscriptionAccount>, String> {
+    storage
+        .find_claude_subscription_account(account_id)
         .map_err(|err| format!("recheck Claude subscription account failed: {err}"))
-        .map(|account| account.filter(|account| account.status == "active" && !account.access_token.is_empty()))
+        .map(|account| {
+            account.filter(|account| account.status == "active" && !account.access_token.is_empty())
+        })
 }
 
 fn finish_request(
@@ -341,7 +449,14 @@ fn deliver_upstream(
     let is_stream = params.client_is_stream;
     let passthrough_sse_protocol = (adapter == ResponseAdapter::Passthrough)
         .then_some(PassthroughSseProtocol::AnthropicNative);
-    let request = params.request.take().ok_or_else(|| "Claude request already consumed".to_string())?;
+    let quota_headers = super::super::local_usage::build_key_quota_response_headers(
+        params.storage,
+        params.key_id,
+    );
+    let request = params
+        .request
+        .take()
+        .ok_or_else(|| "Claude request already consumed".to_string())?;
     let bridge = super::super::respond_with_upstream(
         request,
         GatewayUpstreamResponse::Blocking(upstream),
@@ -356,9 +471,17 @@ fn deliver_upstream(
         Some(params.trace_id),
         upstream_model.or(params.model_for_log),
         params.started_at,
+        None,
+        None,
+        &quota_headers,
     )?;
-    let mut status = bridge.delivered_status_code.unwrap_or(if bridge.is_ok(is_stream) { 200 } else { 502 });
-    let error = bridge.upstream_error_hint.clone().or_else(|| bridge.error_message(is_stream));
+    let mut status = bridge
+        .delivered_status_code
+        .unwrap_or(if bridge.is_ok(is_stream) { 200 } else { 502 });
+    let error = bridge
+        .upstream_error_hint
+        .clone()
+        .or_else(|| bridge.error_message(is_stream));
     if error.is_some() && status < 400 {
         status = 502;
     }
@@ -377,7 +500,9 @@ fn deliver_upstream(
             total_tokens: bridge.usage.total_tokens,
             reasoning_output_tokens: bridge.usage.reasoning_output_tokens,
             first_response_ms: bridge.usage.first_response_ms,
-            estimated_input_tokens: Some(super::super::request_log::estimate_input_tokens_from_body(params.body)),
+            estimated_input_tokens: Some(
+                super::super::request_log::estimate_input_tokens_from_body(params.body),
+            ),
         },
         error.as_deref(),
         attempted_ids,
@@ -403,7 +528,10 @@ fn respond_error(
         Some(&message),
         attempted_ids,
     );
-    let request = params.request.take().ok_or_else(|| "Claude request already consumed".to_string())?;
+    let request = params
+        .request
+        .take()
+        .ok_or_else(|| "Claude request already consumed".to_string())?;
     let response = super::super::error_response::terminal_text_response(
         status,
         super::super::error_message_for_client(
@@ -435,12 +563,31 @@ fn proxy_claude_subscription_request_with_transport(
 ) -> Result<(), String> {
     let mut attempted_ids = Vec::new();
     if *params.method != Method::POST {
-        return respond_error(params, 405, "Claude subscription requests require POST".to_string(), ResponseAdapter::Passthrough, &attempted_ids);
+        return respond_error(
+            params,
+            405,
+            "Claude subscription requests require POST".to_string(),
+            ResponseAdapter::Passthrough,
+            &attempted_ids,
+        );
     }
     let upstream_model = route_model_override(params.configured_model);
-    let (upstream_body, adapter) = match build_messages_body(params.path, params.body, upstream_model, params.client_is_stream) {
+    let (upstream_body, adapter) = match build_messages_body(
+        params.path,
+        params.body,
+        upstream_model,
+        params.client_is_stream,
+    ) {
         Ok(result) => result,
-        Err(err) => return respond_error(params, 400, err, ResponseAdapter::Passthrough, &attempted_ids),
+        Err(err) => {
+            return respond_error(
+                params,
+                400,
+                err,
+                ResponseAdapter::Passthrough,
+                &attempted_ids,
+            )
+        }
     };
     let upstream_body = match add_claude_code_system_prefix(&upstream_body) {
         Ok(body) => body,
@@ -449,10 +596,24 @@ fn proxy_claude_subscription_request_with_transport(
     let url_label = url.as_str().to_string();
     let accounts = match params.storage.list_active_claude_subscription_accounts() {
         Ok(accounts) => accounts,
-        Err(err) => return respond_error(params, 500, format!("read Claude subscription accounts failed: {err}"), adapter, &attempted_ids),
+        Err(err) => {
+            return respond_error(
+                params,
+                500,
+                format!("read Claude subscription accounts failed: {err}"),
+                adapter,
+                &attempted_ids,
+            )
+        }
     };
     if accounts.is_empty() {
-        return respond_error(params, 503, "no available Claude subscription account".to_string(), adapter, &attempted_ids);
+        return respond_error(
+            params,
+            503,
+            "no available Claude subscription account".to_string(),
+            adapter,
+            &attempted_ids,
+        );
     }
 
     let account_start = NEXT_CLAUDE_ACCOUNT.fetch_add(1, Ordering::Relaxed) % accounts.len();
@@ -463,13 +624,16 @@ fn proxy_claude_subscription_request_with_transport(
     for _ in 0..MAX_CLAUDE_ACCOUNT_ATTEMPTS.min(accounts.len()) {
         let mut unavailable = attempted.clone();
         unavailable.extend(
-            accounts.iter()
+            accounts
+                .iter()
                 .filter(|account| super::super::is_account_in_cooldown(&account.id))
                 .map(|account| account.id.clone()),
         );
-        let Some((guard, _)) = super::super::metrics::select_and_acquire_account_inflight(|inflight| {
-            choose_candidate_id(&accounts, &unavailable, inflight, account_start, limit)
-        }) else {
+        let Some((guard, _)) =
+            super::super::metrics::select_and_acquire_account_inflight(|inflight| {
+                choose_candidate_id(&accounts, &unavailable, inflight, account_start, limit)
+            })
+        else {
             break;
         };
         let account_id = guard.account_id().to_string();
@@ -487,7 +651,9 @@ fn proxy_claude_subscription_request_with_transport(
                 continue;
             }
         };
-        if let Err(err) = crate::claude_subscription_auth::refresh_account_token(params.storage, &current) {
+        if let Err(err) =
+            crate::claude_subscription_auth::refresh_account_token(params.storage, &current)
+        {
             last_error = Some(err);
             super::super::mark_account_cooldown(&account_id, super::super::CooldownReason::Network);
             drop(guard);
@@ -517,7 +683,10 @@ fn proxy_claude_subscription_request_with_transport(
         };
         let upstream_request = match build_upstream_request(
             &client,
-            params.request.as_ref().ok_or_else(|| "Claude request already consumed".to_string())?,
+            params
+                .request
+                .as_ref()
+                .ok_or_else(|| "Claude request already consumed".to_string())?,
             params.method,
             url.clone(),
             &upstream_body,
@@ -562,17 +731,34 @@ fn proxy_claude_subscription_request_with_transport(
                     super::super::record_gateway_failover_attempt();
                     continue;
                 }
-                return deliver_upstream(params, response, guard, &account_id, &url_label, adapter, upstream_model, &attempted_ids);
+                return deliver_upstream(
+                    params,
+                    response,
+                    guard,
+                    &account_id,
+                    &url_label,
+                    adapter,
+                    upstream_model,
+                    &attempted_ids,
+                );
             }
             Err(err) => {
                 let message = format!("Claude upstream request failed: {err}");
-                super::super::mark_account_cooldown(&account_id, super::super::CooldownReason::Network);
+                super::super::mark_account_cooldown(
+                    &account_id,
+                    super::super::CooldownReason::Network,
+                );
                 drop(guard);
                 return respond_error(params, 502, message, adapter, &attempted_ids);
             }
         }
     }
-    let status = last_retryable_status.unwrap_or(if attempted_ids.is_empty() || last_error.is_none() { 503 } else { 502 });
+    let status =
+        last_retryable_status.unwrap_or(if attempted_ids.is_empty() || last_error.is_none() {
+            503
+        } else {
+            502
+        });
     respond_error(
         params,
         status,
@@ -585,8 +771,8 @@ fn proxy_claude_subscription_request_with_transport(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
     use tiny_http::{Header, Response as TinyResponse, Server, StatusCode};
@@ -615,7 +801,9 @@ mod tests {
         let storage = Storage::open_in_memory().expect("open storage");
         storage.init().expect("initialize storage");
         for id in ids {
-            storage.upsert_claude_subscription_account(&account(id)).expect("insert Claude account");
+            storage
+                .upsert_claude_subscription_account(&account(id))
+                .expect("insert Claude account");
         }
         storage
     }
@@ -628,7 +816,12 @@ mod tests {
         client_is_stream: bool,
     ) -> (u16, String) {
         run_mocked_proxy_with_client(
-            storage, upstream_url, path, payload, client_is_stream, |_| Ok(Client::new()),
+            storage,
+            upstream_url,
+            path,
+            payload,
+            client_is_stream,
+            |_| Ok(Client::new()),
         )
     }
 
@@ -654,8 +847,10 @@ mod tests {
             let status = response.status().as_u16();
             (status, response.text().expect("read gateway response"))
         });
-        let request = server.recv_timeout(Duration::from_secs(3))
-            .expect("receive gateway request").expect("gateway request present");
+        let request = server
+            .recv_timeout(Duration::from_secs(3))
+            .expect("receive gateway request")
+            .expect("gateway request present");
         let body = Bytes::from(serde_json::to_vec(&payload).expect("serialize request"));
         let method = Method::POST;
         proxy_claude_subscription_request_with_transport(
@@ -686,16 +881,24 @@ mod tests {
             },
             upstream_url,
             client_for_account,
-        ).expect("proxy Claude request");
+        )
+        .expect("proxy Claude request");
         client.join().expect("join gateway client")
     }
 
     fn mock_upstream_url(server: &Server) -> Url {
-        Url::parse(&format!("http://{}/v1/messages?beta=true", server.server_addr()))
-            .expect("parse mock upstream URL")
+        Url::parse(&format!(
+            "http://{}/v1/messages?beta=true",
+            server.server_addr()
+        ))
+        .expect("parse mock upstream URL")
     }
 
-    fn response_with_type(body: &str, status: u16, content_type: &str) -> TinyResponse<std::io::Cursor<Vec<u8>>> {
+    fn response_with_type(
+        body: &str,
+        status: u16,
+        content_type: &str,
+    ) -> TinyResponse<std::io::Cursor<Vec<u8>>> {
         TinyResponse::from_string(body)
             .with_status_code(StatusCode(status))
             .with_header(Header::from_bytes("content-type", content_type).expect("content type"))
@@ -705,8 +908,12 @@ mod tests {
     fn responses_use_anthropic_messages_and_preserve_model_override() {
         let body = serde_json::json!({"model":"claude-client", "input":"hi", "stream":true});
         let (rewritten, adapter) = build_messages_body(
-            "/v1/responses", &serde_json::to_vec(&body).unwrap(), Some("claude-upstream"), true,
-        ).unwrap();
+            "/v1/responses",
+            &serde_json::to_vec(&body).unwrap(),
+            Some("claude-upstream"),
+            true,
+        )
+        .unwrap();
         let value: Value = serde_json::from_slice(&rewritten).unwrap();
         assert_eq!(adapter, ResponseAdapter::ResponsesFromAnthropicMessages);
         assert_eq!(value["model"], "claude-upstream");
@@ -722,7 +929,8 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 32,
         });
-        let rewritten = add_claude_code_system_prefix(&serde_json::to_vec(&native).unwrap()).unwrap();
+        let rewritten =
+            add_claude_code_system_prefix(&serde_json::to_vec(&native).unwrap()).unwrap();
         let value: Value = serde_json::from_slice(&rewritten).unwrap();
         assert_eq!(value["system"][0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
         assert_eq!(value["system"][1]["text"], "Keep the answer brief.");
@@ -734,8 +942,12 @@ mod tests {
 
         let responses = serde_json::json!({"model": "claude-sonnet-5", "input": "hi"});
         let (converted, _) = build_messages_body(
-            "/v1/responses", &serde_json::to_vec(&responses).unwrap(), None, false,
-        ).unwrap();
+            "/v1/responses",
+            &serde_json::to_vec(&responses).unwrap(),
+            None,
+            false,
+        )
+        .unwrap();
         let converted = add_claude_code_system_prefix(&converted).unwrap();
         let converted: Value = serde_json::from_slice(&converted).unwrap();
         assert_eq!(converted["system"][0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
@@ -745,8 +957,12 @@ mod tests {
     fn non_streaming_messages_and_responses_keep_response_shape() {
         let native = serde_json::json!({"model":"claude-client", "messages":[{"role":"user","content":"hi"}], "max_tokens":32, "stream":false});
         let (native_body, native_adapter) = build_messages_body(
-            "/v1/messages", &serde_json::to_vec(&native).unwrap(), Some("claude-upstream"), false,
-        ).unwrap();
+            "/v1/messages",
+            &serde_json::to_vec(&native).unwrap(),
+            Some("claude-upstream"),
+            false,
+        )
+        .unwrap();
         let native_value: Value = serde_json::from_slice(&native_body).unwrap();
         assert_eq!(native_adapter, ResponseAdapter::Passthrough);
         assert_eq!(native_value["stream"], false);
@@ -754,42 +970,131 @@ mod tests {
 
         let responses = serde_json::json!({"model":"claude-client", "input":"hi", "stream":false});
         let (converted, adapter) = build_messages_body(
-            "/v1/responses", &serde_json::to_vec(&responses).unwrap(), None, false,
-        ).unwrap();
+            "/v1/responses",
+            &serde_json::to_vec(&responses).unwrap(),
+            None,
+            false,
+        )
+        .unwrap();
         let converted: Value = serde_json::from_slice(&converted).unwrap();
         assert_eq!(adapter, ResponseAdapter::ResponsesFromAnthropicMessages);
         assert_eq!(converted["stream"], false);
 
         let omitted = serde_json::json!({"model":"claude-client", "input":"hi"});
         let (converted, _) = build_messages_body(
-            "/v1/responses", &serde_json::to_vec(&omitted).unwrap(), None, false,
-        ).unwrap();
+            "/v1/responses",
+            &serde_json::to_vec(&omitted).unwrap(),
+            None,
+            false,
+        )
+        .unwrap();
         let converted: Value = serde_json::from_slice(&converted).unwrap();
         assert_eq!(converted["stream"], false);
 
         // The shared Codex request rewrite can set the transport body to stream=true
         // even when the client omitted stream. Claude must honor the original flag.
-        let rewritten_omitted = serde_json::json!({"model":"claude-client", "input":"hi", "stream":true});
+        let rewritten_omitted =
+            serde_json::json!({"model":"claude-client", "input":"hi", "stream":true});
         let (converted, _) = build_messages_body(
-            "/v1/responses", &serde_json::to_vec(&rewritten_omitted).unwrap(), None, false,
-        ).unwrap();
+            "/v1/responses",
+            &serde_json::to_vec(&rewritten_omitted).unwrap(),
+            None,
+            false,
+        )
+        .unwrap();
         let converted: Value = serde_json::from_slice(&converted).unwrap();
         assert_eq!(converted["stream"], false);
     }
 
     #[test]
     fn claude_paths_keep_oauth_beta_query() {
-        assert_eq!(messages_url("/v1/messages").unwrap().as_str(), "https://api.anthropic.com/v1/messages?beta=true");
-        assert_eq!(messages_url("/v1/messages?beta=true").unwrap().as_str(), "https://api.anthropic.com/v1/messages?beta=true");
-        assert_eq!(messages_url("/v1/messages?beta=false").unwrap().as_str(), "https://api.anthropic.com/v1/messages?beta=true");
+        assert_eq!(
+            messages_url("/v1/messages").unwrap().as_str(),
+            "https://api.anthropic.com/v1/messages?beta=true"
+        );
+        assert_eq!(
+            messages_url("/v1/messages?beta=true").unwrap().as_str(),
+            "https://api.anthropic.com/v1/messages?beta=true"
+        );
+        assert_eq!(
+            messages_url("/v1/messages?beta=false").unwrap().as_str(),
+            "https://api.anthropic.com/v1/messages?beta=true"
+        );
+    }
+
+    #[test]
+    fn upstream_builder_preserves_anthropic_beta_duplicates_and_version() {
+        let request: Request = tiny_http::TestRequest::new()
+            .with_header(Header::from_bytes("anthropic-beta", "safeguards-review-2025").unwrap())
+            .with_header(
+                Header::from_bytes("anthropic-beta", "interleaved-thinking-2025-05-14").unwrap(),
+            )
+            .with_header(Header::from_bytes("anthropic-version", "2023-06-01").unwrap())
+            .with_header(Header::from_bytes("x-claude-code-test", "preserve-me").unwrap())
+            .into();
+        let method = Method::POST;
+        let upstream = build_upstream_request(
+            &Client::new(),
+            &request,
+            &method,
+            Url::parse("http://127.0.0.1:1/v1/messages").unwrap(),
+            br#"{"messages":[]}"#,
+            "token",
+            None,
+        )
+        .expect("build upstream request");
+        let beta_values = upstream
+            .headers()
+            .get_all("anthropic-beta")
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(beta_values[0], "safeguards-review-2025");
+        assert_eq!(beta_values[1], "interleaved-thinking-2025-05-14");
+        assert_eq!(beta_values.len(), 2);
+        assert_eq!(
+            upstream
+                .headers()
+                .get("anthropic-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("2023-06-01")
+        );
+        assert_eq!(
+            upstream
+                .headers()
+                .get("x-claude-code-test")
+                .and_then(|value| value.to_str().ok()),
+            Some("preserve-me")
+        );
     }
 
     #[test]
     fn route_override_uses_highest_priority_claude_pool_only() {
         let routes = vec![
-            ModelRouteV2 { source_kind: "account_pool".into(), source_id: "default".into(), upstream_model: "openai-model".into(), priority: 99, enabled: true, ..Default::default() },
-            ModelRouteV2 { source_kind: "account_pool".into(), source_id: "claude".into(), upstream_model: "claude-low".into(), priority: 1, enabled: true, ..Default::default() },
-            ModelRouteV2 { source_kind: "account_pool".into(), source_id: "claude".into(), upstream_model: "claude-high".into(), priority: 2, enabled: true, ..Default::default() },
+            ModelRouteV2 {
+                source_kind: "account_pool".into(),
+                source_id: "default".into(),
+                upstream_model: "openai-model".into(),
+                priority: 99,
+                enabled: true,
+                ..Default::default()
+            },
+            ModelRouteV2 {
+                source_kind: "account_pool".into(),
+                source_id: "claude".into(),
+                upstream_model: "claude-low".into(),
+                priority: 1,
+                enabled: true,
+                ..Default::default()
+            },
+            ModelRouteV2 {
+                source_kind: "account_pool".into(),
+                source_id: "claude".into(),
+                upstream_model: "claude-high".into(),
+                priority: 2,
+                enabled: true,
+                ..Default::default()
+            },
         ];
         assert_eq!(claude_route_model(&routes), Some("claude-high"));
     }
@@ -799,10 +1104,19 @@ mod tests {
         let accounts = vec![account("claude:one"), account("claude:two")];
         let attempted = HashSet::new();
         let loads = HashMap::from([("claude:one".to_string(), 1), ("claude:two".to_string(), 0)]);
-        assert_eq!(choose_candidate_id(&accounts, &attempted, &loads, 0, 1).as_deref(), Some("claude:two"));
-        assert_eq!(choose_candidate_id(&accounts, &attempted, &HashMap::new(), 1, 1).as_deref(), Some("claude:two"));
+        assert_eq!(
+            choose_candidate_id(&accounts, &attempted, &loads, 0, 1).as_deref(),
+            Some("claude:two")
+        );
+        assert_eq!(
+            choose_candidate_id(&accounts, &attempted, &HashMap::new(), 1, 1).as_deref(),
+            Some("claude:two")
+        );
         let attempted = HashSet::from(["claude:two".to_string()]);
-        assert_eq!(choose_candidate_id(&accounts, &attempted, &HashMap::new(), 1, 1).as_deref(), Some("claude:one"));
+        assert_eq!(
+            choose_candidate_id(&accounts, &attempted, &HashMap::new(), 1, 1).as_deref(),
+            Some("claude:one")
+        );
     }
 
     #[test]
@@ -810,20 +1124,31 @@ mod tests {
         let first = "claude:cooldown-first";
         let second = "claude:cooldown-second";
         let accounts = vec![account(first), account(second)];
-        super::super::super::mark_account_cooldown(first, super::super::super::CooldownReason::RateLimited);
-        let unavailable = accounts.iter()
+        super::super::super::mark_account_cooldown(
+            first,
+            super::super::super::CooldownReason::RateLimited,
+        );
+        let unavailable = accounts
+            .iter()
             .filter(|account| super::super::super::is_account_in_cooldown(&account.id))
             .map(|account| account.id.clone())
             .collect::<HashSet<_>>();
-        assert_eq!(choose_candidate_id(&accounts, &unavailable, &HashMap::new(), 0, 0).as_deref(), Some(second));
+        assert_eq!(
+            choose_candidate_id(&accounts, &unavailable, &HashMap::new(), 0, 0).as_deref(),
+            Some(second)
+        );
         super::super::super::clear_account_cooldown(first);
     }
 
     #[test]
     fn scoped_file_reference_disables_automatic_retry() {
-        assert!(safe_to_retry_before_delivery(br#"{"messages":[{"content":"hi"}]}"#));
+        assert!(safe_to_retry_before_delivery(
+            br#"{"messages":[{"content":"hi"}]}"#
+        ));
         assert!(!safe_to_retry_before_delivery(br#"{"messages":[{"content":[{"type":"document","source":{"type":"file","file_id":"file-1"}}]}]}"#));
-        assert!(!safe_to_retry_before_delivery(br#"{"previous_response_id":"resp-1"}"#));
+        assert!(!safe_to_retry_before_delivery(
+            br#"{"previous_response_id":"resp-1"}"#
+        ));
     }
 
     #[test]
@@ -833,30 +1158,128 @@ mod tests {
         let url = mock_upstream_url(&upstream);
         let (headers_tx, headers_rx) = mpsc::channel();
         let join = thread::spawn(move || {
-            let request = upstream.recv_timeout(Duration::from_secs(3))
-                .expect("receive upstream request").expect("request present");
-            let headers = request.headers().iter().map(|header| (
-                header.field.as_str().to_string().to_ascii_lowercase(),
-                header.value.as_str().to_string(),
-            )).collect::<HashMap<_, _>>();
+            let request = upstream
+                .recv_timeout(Duration::from_secs(3))
+                .expect("receive upstream request")
+                .expect("request present");
+            let headers = request
+                .headers()
+                .iter()
+                .map(|header| {
+                    (
+                        header.field.as_str().to_string().to_ascii_lowercase(),
+                        header.value.as_str().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
             headers_tx.send(headers).expect("send upstream headers");
-            request.respond(response_with_type(
-                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
-                200,
-                "text/event-stream",
-            )).expect("respond upstream stream");
+            let stream_body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\nevent: safeguard_results\ndata: {\"type\":\"safeguard_results\",\"classifier\":{\"decision\":\"allow\"},\"opaque\":{\"keep\":true}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+            request
+                .respond(response_with_type(stream_body, 200, "text/event-stream"))
+                .expect("respond upstream stream");
         });
         let (status, response_body) = run_mocked_proxy(
-            &storage, url, "/v1/messages",
-            serde_json::json!({"model":"claude-test","max_tokens":32,"stream":true,"messages":[{"role":"user","content":"hi"}]}),
+            &storage,
+            url,
+            "/v1/messages",
+            serde_json::json!({
+                "model":"claude-test",
+                "max_tokens":32,
+                "stream":true,
+                "safeguards":{"classifier":"server","opaque":{"keep":true}},
+                "unknown_stream_field":{"keep":"exact"},
+                "messages":[{"role":"user","content":"hi"}]
+            }),
             true,
         );
         join.join().expect("join upstream server");
         let headers = headers_rx.recv().expect("capture headers");
         assert_eq!(status, 200);
         assert!(response_body.contains("message_stop"));
-        assert_eq!(headers.get("authorization").map(String::as_str), Some("Bearer token-claude:stream-only"));
-        assert!(headers.get("anthropic-beta").is_some_and(|header| header.contains("oauth-2025-04-20") && header.contains("claude-code-20250219") && header.contains("interleaved-thinking-2025-05-14")));
+        assert_eq!(response_body, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\nevent: safeguard_results\ndata: {\"type\":\"safeguard_results\",\"classifier\":{\"decision\":\"allow\"},\"opaque\":{\"keep\":true}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+        let safeguard_offset = response_body
+            .find("safeguard_results")
+            .expect("safeguard event");
+        let stop_offset = response_body
+            .find("message_stop")
+            .expect("message stop event");
+        assert!(safeguard_offset < stop_offset);
+        assert!(headers.iter().any(|(name, value)| {
+            name == "authorization" && value == "Bearer token-claude:stream-only"
+        }));
+        let beta_values = headers
+            .iter()
+            .filter(|(name, _)| name == "anthropic-beta")
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(beta_values, vec!["interleaved-thinking-2025-05-14"]);
+    }
+
+    #[test]
+    fn native_safeguards_and_unknown_fields_reach_upstream_and_return_verbatim() {
+        let storage = storage_with_accounts(&["claude:safeguards-json"]);
+        let upstream = Server::http("127.0.0.1:0").expect("start mock upstream");
+        let url = mock_upstream_url(&upstream);
+        let payload = serde_json::json!({
+            "model": "claude-test",
+            "max_tokens": 32,
+            "stream": false,
+            "safeguards": {
+                "classifier": "server",
+                "review": {"required": true, "opaque": [1, 2, 3]}
+            },
+            "unknown_anthropic_field": {"preserve": "this"},
+            "messages": [
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_exact_123", "name": "lookup", "input": {"q": "hi"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_exact_123", "content": "done"}]}
+            ]
+        });
+        let (body_tx, body_rx) = mpsc::channel();
+        let join = thread::spawn(move || {
+            let mut request = upstream
+                .recv_timeout(Duration::from_secs(3))
+                .expect("receive upstream request")
+                .expect("request present");
+            let mut request_body = Vec::new();
+            std::io::Read::read_to_end(request.as_reader(), &mut request_body)
+                .expect("read upstream body");
+            body_tx.send(request_body).expect("send upstream body");
+            request.respond(response_with_type(
+                r#"{"id":"msg_safeguard","type":"message","role":"assistant","model":"claude-test","content":[{"type":"tool_use","id":"toolu_exact_123","name":"lookup","input":{"q":"hi"}}],"safeguard_results":{"decision":"allow","opaque":{"retain":["a",{"b":true}]}},"unknown_response_field":{"keep":true},"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#,
+                200,
+                "application/json",
+            )).expect("respond upstream JSON");
+        });
+        let (status, response_body) =
+            run_mocked_proxy(&storage, url, "/v1/messages", payload, false);
+        join.join().expect("join upstream server");
+        let request_value: Value = serde_json::from_slice(&body_rx.recv().expect("request body"))
+            .expect("parse upstream body");
+        assert_eq!(
+            request_value["safeguards"]["review"]["opaque"],
+            serde_json::json!([1, 2, 3])
+        );
+        assert_eq!(request_value["unknown_anthropic_field"]["preserve"], "this");
+        assert_eq!(
+            request_value["messages"][0]["content"][0]["id"],
+            "toolu_exact_123"
+        );
+        assert_eq!(
+            request_value["messages"][1]["content"][0]["tool_use_id"],
+            "toolu_exact_123"
+        );
+        assert_eq!(status, 200);
+        let expected_response = r#"{"id":"msg_safeguard","type":"message","role":"assistant","model":"claude-test","content":[{"type":"tool_use","id":"toolu_exact_123","name":"lookup","input":{"q":"hi"}}],"safeguard_results":{"decision":"allow","opaque":{"retain":["a",{"b":true}]}},"unknown_response_field":{"keep":true},"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#;
+        assert_eq!(response_body, expected_response);
+        let response_value: Value = serde_json::from_str(&response_body).expect("parse response");
+        assert_eq!(
+            response_value["safeguard_results"],
+            serde_json::json!({
+                "decision": "allow",
+                "opaque": {"retain": ["a", {"b": true}]}
+            })
+        );
+        assert_eq!(response_value["unknown_response_field"]["keep"], true);
     }
 
     #[test]
@@ -865,10 +1288,13 @@ mod tests {
         let upstream = Server::http("127.0.0.1:0").expect("start mock upstream");
         let url = mock_upstream_url(&upstream);
         let join = thread::spawn(move || {
-            let mut request = upstream.recv_timeout(Duration::from_secs(3))
-                .expect("receive upstream request").expect("request present");
+            let mut request = upstream
+                .recv_timeout(Duration::from_secs(3))
+                .expect("receive upstream request")
+                .expect("request present");
             let mut request_body = Vec::new();
-            std::io::Read::read_to_end(request.as_reader(), &mut request_body).expect("read upstream body");
+            std::io::Read::read_to_end(request.as_reader(), &mut request_body)
+                .expect("read upstream body");
             let value: Value = serde_json::from_slice(&request_body).expect("parse upstream body");
             assert_eq!(value["messages"][0]["role"], "user");
             assert_eq!(value["stream"], false);
@@ -879,7 +1305,9 @@ mod tests {
             )).expect("respond upstream JSON");
         });
         let (status, response_body) = run_mocked_proxy(
-            &storage, url, "/v1/responses",
+            &storage,
+            url,
+            "/v1/responses",
             serde_json::json!({"model":"claude-test","input":"hi","stream":false}),
             false,
         );
@@ -896,10 +1324,13 @@ mod tests {
         let upstream = Server::http("127.0.0.1:0").expect("start mock upstream");
         let url = mock_upstream_url(&upstream);
         let join = thread::spawn(move || {
-            let mut request = upstream.recv_timeout(Duration::from_secs(3))
-                .expect("receive upstream request").expect("request present");
+            let mut request = upstream
+                .recv_timeout(Duration::from_secs(3))
+                .expect("receive upstream request")
+                .expect("request present");
             let mut request_body = Vec::new();
-            std::io::Read::read_to_end(request.as_reader(), &mut request_body).expect("read upstream body");
+            std::io::Read::read_to_end(request.as_reader(), &mut request_body)
+                .expect("read upstream body");
             let value: Value = serde_json::from_slice(&request_body).expect("parse upstream body");
             assert_eq!(value["stream"], false);
             request.respond(response_with_type(
@@ -909,15 +1340,53 @@ mod tests {
             )).expect("respond upstream JSON");
         });
         let (status, response_body) = run_mocked_proxy(
-            &storage, url, "/v1/responses",
+            &storage,
+            url,
+            "/v1/responses",
             serde_json::json!({"model":"claude-test","input":"hi","stream":true}),
             false,
         );
         join.join().expect("join upstream server");
         assert_eq!(status, 200);
-        let value: Value = serde_json::from_str(&response_body).expect("non-stream response must be JSON");
+        let value: Value =
+            serde_json::from_str(&response_body).expect("non-stream response must be JSON");
         assert_eq!(value["object"], "response");
         assert_eq!(value["status"], "completed");
+    }
+
+    #[test]
+    fn upstream_524_is_preserved_without_replaying_generation() {
+        for stream in [false, true] {
+            let storage = storage_with_accounts(&["claude:timeout-one", "claude:timeout-two"]);
+            let upstream = Server::http("127.0.0.1:0").unwrap();
+            let url = mock_upstream_url(&upstream);
+            let join = thread::spawn(move || {
+                let request = upstream
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                request.respond(response_with_type(
+                    r#"{"title":"Error 524: A timeout occurred","status":524,"detail":"The origin web server did not return a complete response within the 120-second Proxy Read Timeout"}"#,
+                    524, "application/problem+json",
+                ).with_header(Header::from_bytes("cf-ray", "synthetic-ray").unwrap())).unwrap();
+                upstream
+                    .recv_timeout(Duration::from_millis(100))
+                    .unwrap()
+                    .is_some()
+            });
+            let (status, body) = run_mocked_proxy(
+                &storage,
+                url,
+                "/v1/messages",
+                serde_json::json!({"model":"claude-test","max_tokens":32,"stream":stream,
+                    "messages":[{"role":"user","content":"synthetic compaction prompt"}]}),
+                stream,
+            );
+            assert_eq!(status, 524);
+            assert!(body.contains("524"));
+            assert!(!body.contains("event: ping"));
+            assert!(!join.join().unwrap());
+        }
     }
 
     #[test]
@@ -927,34 +1396,86 @@ mod tests {
         let url = mock_upstream_url(&upstream);
         let join = thread::spawn(move || {
             let mut authorizations = Vec::new();
+            let mut bodies = Vec::new();
             for (index, status) in [529_u16, 200_u16].into_iter().enumerate() {
-                let request = upstream.recv_timeout(Duration::from_secs(3))
-                    .expect("receive upstream request").expect("request present");
-                authorizations.push(request.headers().iter()
-                    .find(|header| header.field.equiv("authorization"))
-                    .map(|header| header.value.as_str().to_string())
-                    .expect("subscription authorization"));
+                let mut request = upstream
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("receive upstream request")
+                    .expect("request present");
+                authorizations.push(
+                    request
+                        .headers()
+                        .iter()
+                        .find(|header| header.field.equiv("authorization"))
+                        .map(|header| header.value.as_str().to_string())
+                        .expect("subscription authorization"),
+                );
+                let mut request_body = Vec::new();
+                std::io::Read::read_to_end(request.as_reader(), &mut request_body)
+                    .expect("read retry body");
+                bodies.push(request_body);
                 let body = if index == 0 {
                     r#"{"type":"error","error":{"type":"overloaded_error","message":"at capacity"}}"#
                 } else {
                     r#"{"id":"msg_2","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"backup worked"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}"#
                 };
-                request.respond(response_with_type(body, status, "application/json"))
+                request
+                    .respond(response_with_type(body, status, "application/json"))
                     .expect("respond upstream");
             }
-            authorizations
+            (authorizations, bodies)
         });
         let (status, response_body) = run_mocked_proxy(
-            &storage, url, "/v1/messages",
-            serde_json::json!({"model":"claude-test","max_tokens":32,"stream":false,"messages":[{"role":"user","content":"hi"}]}),
+            &storage,
+            url,
+            "/v1/messages",
+            serde_json::json!({
+                "model":"claude-test",
+                "max_tokens":32,
+                "stream":false,
+                "messages":[
+                    {"role":"assistant","content":[{"type":"tool_use","id":"toolu_retry_exact","name":"lookup","input":{"q":"hi"}}]},
+                    {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_retry_exact","content":"done"}]}
+                ],
+                "safeguards":{"classifier":"server","opaque":{"retry":true}}
+            }),
             false,
         );
-        let authorizations = join.join().expect("join upstream server");
+        let (authorizations, bodies) = join.join().expect("join upstream server");
         assert_eq!(status, 200);
         assert!(response_body.contains("backup worked"));
         assert_eq!(authorizations.len(), 2);
-        assert!(authorizations.iter().all(|authorization| authorization.starts_with("Bearer token-claude:retry-")));
+        assert!(authorizations
+            .iter()
+            .all(|authorization| authorization.starts_with("Bearer token-claude:retry-")));
         assert_ne!(authorizations[0], authorizations[1]);
+        let first_retry_body: Value = serde_json::from_slice(&bodies[0]).expect("first retry body");
+        let second_retry_body: Value =
+            serde_json::from_slice(&bodies[1]).expect("second retry body");
+        assert_eq!(
+            first_retry_body["messages"][0]["content"][0]["id"],
+            "toolu_retry_exact"
+        );
+        assert_eq!(
+            second_retry_body["messages"][0]["content"][0]["id"],
+            "toolu_retry_exact"
+        );
+        assert_eq!(
+            first_retry_body["messages"][1]["content"][0]["tool_use_id"],
+            "toolu_retry_exact"
+        );
+        assert_eq!(
+            second_retry_body["messages"][1]["content"][0]["tool_use_id"],
+            "toolu_retry_exact"
+        );
+        assert_eq!(
+            first_retry_body["safeguards"],
+            serde_json::json!({"classifier":"server","opaque":{"retry":true}})
+        );
+        assert_eq!(
+            first_retry_body["safeguards"],
+            second_retry_body["safeguards"]
+        );
     }
 
     #[test]
@@ -963,18 +1484,24 @@ mod tests {
         let upstream = Server::http("127.0.0.1:0").expect("start mock upstream");
         let url = mock_upstream_url(&upstream);
         let join = thread::spawn(move || {
-            let request = upstream.recv_timeout(Duration::from_secs(3))
-                .expect("receive upstream request").expect("request present");
+            let request = upstream
+                .recv_timeout(Duration::from_secs(3))
+                .expect("receive upstream request")
+                .expect("request present");
             request.respond(response_with_type(
                 "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}\n\n",
                 200,
                 "text/event-stream",
             )).expect("respond partial stream");
-            upstream.recv_timeout(Duration::from_millis(350))
-                .expect("check for replay").is_some()
+            upstream
+                .recv_timeout(Duration::from_millis(350))
+                .expect("check for replay")
+                .is_some()
         });
         let (_status, response_body) = run_mocked_proxy(
-            &storage, url, "/v1/messages",
+            &storage,
+            url,
+            "/v1/messages",
             serde_json::json!({"model":"claude-test","max_tokens":32,"stream":true,"messages":[{"role":"user","content":"hi"}]}),
             true,
         );
@@ -989,19 +1516,28 @@ mod tests {
         let upstream = Server::http("127.0.0.1:0").expect("start mock upstream");
         let url = mock_upstream_url(&upstream);
         let (status, body) = run_mocked_proxy_with_client(
-            &storage, url, "/v1/messages",
+            &storage,
+            url,
+            "/v1/messages",
             serde_json::json!({"model":"claude-test","max_tokens":32,"stream":false,"messages":[{"role":"user","content":"hi"}]}),
             false,
             |_| {
-                storage.update_claude_subscription_account_status(
-                    account_id, "disabled", codexmanager_core::storage::now_ts(),
-                ).expect("disable selected account");
+                storage
+                    .update_claude_subscription_account_status(
+                        account_id,
+                        "disabled",
+                        codexmanager_core::storage::now_ts(),
+                    )
+                    .expect("disable selected account");
                 Ok(Client::new())
             },
         );
         assert_eq!(status, 503);
         assert!(body.contains("no available Claude subscription account"));
-        assert!(upstream.recv_timeout(Duration::from_millis(200)).expect("check upstream").is_none());
+        assert!(upstream
+            .recv_timeout(Duration::from_millis(200))
+            .expect("check upstream")
+            .is_none());
     }
 
     #[test]
@@ -1010,8 +1546,14 @@ mod tests {
             "model":"claude-test", "max_tokens":32,
             "messages":[{"role":"user","content":[{"type":"document","source":{"type":"file","file_id":"file-account-scoped"}}]}]
         });
-        assert!(build_messages_body("/v1/messages", &serde_json::to_vec(&body).unwrap(), None, false)
-            .unwrap_err().contains("cannot migrate"));
+        assert!(build_messages_body(
+            "/v1/messages",
+            &serde_json::to_vec(&body).unwrap(),
+            None,
+            false
+        )
+        .unwrap_err()
+        .contains("cannot migrate"));
     }
 
     #[test]
@@ -1023,8 +1565,16 @@ mod tests {
                 {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":{"container":"ordinary data","conversation":"ordinary data"}}]}]
         });
         assert!(!has_server_scoped_reference(&body));
-        assert!(safe_to_retry_before_delivery(&serde_json::to_vec(&body).unwrap()));
-        assert!(build_messages_body("/v1/messages", &serde_json::to_vec(&body).unwrap(), None, false).is_ok());
+        assert!(safe_to_retry_before_delivery(
+            &serde_json::to_vec(&body).unwrap()
+        ));
+        assert!(build_messages_body(
+            "/v1/messages",
+            &serde_json::to_vec(&body).unwrap(),
+            None,
+            false
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1047,7 +1597,10 @@ mod tests {
         );
         assert_eq!(status, 400);
         assert!(body.contains("unsupported responses content part type: input_image"));
-        assert!(upstream.recv_timeout(Duration::from_millis(200)).expect("check upstream").is_none());
+        assert!(upstream
+            .recv_timeout(Duration::from_millis(200))
+            .expect("check upstream")
+            .is_none());
     }
 
     #[test]
@@ -1055,10 +1608,13 @@ mod tests {
         let storage = storage_with_accounts(&["claude:network-one", "claude:network-two"]);
         let listener = TcpListener::bind("127.0.0.1:0").expect("start raw upstream");
         let address = listener.local_addr().expect("upstream address");
-        let url = Url::parse(&format!("http://{address}/v1/messages?beta=true")).expect("upstream URL");
+        let url =
+            Url::parse(&format!("http://{address}/v1/messages?beta=true")).expect("upstream URL");
         let join = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("first upstream connection");
-            stream.set_read_timeout(Some(Duration::from_secs(2))).expect("set read timeout");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
             let mut bytes = [0_u8; 4096];
             let _ = std::io::Read::read(&mut stream, &mut bytes).expect("read first request");
             drop(stream);
@@ -1067,7 +1623,9 @@ mod tests {
             listener.accept().is_ok()
         });
         let (status, _) = run_mocked_proxy(
-            &storage, url, "/v1/messages",
+            &storage,
+            url,
+            "/v1/messages",
             serde_json::json!({"model":"claude-test","max_tokens":32,"stream":false,"messages":[{"role":"user","content":"hi"}]}),
             false,
         );

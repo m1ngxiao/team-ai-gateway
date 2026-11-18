@@ -19,6 +19,8 @@ const GPT6_SOL_MIGRATION_VERSION: &str = "134_model_catalog_gpt6_sol";
 const GPT6_SOL_MIGRATION_REVISION: i64 = 9;
 const GPT6_NEW_MODELS_MIGRATION_VERSION: &str = "138_model_catalog_gpt61_sol_gpt6_luna";
 const GPT6_NEW_MODELS_MIGRATION_REVISION: i64 = 10;
+const GPT62_MODELS_MIGRATION_VERSION: &str = "141_model_catalog_gpt62_astra_sol_gpt61_terra";
+const GPT62_MODELS_MIGRATION_REVISION: i64 = 11;
 const GPT56_METADATA_FIX_MIGRATION_VERSION: &str = "132_model_catalog_gpt56_metadata_fix";
 const GPT56_METADATA_FIX_CONTEXT_WINDOW: i64 = 272_000;
 const GPT56_METADATA_FIX_MAX_CONTEXT_WINDOW: i64 = 872_000;
@@ -31,12 +33,28 @@ const GPT61_SOL_SLUG: &str = "gpt-6.1-sol";
 const GPT61_SOL_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6.1-sol";
 const GPT6_LUNA_SLUG: &str = "gpt-6-luna";
 const GPT6_LUNA_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6-luna";
+const GPT62_SOL_SLUG: &str = "gpt-6.2-sol";
+const GPT62_SOL_PRICE_SOURCE: &str = "https://developers.openai.com/api/docs/models/gpt-6.2-sol";
+const GPT62_ASTRA_SLUG: &str = "gpt-6.2-astra";
+const GPT62_ASTRA_PRICE_SOURCE: &str =
+    "https://developers.openai.com/api/docs/models/gpt-6.2-astra";
+const GPT61_TERRA_SLUG: &str = "gpt-6.1-terra";
+const GPT61_TERRA_PRICE_SOURCE: &str =
+    "https://developers.openai.com/api/docs/models/gpt-6.1-terra";
 #[cfg(test)]
 const GPT_IMAGE_2_PRICE_SOURCE: &str =
     "https://developers.openai.com/api/docs/pricing#image-generation";
 const DEFAULT_MODEL_GROUP_ID: &str = "mg_default";
-const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] =
-    &["gpt-image-2", GPT6_ASTRA_SLUG, GPT6_SOL_SLUG, GPT61_SOL_SLUG, GPT6_LUNA_SLUG];
+const TOLERATED_CUSTOM_SEED_COLLISIONS: &[&str] = &[
+    "gpt-image-2",
+    GPT6_ASTRA_SLUG,
+    GPT6_SOL_SLUG,
+    GPT61_SOL_SLUG,
+    GPT6_LUNA_SLUG,
+    GPT62_SOL_SLUG,
+    GPT62_ASTRA_SLUG,
+    GPT61_TERRA_SLUG,
+];
 
 #[derive(Debug, Clone, Deserialize)]
 struct BuiltinCatalogFixture {
@@ -121,6 +139,30 @@ impl ModelFastPolicyV2 {
             Self::Block => "block",
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialCatalogModelSyncV2 {
+    pub slug: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub supported_in_api: bool,
+    pub visibility: String,
+    pub sort_order: i64,
+    pub context_window: Option<i64>,
+    pub max_context_window: Option<i64>,
+    pub default_reasoning_effort: Option<String>,
+    pub capabilities: Value,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficialCatalogReconcileResultV2 {
+    pub created_models: Vec<String>,
+    pub reenabled_models: Vec<String>,
+    pub retired_models: Vec<String>,
+    pub ensured_routes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -295,6 +337,41 @@ fn gpt6_new_models_migration_fixture() -> BuiltinCatalogFixture {
             .iter()
             .find(|model| model.slug.eq_ignore_ascii_case(slug))
             .expect("new GPT-6 model must appear exactly once in the fixture");
+        assert_eq!(model.price_source.as_deref(), Some(price_source));
+    }
+    fixture
+}
+
+fn gpt62_models_migration_fixture() -> BuiltinCatalogFixture {
+    let fixture: BuiltinCatalogFixture = serde_json::from_str(include_str!(
+        "../../seeds/model_catalog_gpt62_astra_sol_gpt61_terra_v11.json"
+    ))
+    .expect("GPT-6.2 Astra/Sol and GPT-6.1 Terra migration fixture must be valid");
+    assert_eq!(
+        fixture.revision, GPT62_MODELS_MIGRATION_REVISION,
+        "GPT-6.2 migration fixture revision must remain frozen"
+    );
+    assert_eq!(fixture.models.len(), 3);
+    assert_eq!(
+        fixture
+            .models
+            .iter()
+            .map(|model| model.slug.to_ascii_lowercase())
+            .collect::<HashSet<_>>()
+            .len(),
+        3,
+        "new GPT-6.2/6.1 model slugs must be unique"
+    );
+    for (slug, price_source) in [
+        (GPT62_SOL_SLUG, GPT62_SOL_PRICE_SOURCE),
+        (GPT62_ASTRA_SLUG, GPT62_ASTRA_PRICE_SOURCE),
+        (GPT61_TERRA_SLUG, GPT61_TERRA_PRICE_SOURCE),
+    ] {
+        let model = fixture
+            .models
+            .iter()
+            .find(|model| model.slug.eq_ignore_ascii_case(slug))
+            .expect("new GPT-6.2/6.1 model must appear exactly once in the fixture");
         assert_eq!(model.price_source.as_deref(), Some(price_source));
     }
     fixture
@@ -2094,7 +2171,10 @@ impl Storage {
                     {
                         return Err(rusqlite::Error::SqliteFailure(
                             (),
-                            Some(format!("{} catalog migration smoke check failed", seed.slug)),
+                            Some(format!(
+                                "{} catalog migration smoke check failed",
+                                seed.slug
+                            )),
                         ));
                     }
                 }
@@ -2114,6 +2194,138 @@ impl Storage {
         tx.commit()?;
         if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
             migrations.insert(GPT6_NEW_MODELS_MIGRATION_VERSION.to_string());
+        }
+        Ok(())
+    }
+
+    pub(super) fn apply_model_catalog_gpt62_models_migration(&self) -> Result<()> {
+        if self.has_migration(GPT62_MODELS_MIGRATION_VERSION)? {
+            return Ok(());
+        }
+
+        let fixture = gpt62_models_migration_fixture();
+        let tx = self.conn.unchecked_transaction()?;
+        let now = now_ts();
+        let stored_catalog_revision = tx
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM model_catalog_v2_meta
+                 WHERE key='builtin_revision'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        let max_unedited_builtin_revision = tx.query_row(
+            "SELECT COALESCE(MAX(builtin_revision),0) FROM models
+             WHERE origin='builtin' AND user_edited=0",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let effective_catalog_revision = stored_catalog_revision.max(max_unedited_builtin_revision);
+
+        for seed in &fixture.models {
+            let state = tx
+                .query_row(
+                    "SELECT m.id,m.origin,m.user_edited,m.builtin_revision,
+                            COALESCE(p.price_status,'missing')
+                     FROM models m
+                     LEFT JOIN model_prices p ON p.model_id=m.id
+                     WHERE m.slug=?1 COLLATE NOCASE",
+                    [seed.slug.as_str()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, bool>(2)?,
+                            row.get::<_, Option<i64>>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            match state.as_ref() {
+                None if effective_catalog_revision <= fixture.revision => {
+                    insert_seed(&self.conn, &fixture, seed, now)?;
+                }
+                Some((_, origin, user_edited, revision, _))
+                    if origin == "builtin"
+                        && !user_edited
+                        && revision.unwrap_or_default() <= fixture.revision =>
+                {
+                    replace_unedited_builtin_seed(&self.conn, fixture.revision, seed, now)?;
+                }
+                Some((id, origin, user_edited, _, price_status))
+                    if origin == "custom"
+                        && !user_edited
+                        && price_status == "missing"
+                        && effective_catalog_revision <= fixture.revision =>
+                {
+                    tx.execute(
+                        "UPDATE models SET origin='builtin',builtin_revision=0 WHERE id=?1",
+                        [id.as_str()],
+                    )?;
+                    replace_unedited_builtin_seed(&self.conn, fixture.revision, seed, now)?;
+                }
+                _ => {}
+            }
+        }
+
+        if effective_catalog_revision <= fixture.revision {
+            tx.execute(
+                "INSERT INTO model_catalog_v2_meta(key,value) VALUES('builtin_revision',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [fixture.revision.to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO model_catalog_v2_meta(key,value) VALUES('fixture_sha256',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [fixture.source_sha256.as_str()],
+            )?;
+        } else if stored_catalog_revision < effective_catalog_revision {
+            tx.execute(
+                "INSERT INTO model_catalog_v2_meta(key,value) VALUES('builtin_revision',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [effective_catalog_revision.to_string()],
+            )?;
+        }
+        tx.execute_batch(include_str!(
+            "../../migrations/141_model_catalog_gpt62_astra_sol_gpt61_terra.sql"
+        ))?;
+
+        for seed in &fixture.models {
+            let migrated = get_managed_model_v2_with_conn(&self.conn, &seed.slug)?;
+            match migrated.as_ref() {
+                Some(model) if model.origin == "builtin" && !model.user_edited => {
+                    let revision = model.builtin_revision.unwrap_or_default();
+                    if revision < fixture.revision
+                        || (revision == fixture.revision
+                            && !seeded_builtin_matches(model, fixture.revision, seed))
+                    {
+                        return Err(rusqlite::Error::SqliteFailure(
+                            (),
+                            Some(format!(
+                                "{} catalog migration smoke check failed",
+                                seed.slug
+                            )),
+                        ));
+                    }
+                }
+                None if effective_catalog_revision <= fixture.revision => {
+                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                }
+                _ => {}
+            }
+        }
+        if effective_catalog_revision <= fixture.revision {
+            migration_smoke_for_fixture(&self.conn, &fixture)?;
+        }
+        tx.execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+            params![GPT62_MODELS_MIGRATION_VERSION, now],
+        )?;
+        tx.commit()?;
+        if let Some(migrations) = self.applied_migrations.borrow_mut().as_mut() {
+            migrations.insert(GPT62_MODELS_MIGRATION_VERSION.to_string());
         }
         Ok(())
     }
@@ -2615,6 +2827,375 @@ impl Storage {
         }
         Ok(best)
     }
+
+    pub fn reconcile_official_codex_catalog_v2(
+        &self,
+        present: &[OfficialCatalogModelSyncV2],
+        retire_missing: bool,
+    ) -> Result<OfficialCatalogReconcileResultV2> {
+        let mut normalized = Vec::new();
+        let mut present_slugs = HashSet::new();
+        for item in present {
+            let slug = item.slug.trim();
+            if slug.is_empty() || !present_slugs.insert(slug.to_ascii_lowercase()) {
+                continue;
+            }
+            let visibility = if item.visibility.trim().eq_ignore_ascii_case("hide") {
+                "hide".to_string()
+            } else {
+                "list".to_string()
+            };
+            let display_name = if item.display_name.trim().is_empty() {
+                slug.to_string()
+            } else {
+                item.display_name.trim().to_string()
+            };
+            let description = clean_optional(item.description.clone());
+            let default_reasoning_effort = clean_optional(item.default_reasoning_effort.clone());
+            let capabilities = if item.capabilities.is_object() {
+                item.capabilities.clone()
+            } else {
+                serde_json::json!({
+                    "supports_text_generation": true,
+                    "input_modalities": ["text"],
+                    "output_modalities": ["text"],
+                })
+            };
+            normalized.push(OfficialCatalogModelSyncV2 {
+                slug: slug.to_string(),
+                display_name,
+                description,
+                supported_in_api: item.supported_in_api,
+                visibility,
+                sort_order: item.sort_order,
+                context_window: item.context_window,
+                max_context_window: item.max_context_window.or(item.context_window),
+                default_reasoning_effort,
+                capabilities,
+            });
+        }
+        if normalized.is_empty() {
+            return Ok(OfficialCatalogReconcileResultV2::default());
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        let now = now_ts();
+        let mut result = OfficialCatalogReconcileResultV2::default();
+
+        for item in &normalized {
+            let existing = tx
+                .query_row(
+                    "SELECT id,slug,display_name,description,origin,enabled,supported_in_api,
+                            visibility,sort_order,context_window,max_context_window,
+                            default_reasoning_effort,capabilities_json,user_edited
+                     FROM models WHERE slug=?1 COLLATE NOCASE",
+                    [item.slug.as_str()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, i64>(5)? != 0,
+                            row.get::<_, i64>(6)? != 0,
+                            row.get::<_, String>(7)?,
+                            row.get::<_, i64>(8)?,
+                            row.get::<_, Option<i64>>(9)?,
+                            row.get::<_, Option<i64>>(10)?,
+                            row.get::<_, Option<String>>(11)?,
+                            row.get::<_, String>(12)?,
+                            row.get::<_, i64>(13)? != 0,
+                        ))
+                    },
+                )
+                .optional()?;
+
+            match existing {
+                None => {
+                    let id = custom_id(&item.slug);
+                    let caps_json = serde_json::to_string(&item.capabilities)
+                        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+                    tx.execute(
+                        "INSERT INTO models(
+                           id,slug,display_name,description,provider,family,category,tags_json,
+                           origin,enabled,supported_in_api,visibility,sort_order,context_window,
+                           max_context_window,default_reasoning_effort,capabilities_json,
+                           instructions_mode,instructions_text,builtin_revision,user_edited,
+                           created_at,updated_at,fast_policy
+                         ) VALUES(?1,?2,?3,?4,'OpenAI',NULL,NULL,'[]','custom',1,?5,?6,?7,?8,?9,?10,?11,'passthrough',NULL,NULL,0,?12,?12,'passthrough')",
+                        params![
+                            id,
+                            item.slug,
+                            item.display_name,
+                            item.description,
+                            item.supported_in_api,
+                            item.visibility,
+                            item.sort_order,
+                            item.context_window,
+                            item.max_context_window,
+                            item.default_reasoning_effort,
+                            caps_json,
+                            now,
+                        ],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO model_prices(
+                           model_id,currency,input_microusd_per_1m,cached_input_microusd_per_1m,
+                           cache_write_microusd_per_1m,output_microusd_per_1m,price_status,
+                           price_source,created_at,updated_at
+                         ) VALUES(?1,'USD',NULL,NULL,NULL,NULL,'missing',NULL,?2,?2)",
+                        params![id, now],
+                    )?;
+                    let route = ModelRouteV2 {
+                        source_kind: "account_pool".to_string(),
+                        source_id: "default".to_string(),
+                        upstream_model: item.slug.clone(),
+                        enabled: true,
+                        priority: 0,
+                        weight: 1,
+                        ..Default::default()
+                    };
+                    tx.execute(
+                        "INSERT INTO model_routes(
+                           id,model_id,source_kind,source_id,upstream_model,enabled,priority,
+                           weight,created_at,updated_at
+                         ) VALUES(?1,?2,?3,?4,?5,1,0,1,?6,?6)",
+                        params![
+                            route_id(&id, &route),
+                            id,
+                            route.source_kind,
+                            route.source_id,
+                            route.upstream_model,
+                            now,
+                        ],
+                    )?;
+                    result.created_models.push(item.slug.clone());
+                    result.ensured_routes.push(item.slug.clone());
+                }
+                Some((
+                    id,
+                    canonical_slug,
+                    display_name,
+                    description,
+                    origin,
+                    enabled,
+                    supported_in_api,
+                    visibility,
+                    sort_order,
+                    context_window,
+                    max_context_window,
+                    default_reasoning_effort,
+                    capabilities_json,
+                    user_edited,
+                )) => {
+                    if user_edited {
+                        if enabled && sort_order != item.sort_order {
+                            let has_default_pool_route: i64 = tx.query_row(
+                                "SELECT COUNT(*) FROM model_routes
+                                 WHERE model_id=?1 AND source_kind='account_pool' AND source_id='default'",
+                                [id.as_str()],
+                                |row| row.get(0),
+                            )?;
+                            if origin == "builtin" || has_default_pool_route > 0 {
+                                tx.execute(
+                                    "UPDATE models SET sort_order=?2,updated_at=?3 WHERE id=?1",
+                                    params![id, item.sort_order, now],
+                                )?;
+                            }
+                        }
+                        continue;
+                    }
+                    let route_state = tx
+                        .query_row(
+                            "SELECT id,enabled FROM model_routes
+                             WHERE model_id=?1 AND source_kind='account_pool'
+                               AND source_id='default' AND upstream_model=?2 COLLATE NOCASE",
+                            params![id, canonical_slug],
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+                        )
+                        .optional()?;
+                    match route_state {
+                        None => {
+                            let route = ModelRouteV2 {
+                                source_kind: "account_pool".to_string(),
+                                source_id: "default".to_string(),
+                                upstream_model: canonical_slug.clone(),
+                                enabled: true,
+                                priority: 0,
+                                weight: 1,
+                                ..Default::default()
+                            };
+                            tx.execute(
+                                "INSERT OR IGNORE INTO model_routes(
+                                   id,model_id,source_kind,source_id,upstream_model,enabled,
+                                   priority,weight,created_at,updated_at
+                                 ) VALUES(?1,?2,?3,?4,?5,1,0,1,?6,?6)",
+                                params![
+                                    route_id(&id, &route),
+                                    id,
+                                    route.source_kind,
+                                    route.source_id,
+                                    route.upstream_model,
+                                    now,
+                                ],
+                            )?;
+                            result.ensured_routes.push(canonical_slug.clone());
+                        }
+                        Some((existing_route_id, false)) => {
+                            tx.execute(
+                                "UPDATE model_routes SET enabled=1,updated_at=?2 WHERE id=?1",
+                                params![existing_route_id, now],
+                            )?;
+                            result.ensured_routes.push(canonical_slug.clone());
+                        }
+                        Some((_, true)) => {}
+                    }
+
+                    if origin == "custom" {
+                        let new_caps_json = serde_json::to_string(&item.capabilities)
+                            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+                        let caps_changed = serde_json::from_str::<Value>(&capabilities_json)
+                            .ok()
+                            .is_none_or(|parsed| parsed != item.capabilities);
+                        let changed = !enabled
+                            || supported_in_api != item.supported_in_api
+                            || visibility != item.visibility
+                            || sort_order != item.sort_order
+                            || display_name != item.display_name
+                            || description != item.description
+                            || context_window != item.context_window
+                            || max_context_window != item.max_context_window
+                            || default_reasoning_effort != item.default_reasoning_effort
+                            || caps_changed;
+                        if changed {
+                            tx.execute(
+                                "UPDATE models
+                                 SET display_name=?2,description=?3,enabled=1,supported_in_api=?4,
+                                     visibility=?5,sort_order=?6,context_window=?7,
+                                     max_context_window=?8,default_reasoning_effort=?9,
+                                     capabilities_json=?10,updated_at=?11
+                                 WHERE id=?1 AND user_edited=0",
+                                params![
+                                    id,
+                                    item.display_name,
+                                    item.description,
+                                    item.supported_in_api,
+                                    item.visibility,
+                                    item.sort_order,
+                                    item.context_window,
+                                    item.max_context_window,
+                                    item.default_reasoning_effort,
+                                    new_caps_json,
+                                    now,
+                                ],
+                            )?;
+                            if !enabled {
+                                result.reenabled_models.push(canonical_slug);
+                            }
+                        }
+                    } else {
+                        let changed = !enabled
+                            || supported_in_api != item.supported_in_api
+                            || visibility != item.visibility
+                            || sort_order != item.sort_order;
+                        if changed {
+                            tx.execute(
+                                "UPDATE models
+                                 SET enabled=1,supported_in_api=?2,visibility=?3,sort_order=?4,
+                                     updated_at=?5
+                                 WHERE id=?1 AND user_edited=0",
+                                params![
+                                    id,
+                                    item.supported_in_api,
+                                    item.visibility,
+                                    item.sort_order,
+                                    now,
+                                ],
+                            )?;
+                            if !enabled {
+                                result.reenabled_models.push(canonical_slug);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if retire_missing {
+            let mut stmt = self.conn.prepare(
+                "SELECT id,slug,origin,user_edited,capabilities_json
+                 FROM models
+                 WHERE enabled=1 OR supported_in_api=1 OR visibility='list'
+                 ORDER BY sort_order ASC,slug ASC",
+            )?;
+            let active_rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)? != 0,
+                        row.get::<_, String>(4)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>>>()?;
+            drop(stmt);
+
+            for (id, slug, origin, user_edited, capabilities_json) in active_rows {
+                if present_slugs.contains(&slug.to_ascii_lowercase()) {
+                    continue;
+                }
+                let supports_text = serde_json::from_str::<Value>(&capabilities_json)
+                    .ok()
+                    .and_then(|caps| {
+                        caps.get("supports_text_generation")
+                            .or_else(|| caps.get("supportsTextGeneration"))
+                            .and_then(Value::as_bool)
+                    })
+                    .unwrap_or(true);
+                if !supports_text {
+                    continue;
+                }
+                let has_other_enabled_route: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM model_routes
+                     WHERE model_id=?1 AND enabled=1
+                       AND NOT (source_kind='account_pool' AND source_id='default')",
+                    [id.as_str()],
+                    |row| row.get(0),
+                )?;
+                if has_other_enabled_route > 0 {
+                    continue;
+                }
+                let has_default_pool_route: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM model_routes
+                     WHERE model_id=?1 AND source_kind='account_pool' AND source_id='default'",
+                    [id.as_str()],
+                    |row| row.get(0),
+                )?;
+                if origin != "builtin" && has_default_pool_route == 0 {
+                    continue;
+                }
+                tx.execute(
+                    "UPDATE models
+                     SET enabled=0,supported_in_api=0,visibility='hide',updated_at=?2
+                     WHERE id=?1",
+                    params![id, now],
+                )?;
+                tx.execute(
+                    "UPDATE model_routes
+                     SET enabled=0,updated_at=?2
+                     WHERE model_id=?1 AND source_kind='account_pool' AND source_id='default'
+                       AND enabled=1",
+                    params![id, now],
+                )?;
+                result.retired_models.push(slug);
+            }
+        }
+
+        tx.commit()?;
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -2764,7 +3345,8 @@ mod tests {
         assert!(!raw.contains("base_instructions"));
         assert!(!raw.contains("instructions_template"));
         assert!(!raw.contains("instructions_text"));
-        let digest = Sha256::digest(serde_json::to_vec(&value["models"]).expect("serialize models"));
+        let digest =
+            Sha256::digest(serde_json::to_vec(&value["models"]).expect("serialize models"));
         let computed = digest
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -2780,8 +3362,8 @@ mod tests {
         let storage = storage();
         let all = storage.list_managed_models_v2(true).expect("list all");
         let visible = storage.list_api_models_v2().expect("list visible");
-        assert_eq!(all.len(), 13);
-        assert_eq!(visible.len(), 12);
+        assert_eq!(all.len(), 16);
+        assert_eq!(visible.len(), 15);
         assert_eq!(
             all.iter()
                 .filter(|model| model.price.price_status == "missing")
@@ -2970,8 +3552,14 @@ mod tests {
         assert_eq!(gpt6_sol.price_tiers.len(), 2);
         assert_eq!(gpt6_sol.price_tiers[1].min_input_tokens, 272_001);
         assert_eq!(gpt6_sol.price_tiers[1].input_microusd_per_1m, 4_000_000);
-        assert_eq!(gpt6_sol.price_tiers[1].cached_input_microusd_per_1m, 400_000);
-        assert_eq!(gpt6_sol.price_tiers[1].cache_write_microusd_per_1m, Some(5_000_000));
+        assert_eq!(
+            gpt6_sol.price_tiers[1].cached_input_microusd_per_1m,
+            400_000
+        );
+        assert_eq!(
+            gpt6_sol.price_tiers[1].cache_write_microusd_per_1m,
+            Some(5_000_000)
+        );
         assert_eq!(gpt6_sol.price_tiers[1].output_microusd_per_1m, 15_000_000);
         assert_eq!(gpt6_sol.routes.len(), 1);
         assert_eq!(gpt6_sol.routes[0].source_kind, "account_pool");
@@ -2996,9 +3584,15 @@ mod tests {
         ] {
             let model = all.iter().find(|model| model.slug == slug).unwrap();
             assert_eq!(model.builtin_revision, Some(10));
-            assert_eq!(model.default_reasoning_effort.as_deref(), Some(default_effort));
+            assert_eq!(
+                model.default_reasoning_effort.as_deref(),
+                Some(default_effort)
+            );
             assert_eq!(model.capabilities["reasoning_efforts"], reasoning);
-            assert_eq!(model.capabilities["service_tiers"], serde_json::json!(["priority"]));
+            assert_eq!(
+                model.capabilities["service_tiers"],
+                serde_json::json!(["priority"])
+            );
             assert_eq!(model.context_window, Some(272_000));
             assert_eq!(model.max_context_window, Some(872_000));
             assert_eq!(model.capabilities["api_context_window"], 1_050_000);
@@ -3068,8 +3662,17 @@ mod tests {
     fn gpt6_sol_migration_seeds_upgraded_database_and_is_idempotent() {
         let storage = storage();
         // Recreate a revision-eight database before replaying the historical migration.
-        for slug in [GPT61_SOL_SLUG, GPT6_LUNA_SLUG] {
-            storage.conn.execute("DELETE FROM models WHERE slug=?1", [slug]).unwrap();
+        for slug in [
+            GPT61_SOL_SLUG,
+            GPT6_LUNA_SLUG,
+            GPT62_SOL_SLUG,
+            GPT62_ASTRA_SLUG,
+            GPT61_TERRA_SLUG,
+        ] {
+            storage
+                .conn
+                .execute("DELETE FROM models WHERE slug=?1", [slug])
+                .unwrap();
         }
         storage
             .conn
@@ -3138,9 +3741,22 @@ mod tests {
     #[test]
     fn gpt6_new_models_migration_seeds_upgrades_and_is_idempotent() {
         let storage = storage();
-        let old_sol_id = storage.get_managed_model_v2(GPT6_SOL_SLUG).unwrap().unwrap().id;
-        for slug in [GPT61_SOL_SLUG, GPT6_LUNA_SLUG] {
-            storage.conn.execute("DELETE FROM models WHERE slug=?1", [slug]).unwrap();
+        let old_sol_id = storage
+            .get_managed_model_v2(GPT6_SOL_SLUG)
+            .unwrap()
+            .unwrap()
+            .id;
+        for slug in [
+            GPT61_SOL_SLUG,
+            GPT6_LUNA_SLUG,
+            GPT62_SOL_SLUG,
+            GPT62_ASTRA_SLUG,
+            GPT61_TERRA_SLUG,
+        ] {
+            storage
+                .conn
+                .execute("DELETE FROM models WHERE slug=?1", [slug])
+                .unwrap();
         }
         storage
             .conn
@@ -3158,22 +3774,29 @@ mod tests {
             .unwrap();
         storage.applied_migrations.borrow_mut().take();
 
-        storage.apply_model_catalog_gpt6_new_models_migration().unwrap();
-        let models = [GPT61_SOL_SLUG, GPT6_LUNA_SLUG].map(|slug| {
-            storage.get_managed_model_v2(slug).unwrap().unwrap()
-        });
+        storage
+            .apply_model_catalog_gpt6_new_models_migration()
+            .unwrap();
+        let models = [GPT61_SOL_SLUG, GPT6_LUNA_SLUG]
+            .map(|slug| storage.get_managed_model_v2(slug).unwrap().unwrap());
         let fixture = gpt6_new_models_migration_fixture();
         for (model, seed) in models.iter().zip(&fixture.models) {
             assert!(seeded_builtin_matches(model, fixture.revision, seed));
         }
-        storage.apply_model_catalog_gpt6_new_models_migration().unwrap();
+        storage
+            .apply_model_catalog_gpt6_new_models_migration()
+            .unwrap();
         for (slug, first) in [GPT61_SOL_SLUG, GPT6_LUNA_SLUG].into_iter().zip(models) {
             let replayed = storage.get_managed_model_v2(slug).unwrap().unwrap();
             assert_eq!(replayed.id, first.id);
             assert_eq!(replayed.updated_at, first.updated_at);
         }
         assert_eq!(
-            storage.get_managed_model_v2(GPT6_SOL_SLUG).unwrap().unwrap().id,
+            storage
+                .get_managed_model_v2(GPT6_SOL_SLUG)
+                .unwrap()
+                .unwrap()
+                .id,
             old_sol_id
         );
         let revision: String = storage
@@ -3196,7 +3819,10 @@ mod tests {
             .unwrap();
         let mut candidate = custom_creation_candidate("GpT-6.1-SoL");
         candidate.model.display_name = "My Sol Route".to_string();
-        candidate.model.routes.push(account_route_ensure(GPT61_SOL_SLUG, "private-upstream").route);
+        candidate
+            .model
+            .routes
+            .push(account_route_ensure(GPT61_SOL_SLUG, "private-upstream").route);
         let custom = storage.upsert_managed_model_v2(&candidate).unwrap();
         storage
             .conn
@@ -3214,14 +3840,25 @@ mod tests {
             .unwrap();
         storage.applied_migrations.borrow_mut().take();
 
-        storage.apply_model_catalog_gpt6_new_models_migration().unwrap();
-        let preserved_custom = storage.get_managed_model_v2(GPT61_SOL_SLUG).unwrap().unwrap();
+        storage
+            .apply_model_catalog_gpt6_new_models_migration()
+            .unwrap();
+        let preserved_custom = storage
+            .get_managed_model_v2(GPT61_SOL_SLUG)
+            .unwrap()
+            .unwrap();
         assert_eq!(preserved_custom.id, custom.id);
         assert_eq!(preserved_custom.origin, "custom");
         assert_eq!(preserved_custom.display_name, "My Sol Route");
         assert_eq!(preserved_custom.price.price_status, "missing");
-        assert_eq!(preserved_custom.routes[0].upstream_model, "private-upstream");
-        let preserved_luna = storage.get_managed_model_v2(GPT6_LUNA_SLUG).unwrap().unwrap();
+        assert_eq!(
+            preserved_custom.routes[0].upstream_model,
+            "private-upstream"
+        );
+        let preserved_luna = storage
+            .get_managed_model_v2(GPT6_LUNA_SLUG)
+            .unwrap()
+            .unwrap();
         assert_eq!(preserved_luna.display_name, "My Luna");
         assert!(preserved_luna.user_edited);
         assert_eq!(preserved_luna.updated_at, 77);
@@ -3392,7 +4029,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(revision, "10");
+        assert_eq!(revision, "11");
     }
 
     #[test]
@@ -4143,7 +4780,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(revision, "10");
+        assert_eq!(revision, "11");
         let source_sha256: String = storage
             .conn
             .query_row(
@@ -4192,13 +4829,16 @@ mod tests {
         storage
             .conn
             .execute(
-                "DELETE FROM models WHERE slug IN (?1,?2,?3,?4,?5)",
+                "DELETE FROM models WHERE slug IN (?1,?2,?3,?4,?5,?6,?7,?8)",
                 params![
                     GPT6_ASTRA_SLUG,
                     "gpt-5.6-sol",
                     GPT6_SOL_SLUG,
                     GPT61_SOL_SLUG,
-                    GPT6_LUNA_SLUG
+                    GPT6_LUNA_SLUG,
+                    GPT62_SOL_SLUG,
+                    GPT62_ASTRA_SLUG,
+                    GPT61_TERRA_SLUG
                 ],
             )
             .unwrap();
@@ -5155,5 +5795,190 @@ mod tests {
                 .len(),
             10
         );
+    }
+
+    #[test]
+    fn gpt62_models_fixture_is_frozen_and_omits_prompt_fields() {
+        let raw = include_str!("../../seeds/model_catalog_gpt62_astra_sol_gpt61_terra_v11.json");
+        let value: Value = serde_json::from_str(raw).expect("parse v11 fixture");
+        assert_eq!(value["revision"], GPT62_MODELS_MIGRATION_REVISION);
+        assert_eq!(value["models"].as_array().map(Vec::len), Some(3));
+        assert!(!raw.contains("base_instructions"));
+        assert!(!raw.contains("instructions_template"));
+        assert!(!raw.contains("instructions_text"));
+        let digest =
+            Sha256::digest(serde_json::to_vec(&value["models"]).expect("serialize v11 models"));
+        let computed = digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(value["source_sha256"], computed);
+        let fixture = gpt62_models_migration_fixture();
+        assert_eq!(fixture.models[0].slug, GPT62_SOL_SLUG);
+        assert_eq!(fixture.models[1].slug, GPT62_ASTRA_SLUG);
+        assert_eq!(fixture.models[2].slug, GPT61_TERRA_SLUG);
+    }
+
+    #[test]
+    fn gpt62_models_migration_seeds_upgrades_and_is_idempotent() {
+        let storage = storage();
+        for slug in [GPT62_SOL_SLUG, GPT62_ASTRA_SLUG, GPT61_TERRA_SLUG] {
+            storage
+                .conn
+                .execute("DELETE FROM models WHERE slug=?1", [slug])
+                .unwrap();
+        }
+        storage
+            .conn
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [GPT62_MODELS_MIGRATION_VERSION],
+            )
+            .unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE model_catalog_v2_meta SET value='10' WHERE key='builtin_revision'",
+                [],
+            )
+            .unwrap();
+        storage.applied_migrations.borrow_mut().take();
+
+        storage
+            .apply_model_catalog_gpt62_models_migration()
+            .unwrap();
+        let fixture = gpt62_models_migration_fixture();
+        for seed in &fixture.models {
+            let model = storage.get_managed_model_v2(&seed.slug).unwrap().unwrap();
+            assert!(seeded_builtin_matches(&model, fixture.revision, seed));
+        }
+        storage
+            .apply_model_catalog_gpt62_models_migration()
+            .unwrap();
+        let revision: String = storage
+            .conn
+            .query_row(
+                "SELECT value FROM model_catalog_v2_meta WHERE key='builtin_revision'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(revision, "11");
+    }
+
+    #[test]
+    fn official_catalog_reconcile_adds_new_models_and_retires_old_ones_safely() {
+        let storage = storage();
+        let mut custom_claude = custom_creation_candidate("claude-sonnet-5");
+        custom_claude.model.provider = Some("anthropic".to_string());
+        custom_claude.model.routes.push(ModelRouteV2 {
+            source_kind: "account_pool".to_string(),
+            source_id: "claude".to_string(),
+            upstream_model: "claude-sonnet-5".to_string(),
+            enabled: true,
+            priority: 0,
+            weight: 1,
+            ..Default::default()
+        });
+        storage.upsert_managed_model_v2(&custom_claude).unwrap();
+
+        storage
+            .conn
+            .execute(
+                "UPDATE models SET user_edited=1,sort_order=1 WHERE slug='gpt-6-astra'",
+                [],
+            )
+            .unwrap();
+
+        let mut edited_openai_custom = custom_creation_candidate("gpt-5.3-custom");
+        edited_openai_custom.model.routes.push(ModelRouteV2 {
+            source_kind: "account_pool".to_string(),
+            source_id: "default".to_string(),
+            upstream_model: "gpt-5.3-custom".to_string(),
+            enabled: true,
+            priority: 0,
+            weight: 1,
+            ..Default::default()
+        });
+        storage.upsert_managed_model_v2(&edited_openai_custom).unwrap();
+
+        let draft_custom = custom_creation_candidate("draft-local");
+        storage.upsert_managed_model_v2(&draft_custom).unwrap();
+
+        let present = vec![
+            OfficialCatalogModelSyncV2 {
+                slug: "gpt-6.2-sol".to_string(),
+                display_name: "GPT-6.2-Sol".to_string(),
+                description: Some("Fast model".to_string()),
+                supported_in_api: true,
+                visibility: "list".to_string(),
+                sort_order: 1,
+                context_window: Some(500_000),
+                max_context_window: Some(872_000),
+                default_reasoning_effort: Some("low".to_string()),
+                capabilities: serde_json::json!({"supports_text_generation": true}),
+            },
+            OfficialCatalogModelSyncV2 {
+                slug: "gpt-6.3-nova".to_string(),
+                display_name: "GPT-6.3-Nova".to_string(),
+                description: Some("Discovered model".to_string()),
+                supported_in_api: true,
+                visibility: "list".to_string(),
+                sort_order: 2,
+                context_window: Some(500_000),
+                max_context_window: Some(872_000),
+                default_reasoning_effort: Some("medium".to_string()),
+                capabilities: serde_json::json!({"supports_text_generation": true, "service_tiers": ["priority"]}),
+            },
+            OfficialCatalogModelSyncV2 {
+                slug: "gpt-6-astra".to_string(),
+                display_name: "GPT-6-Astra".to_string(),
+                description: Some("Flagship".to_string()),
+                supported_in_api: true,
+                visibility: "list".to_string(),
+                sort_order: 6,
+                context_window: Some(272_000),
+                max_context_window: Some(872_000),
+                default_reasoning_effort: Some("low".to_string()),
+                capabilities: serde_json::json!({"supports_text_generation": true}),
+            },
+        ];
+
+        let result = storage
+            .reconcile_official_codex_catalog_v2(&present, true)
+            .expect("reconcile catalog");
+        assert_eq!(result.created_models, ["gpt-6.3-nova"]);
+        assert!(result.retired_models.contains(&"gpt-5.4".to_string()));
+        assert!(result.retired_models.contains(&"gpt-5.5".to_string()));
+        assert!(result.retired_models.contains(&"gpt-5.3-custom".to_string()));
+        assert!(!result.retired_models.contains(&"draft-local".to_string()));
+        assert!(!result.retired_models.contains(&"gpt-image-2".to_string()));
+        assert!(!result.retired_models.contains(&"claude-sonnet-5".to_string()));
+
+        let edited_astra = storage.get_managed_model_v2("gpt-6-astra").unwrap().unwrap();
+        assert!(edited_astra.user_edited);
+        assert_eq!(edited_astra.sort_order, 6);
+
+        let discovered = storage.get_managed_model_v2("gpt-6.3-nova").unwrap().unwrap();
+        assert_eq!(discovered.origin, "custom");
+        assert!(!discovered.user_edited);
+        assert!(discovered.enabled);
+        assert_eq!(discovered.routes[0].upstream_model, "gpt-6.3-nova");
+
+        let retired = storage.get_managed_model_v2("gpt-5.4").unwrap().unwrap();
+        assert!(!retired.enabled);
+        assert!(!retired.supported_in_api);
+        assert_eq!(retired.visibility, "hide");
+        assert!(!retired.routes[0].enabled);
+
+        let retired_custom = storage.get_managed_model_v2("gpt-5.3-custom").unwrap().unwrap();
+        assert!(!retired_custom.enabled);
+        assert!(!retired_custom.supported_in_api);
+        assert_eq!(retired_custom.visibility, "hide");
+        assert!(!retired_custom.routes[0].enabled);
+
+        assert!(storage.get_managed_model_v2("draft-local").unwrap().unwrap().enabled);
+        assert!(storage.get_managed_model_v2("gpt-image-2").unwrap().unwrap().enabled);
+        assert!(storage.get_managed_model_v2("claude-sonnet-5").unwrap().unwrap().enabled);
     }
 }

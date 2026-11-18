@@ -4,6 +4,32 @@ use super::{
     trace_queue_capacity,
 };
 
+#[test]
+fn messages_ingress_logs_only_safe_metadata_and_distinguishes_omitted_stream() {
+    let payload = serde_json::json!({"stream":false,"max_tokens":8192,
+        "messages":[{"content":"private conversation"}],"model":"private model"});
+    let line = super::messages_ingress_line(
+        "trc_test",
+        Some(&payload),
+        Some("compaction"),
+        Some("auto"),
+        Some("private session"),
+    );
+    assert!(line
+        .contains("client_stream=false max_tokens=8192 request_class=compaction compaction=auto"));
+    assert!(!line.contains("private"));
+    let missing = super::messages_ingress_line(
+        "trc_test",
+        None,
+        Some("secret\nheader"),
+        Some("secret"),
+        None,
+    );
+    assert!(missing.contains("client_stream=omitted"));
+    assert!(missing.contains("request_class=- compaction=- session_fp=-"));
+    assert!(!missing.contains("secret"));
+}
+
 /// 函数 `has_error_text_ignores_empty_and_dash`
 ///
 /// 作者: gaohongshun

@@ -424,6 +424,56 @@ fn normalize_codex_backend_service_tier(path: &str, obj: &mut Map<String, Value>
     normalize_service_tier(path, obj)
 }
 
+fn is_unsupported_codex_backend_effort(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    trimmed.eq_ignore_ascii_case("none") || trimmed.eq_ignore_ascii_case("minimal")
+}
+
+fn normalize_codex_backend_reasoning_effort(path: &str, obj: &mut Map<String, Value>) -> bool {
+    if !is_responses_path(path) {
+        return false;
+    }
+    let mut changed = false;
+    if let Some(effort_val) = obj
+        .get_mut("reasoning")
+        .and_then(Value::as_object_mut)
+        .and_then(|reasoning| reasoning.get_mut("effort"))
+    {
+        if effort_val
+            .as_str()
+            .is_some_and(is_unsupported_codex_backend_effort)
+        {
+            *effort_val = Value::String("low".to_string());
+            changed = true;
+        }
+    }
+    if obj
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .is_some_and(is_unsupported_codex_backend_effort)
+    {
+        let reasoning = obj
+            .entry("reasoning".to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !reasoning.is_object() {
+            *reasoning = Value::Object(Map::new());
+        }
+        if let Some(reasoning_obj) = reasoning.as_object_mut() {
+            let should_set = reasoning_obj
+                .get("effort")
+                .and_then(Value::as_str)
+                .map_or(true, |existing| {
+                    existing.trim().is_empty() || is_unsupported_codex_backend_effort(existing)
+                });
+            if should_set {
+                reasoning_obj.insert("effort".to_string(), Value::String("low".to_string()));
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 pub(crate) fn normalize_dynamic_tools_to_tools(path: &str, obj: &mut Map<String, Value>) -> bool {
     if !is_responses_path(path) {
         return false;
@@ -597,6 +647,9 @@ pub(crate) fn retain_codex_fields(path: &str, obj: &mut Map<String, Value>) -> V
             "model",
             "instructions",
             "input",
+            "max_output_tokens",
+            "temperature",
+            "top_p",
             "tools",
             "tool_choice",
             "parallel_tool_calls",
@@ -623,6 +676,9 @@ pub(crate) fn apply_codex_http_request_rules(
     let mut result = CodexResponsesRewriteResult::default();
 
     if normalize_codex_backend_service_tier(path, obj) {
+        result.changed = true;
+    }
+    if normalize_codex_backend_reasoning_effort(path, obj) {
         result.changed = true;
     }
     if promote_leading_instruction_messages_to_instructions(path, obj) {

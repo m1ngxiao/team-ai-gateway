@@ -789,3 +789,56 @@ fn single_manual_preferred_account_does_not_advance_balanced_cursor() {
     reload_from_env();
     let _ = std::fs::remove_file(&db_path);
 }
+
+#[test]
+fn quota_aware_strategy_orders_candidates_by_quota_snapshot() {
+    let _guard = crate::test_env_guard();
+    let previous_strategy = std::env::var(ROUTE_STRATEGY_ENV).ok();
+    std::env::set_var(ROUTE_STRATEGY_ENV, "quota_aware");
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    let mut candidates = candidate_list();
+    let snapshot = super::super::quota_aware::QuotaAwareSnapshot::new([
+        (
+            "acc-a".to_string(),
+            super::super::quota_aware::QuotaAwareAccountMetrics {
+                remaining_percent: Some(20.0),
+                recent_tokens: 60_000_000,
+                active_bindings: 12,
+            },
+        ),
+        (
+            "acc-b".to_string(),
+            super::super::quota_aware::QuotaAwareAccountMetrics {
+                remaining_percent: Some(95.0),
+                recent_tokens: 1_000,
+                active_bindings: 2,
+            },
+        ),
+        (
+            "acc-c".to_string(),
+            super::super::quota_aware::QuotaAwareAccountMetrics {
+                remaining_percent: Some(70.0),
+                recent_tokens: 5_000_000,
+                active_bindings: 4,
+            },
+        ),
+    ]);
+
+    let application = apply_route_strategy_with_quota_snapshot(
+        &mut candidates,
+        "gk-quota-aware",
+        Some("gpt-5.3-codex"),
+        Some(&snapshot),
+    );
+    assert_eq!(application.strategy_label, "quota_aware");
+    assert_eq!(account_ids(&candidates)[0], "acc-b");
+
+    if let Some(value) = previous_strategy {
+        std::env::set_var(ROUTE_STRATEGY_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    }
+    reload_from_env();
+}

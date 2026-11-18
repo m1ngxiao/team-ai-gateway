@@ -1,8 +1,8 @@
 use super::{
     clear_candidate_cache_for_tests, collect_gateway_candidates,
-    collect_gateway_candidates_with_low_quota_mode, is_low_quota_snapshot_at,
-    LowQuotaCandidateMode, QuotaGuardConfig, CANDIDATE_CACHE_TTL_ENV, LOW_QUOTA_THRESHOLD_ENV,
-    QUOTA_GUARD_ALLOW_ALL_LOW_FALLBACK_ENV,
+    collect_gateway_candidates_with_low_quota_mode, is_low_quota_snapshot_at, low_quota_recovery,
+    set_quota_guard_config, LowQuotaCandidateMode, QuotaGuardConfig, CANDIDATE_CACHE_TTL_ENV,
+    LOW_QUOTA_THRESHOLD_ENV, QUOTA_GUARD_ALLOW_ALL_LOW_FALLBACK_ENV,
 };
 use crate::account_status::mark_account_unavailable_for_gateway_error;
 use codexmanager_core::storage::{now_ts, Account, Storage, Token, UsageSnapshotRecord};
@@ -49,6 +49,36 @@ fn quota_guard_matches_thresholds_by_window_duration() {
 
     assert!(is_low_quota_snapshot_at(&swapped_windows, config));
     assert!(!is_low_quota_snapshot_at(&long_window_only, config));
+}
+
+#[test]
+fn low_quota_recovery_reports_when_all_guarded_windows_reset() {
+    let _guard = crate::test_env_guard();
+    let previous = set_quota_guard_config(QuotaGuardConfig {
+        enabled: true,
+        primary_min_remaining_percent: 5.0,
+        secondary_min_remaining_percent: 10.0,
+        allow_all_low_quota_fallback: true,
+    });
+    let now = now_ts();
+    let primary_reset = now + 300;
+    let weekly_reset = now + 7 * 24 * 60 * 60;
+    let snapshot = UsageSnapshotRecord {
+        account_id: "acc-low".to_string(),
+        used_percent: Some(98.0),
+        window_minutes: Some(300),
+        resets_at: Some(primary_reset),
+        secondary_used_percent: Some(95.0),
+        secondary_window_minutes: Some(10_080),
+        secondary_resets_at: Some(weekly_reset),
+        credits_json: None,
+        captured_at: now,
+    };
+
+    let recovery = low_quota_recovery(&snapshot, now).expect("account is quota guarded");
+    assert_eq!(recovery.reset_at, Some(weekly_reset));
+
+    set_quota_guard_config(previous);
 }
 
 /// 函数 `candidate_snapshot_cache_reuses_recent_snapshot`

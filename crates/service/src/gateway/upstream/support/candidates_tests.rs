@@ -863,11 +863,18 @@ fn candidate_skip_reason_for_proxy_allows_failover_when_head_account_is_inflight
 fn candidate_skip_reason_for_proxy_respects_capacity_for_the_only_or_last_account() {
     let account = "test-last-candidate-hard-limit";
     let _guard = crate::gateway::acquire_account_inflight(account);
-    assert_eq!(candidate_skip_reason_for_proxy(account, 0, 1, 1, false),
-        Some(CandidateSkipReason::Inflight));
-    assert_eq!(candidate_skip_reason_for_proxy(account, 3, 4, 1, false),
-        Some(CandidateSkipReason::Inflight));
-    assert_eq!(candidate_skip_reason_for_proxy(account, 0, 1, 0, false), None);
+    assert_eq!(
+        candidate_skip_reason_for_proxy(account, 0, 1, 1, false),
+        Some(CandidateSkipReason::Inflight)
+    );
+    assert_eq!(
+        candidate_skip_reason_for_proxy(account, 3, 4, 1, false),
+        Some(CandidateSkipReason::Inflight)
+    );
+    assert_eq!(
+        candidate_skip_reason_for_proxy(account, 0, 1, 0, false),
+        None
+    );
 }
 
 #[test]

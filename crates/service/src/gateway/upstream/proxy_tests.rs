@@ -218,15 +218,14 @@ fn aggregate_candidate_filter_keeps_model_override_candidate_for_client_model() 
         "MiniMax-M3",
     );
 
-    let candidates =
-        resolve_aggregate_candidates_for_route(
-            &storage,
-            "openai_responses",
-            UpstreamProvider::Openai,
-            None,
-            Some("gpt-5.4"),
-        )
-            .expect("resolve aggregate candidates");
+    let candidates = resolve_aggregate_candidates_for_route(
+        &storage,
+        "openai_responses",
+        UpstreamProvider::Openai,
+        None,
+        Some("gpt-5.4"),
+    )
+    .expect("resolve aggregate candidates");
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].id, "agg-minimax");

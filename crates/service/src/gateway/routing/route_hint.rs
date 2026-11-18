@@ -8,8 +8,10 @@ use std::time::{Duration, Instant};
 const ROUTE_STRATEGY_ENV: &str = "CODEXMANAGER_ROUTE_STRATEGY";
 const ROUTE_MODE_ORDERED: u8 = 0;
 const ROUTE_MODE_BALANCED_ROUND_ROBIN: u8 = 1;
+const ROUTE_MODE_QUOTA_AWARE: u8 = 2;
 const ROUTE_STRATEGY_ORDERED: &str = "ordered";
 const ROUTE_STRATEGY_BALANCED: &str = "balanced";
+const ROUTE_STRATEGY_QUOTA_AWARE: &str = "quota_aware";
 const ROUTE_HEALTH_P2C_ENABLED_ENV: &str = "CODEXMANAGER_ROUTE_HEALTH_P2C_ENABLED";
 const ROUTE_HEALTH_P2C_ORDERED_WINDOW_ENV: &str = "CODEXMANAGER_ROUTE_HEALTH_P2C_ORDERED_WINDOW";
 const ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV: &str = "CODEXMANAGER_ROUTE_HEALTH_P2C_BALANCED_WINDOW";
@@ -94,6 +96,15 @@ pub(crate) fn apply_route_strategy(
     let _ = apply_route_strategy_with_source(candidates, key_id, model);
 }
 
+pub(crate) fn apply_route_strategy_with_quota_snapshot(
+    candidates: &mut [(Account, Token)],
+    key_id: &str,
+    model: Option<&str>,
+    quota_snapshot: Option<&super::quota_aware::QuotaAwareSnapshot>,
+) -> RouteStrategyApplication {
+    apply_route_strategy_with_source_and_quota(candidates, key_id, model, quota_snapshot)
+}
+
 pub(crate) struct RouteStrategyApplication {
     pub(crate) strategy_label: &'static str,
     pub(crate) source: &'static str,
@@ -103,6 +114,15 @@ pub(crate) fn apply_route_strategy_with_source(
     candidates: &mut [(Account, Token)],
     key_id: &str,
     model: Option<&str>,
+) -> RouteStrategyApplication {
+    apply_route_strategy_with_source_and_quota(candidates, key_id, model, None)
+}
+
+fn apply_route_strategy_with_source_and_quota(
+    candidates: &mut [(Account, Token)],
+    key_id: &str,
+    model: Option<&str>,
+    quota_snapshot: Option<&super::quota_aware::QuotaAwareSnapshot>,
 ) -> RouteStrategyApplication {
     ensure_route_config_loaded();
     let mode = route_mode();
@@ -122,6 +142,14 @@ pub(crate) fn apply_route_strategy_with_source(
         // than reviving a stale cursor from before the pool contracted.
         if candidates.len() == 1 && mode == ROUTE_MODE_BALANCED_ROUND_ROBIN {
             let _ = next_account_start_index(candidates, key_id, model);
+        }
+        return default_application;
+    }
+
+    if mode == ROUTE_MODE_QUOTA_AWARE {
+        apply_balanced_account_round_robin(candidates, key_id, model);
+        if let Some(snapshot) = quota_snapshot {
+            super::quota_aware::order_candidates(candidates, snapshot);
         }
         return default_application;
     }
@@ -243,10 +271,10 @@ fn route_mode() -> u8 {
 /// # 返回
 /// 返回函数执行结果
 fn route_mode_label(mode: u8) -> &'static str {
-    if mode == ROUTE_MODE_BALANCED_ROUND_ROBIN {
-        ROUTE_STRATEGY_BALANCED
-    } else {
-        ROUTE_STRATEGY_ORDERED
+    match mode {
+        ROUTE_MODE_BALANCED_ROUND_ROBIN => ROUTE_STRATEGY_BALANCED,
+        ROUTE_MODE_QUOTA_AWARE => ROUTE_STRATEGY_QUOTA_AWARE,
+        _ => ROUTE_STRATEGY_ORDERED,
     }
 }
 
@@ -267,8 +295,20 @@ fn parse_route_mode(raw: &str) -> Option<u8> {
         ROUTE_STRATEGY_BALANCED | "round_robin" | "round-robin" | "rr" => {
             Some(ROUTE_MODE_BALANCED_ROUND_ROBIN)
         }
+        ROUTE_STRATEGY_QUOTA_AWARE
+        | "quota-aware"
+        | "quota"
+        | "usage"
+        | "usage_aware"
+        | "least_used"
+        | "least-used" => Some(ROUTE_MODE_QUOTA_AWARE),
         _ => None,
     }
+}
+
+pub(crate) fn quota_aware_route_active() -> bool {
+    ensure_route_config_loaded();
+    route_mode() == ROUTE_MODE_QUOTA_AWARE
 }
 
 /// 函数 `current_route_strategy`
@@ -302,7 +342,7 @@ pub(crate) fn set_route_strategy(strategy: &str) -> Result<&'static str, String>
     ensure_route_config_loaded();
     let Some(mode) = parse_route_mode(strategy) else {
         return Err(
-            "invalid strategy; use ordered or balanced (aliases: round_robin/round-robin/rr)"
+            "invalid strategy; use ordered, balanced, or quota_aware (aliases: round_robin/round-robin/rr, quota-aware, usage_aware)"
                 .to_string(),
         );
     };

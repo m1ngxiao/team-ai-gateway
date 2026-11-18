@@ -122,8 +122,22 @@ pub(crate) fn load_active_gateway_api_key(
     platform_key: &str,
     request_url: &str,
 ) -> Result<codexmanager_core::storage::ApiKey, (u16, String)> {
-    local_validation::load_active_api_key_for_platform_key(storage, platform_key, request_url)
-        .map_err(|err| (err.status_code, err.message))
+    load_active_gateway_api_key_with_options(storage, platform_key, request_url, false)
+}
+
+pub(crate) fn load_active_gateway_api_key_with_options(
+    storage: &codexmanager_core::storage::Storage,
+    platform_key: &str,
+    request_url: &str,
+    skip_quota_check: bool,
+) -> Result<codexmanager_core::storage::ApiKey, (u16, String)> {
+    local_validation::load_active_api_key_for_platform_key_with_options(
+        storage,
+        platform_key,
+        request_url,
+        skip_quota_check,
+    )
+    .map_err(|err| (err.status_code, err.message))
 }
 
 pub(crate) fn load_active_gateway_api_key_by_id(
@@ -131,8 +145,22 @@ pub(crate) fn load_active_gateway_api_key_by_id(
     key_id: &str,
     request_url: &str,
 ) -> Result<codexmanager_core::storage::ApiKey, (u16, String)> {
-    local_validation::load_active_api_key_for_id(storage, key_id, request_url)
-        .map_err(|err| (err.status_code, err.message))
+    load_active_gateway_api_key_by_id_with_options(storage, key_id, request_url, false)
+}
+
+pub(crate) fn load_active_gateway_api_key_by_id_with_options(
+    storage: &codexmanager_core::storage::Storage,
+    key_id: &str,
+    request_url: &str,
+    skip_quota_check: bool,
+) -> Result<codexmanager_core::storage::ApiKey, (u16, String)> {
+    local_validation::load_active_api_key_for_id_with_options(
+        storage,
+        key_id,
+        request_url,
+        skip_quota_check,
+    )
+    .map_err(|err| (err.status_code, err.message))
 }
 
 pub(crate) fn error_message_for_client(
@@ -168,6 +196,10 @@ mod local_count_tokens;
 mod local_models;
 #[path = "request/local_usage.rs"]
 mod local_usage;
+pub(crate) use local_usage::{
+    build_key_quota_response_headers, build_ws_local_usage_reply, is_ws_local_usage_frame,
+    WsLocalUsageReply,
+};
 pub(crate) use local_models::filter_managed_models_for_gateway_key;
 #[path = "routing/dynamic_pool.rs"]
 pub(crate) mod dynamic_pool;
@@ -233,6 +265,7 @@ pub(super) use request_helpers::parse_request_metadata;
 pub(super) use request_helpers::{
     inspect_service_tier_value, is_html_content_type, is_upstream_challenge_response,
     normalize_models_path, parse_request_json_value, parse_request_metadata_from_value,
+    strip_model_context_window_suffix,
     validate_text_input_limit_for_path, validate_text_input_limit_for_value,
 };
 #[cfg(test)]

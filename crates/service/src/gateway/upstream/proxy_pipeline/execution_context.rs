@@ -111,6 +111,10 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         self.key_id
     }
 
+    pub(in super::super) fn storage(&self) -> &Storage {
+        self.storage
+    }
+
     pub(in super::super) fn protocol_type(&self) -> &str {
         self.protocol_type
     }

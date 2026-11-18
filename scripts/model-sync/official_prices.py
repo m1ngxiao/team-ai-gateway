@@ -24,6 +24,8 @@ from urllib.parse import urljoin, urlsplit
 PRICING_URL = "https://developers.openai.com/api/docs/pricing"
 _SLUG = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
 _SHORT_CONTEXT = re.compile(r" \(<[0-9]+K context length\)\Z")
+_HTML_SHORT_LABEL = re.compile(r"Short:\s*≤([0-9]+(?:\.[0-9]+)?)([KM]?) input tokens\Z")
+_HTML_LONG_LABEL = re.compile(r"Long:\s*>([0-9]+(?:\.[0-9]+)?)([KM]?) input tokens\Z")
 
 
 class PricingFormatError(ValueError):
@@ -51,9 +53,25 @@ class _PricingPage(HTMLParser):
         self.standard_rows: list[list[Any]] = []
         self.standard_tables = 0
         self.component_urls: set[str] = set()
+        self.short_thresholds: set[int] = set()
+        self.long_thresholds: set[int] = set()
+
+    @property
+    def context_threshold(self) -> int | None:
+        if len(self.short_thresholds) == 1 and self.short_thresholds == self.long_thresholds:
+            return next(iter(self.short_thresholds)) + 1
+        return None
 
     def handle_starttag(self, tag: str, attributes: list[tuple[str, str | None]]) -> None:
         attrs = dict(attributes)
+        aria_label = attrs.get("aria-label") or ""
+        if aria_label:
+            for pattern, target in ((_HTML_SHORT_LABEL, self.short_thresholds), (_HTML_LONG_LABEL, self.long_thresholds)):
+                match = pattern.fullmatch(aria_label.strip())
+                if match:
+                    amount = Decimal(match.group(1)) * {"": 1, "K": 1000, "M": 1_000_000}[match.group(2)]
+                    if amount > 0 and amount == amount.to_integral_value():
+                        target.add(int(amount))
         if tag != "astro-island" or attrs.get("component-export") != "TextTokenPricingTables":
             return
         component_url = attrs.get("component-url")
@@ -213,6 +231,8 @@ def parse_official_prices(html: str, component_js: str | None = None) -> dict[st
     if page.standard_tables != 1 or not page.standard_rows:
         raise PricingFormatError("Expected exactly one standard text-token pricing table")
     long_prices, threshold = _long_context_prices(component_js) if component_js is not None else ({}, None)
+    if component_js is not None and threshold is None and "shortContextTokens" not in component_js and "longContextTokens" not in component_js:
+        threshold = page.context_threshold
 
     prices: dict[str, dict[str, Any]] = {}
     conflicts: set[str] = set()

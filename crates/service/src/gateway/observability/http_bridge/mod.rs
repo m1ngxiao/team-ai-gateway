@@ -1,5 +1,7 @@
 use tiny_http::Request;
 
+use crate::gateway::anthropic_context_management::AnthropicContextEnrichment;
+use crate::gateway::anthropic_safeguards::SafeguardEvaluator;
 use crate::gateway::upstream::GatewayUpstreamResponse;
 
 mod aggregate;
@@ -97,6 +99,9 @@ pub(super) fn respond_with_upstream(
     trace_id: Option<&str>,
     fallback_model: Option<&str>,
     request_started_at: std::time::Instant,
+    safeguards_evaluator: Option<std::sync::Arc<dyn SafeguardEvaluator>>,
+    context_enrichment: Option<std::sync::Arc<AnthropicContextEnrichment>>,
+    extra_response_headers: &[tiny_http::Header],
 ) -> Result<UpstreamResponseBridgeResult, String> {
     match upstream {
         GatewayUpstreamResponse::Blocking(upstream) => delivery::respond_with_upstream(
@@ -113,6 +118,9 @@ pub(super) fn respond_with_upstream(
             trace_id,
             fallback_model,
             request_started_at,
+            safeguards_evaluator,
+            context_enrichment,
+            extra_response_headers,
         ),
         GatewayUpstreamResponse::Stream(upstream) => delivery::respond_with_stream_upstream(
             request,
@@ -128,6 +136,9 @@ pub(super) fn respond_with_upstream(
             trace_id,
             fallback_model,
             request_started_at,
+            safeguards_evaluator,
+            context_enrichment,
+            extra_response_headers,
         ),
     }
 }

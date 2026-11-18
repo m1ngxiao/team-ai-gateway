@@ -127,6 +127,48 @@ fn current_codex_hyphenated_headers_are_captured_from_tiny_http_requests() {
     assert_eq!(snapshot.sticky_key_material(), Some("session-current"));
 }
 
+#[test]
+fn anthropic_headers_are_open_and_duplicate_values_are_preserved() {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.append(
+        "anthropic-beta",
+        axum::http::HeaderValue::from_static("safeguards-2025-01-01"),
+    );
+    headers.append(
+        "anthropic-beta",
+        axum::http::HeaderValue::from_static("interleaved-thinking-2025-05-14"),
+    );
+    headers.insert(
+        "anthropic-version",
+        axum::http::HeaderValue::from_static("2023-06-01"),
+    );
+    headers.insert(
+        "x-claude-code-experimental",
+        axum::http::HeaderValue::from_static("keep-me"),
+    );
+
+    let snapshot = IncomingHeaderSnapshot::from_http_headers(&headers);
+    let forwarded = snapshot.passthrough_anthropic_headers();
+    let beta_values = forwarded
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+        .map(|(_, value)| value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        beta_values,
+        vec!["safeguards-2025-01-01", "interleaved-thinking-2025-05-14"]
+    );
+    assert!(forwarded.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("anthropic-version") && value == "2023-06-01"
+    }));
+    assert!(forwarded.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("x-claude-code-experimental") && value == "keep-me"
+    }));
+    assert!(forwarded
+        .iter()
+        .all(|(name, _)| !name.eq_ignore_ascii_case("x-api-key")));
+}
+
 /// 函数 `codex_headers_are_captured_from_http_headers`
 ///
 /// 作者: gaohongshun

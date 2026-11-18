@@ -224,11 +224,24 @@ fn filter_form_urlencoded_body(
 ///
 /// # 返回
 /// 返回函数执行结果
+fn strip_model_context_window_suffix_in_obj(obj: &mut serde_json::Map<String, Value>) -> bool {
+    let Some(raw_model) = obj.get("model").and_then(Value::as_str) else {
+        return false;
+    };
+    let trimmed = raw_model.trim();
+    let stripped = super::strip_model_context_window_suffix(trimmed);
+    if stripped.is_empty() || stripped == raw_model {
+        return false;
+    }
+    obj.insert("model".to_string(), Value::String(stripped.to_string()));
+    true
+}
+
 fn apply_model_forward_rule_if_needed(obj: &mut serde_json::Map<String, Value>) -> bool {
     let Some(current_model) = obj
         .get("model")
         .and_then(Value::as_str)
-        .map(str::trim)
+        .map(super::strip_model_context_window_suffix)
         .filter(|value| !value.is_empty())
     else {
         return false;
@@ -654,6 +667,10 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
 
             // Ultra 由 Codex 客户端负责多代理编排；单个上游请求必须使用 Max。
             // 客户端原始值在进入此重写前已单独采集，供请求日志展示 ultra -> max。
+            if strip_model_context_window_suffix_in_obj(obj) {
+                changed = true;
+            }
+
             if normalize_client_ultra_for_upstream(obj) {
                 changed = true;
             }

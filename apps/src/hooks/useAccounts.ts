@@ -20,7 +20,7 @@ import { getAppErrorMessage } from "@/lib/api/transport";
 import { listenUsageRefreshCompleted } from "@/lib/api/usage-refresh-events";
 import { useDesktopPageActive } from "@/hooks/useDesktopPageActive";
 import { useDeferredDesktopActivation } from "@/hooks/useDeferredDesktopActivation";
-import { useLocalDayRange } from "@/hooks/useLocalDayRange";
+import { useBusinessDayRange } from "@/hooks/useBusinessDayRange";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
 import { useI18n } from "@/lib/i18n/provider";
 import { useAppStore } from "@/lib/store/useAppStore";
@@ -218,7 +218,7 @@ function buildAccountListResultFromSnapshot(accounts: Account[]): AccountListRes
 export function useAccounts() {
   const queryClient = useQueryClient();
   const { t } = useI18n();
-  const localDayRange = useLocalDayRange();
+  const businessDayRange = useBusinessDayRange();
   const serviceStatus = useAppStore((state) => state.serviceStatus);
   const backgroundTasks = useAppStore((state) => state.appSettings.backgroundTasks);
   const { canAccessManagementRpc } = useRuntimeCapabilities();
@@ -255,16 +255,16 @@ export function useAccounts() {
   const startupSnapshotQueryKey = buildStartupSnapshotQueryKey(
     serviceStatus.addr,
     STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
-    localDayRange.dayStartTs,
-    localDayRange.dayEndTs,
+    businessDayRange.dayStartTs,
+    businessDayRange.dayEndTs,
   );
   const startupSnapshotQuery = useQuery({
     queryKey: startupSnapshotQueryKey,
     queryFn: () =>
       serviceClient.getStartupSnapshot({
         requestLogLimit: STARTUP_SNAPSHOT_REQUEST_LOG_LIMIT,
-        dayStartTs: localDayRange.dayStartTs,
-        dayEndTs: localDayRange.dayEndTs,
+        dayStartTs: businessDayRange.dayStartTs,
+        dayEndTs: businessDayRange.dayEndTs,
       }),
     enabled: areAccountQueriesEnabled,
     retry: 1,

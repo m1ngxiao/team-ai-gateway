@@ -2,14 +2,19 @@ use bytes::Bytes;
 use codexmanager_core::storage::{AggregateApi, Storage};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tiny_http::Request;
 
 use super::super::GatewayUpstreamResponse;
 use crate::aggregate_api::{
     AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_AUTH_USERPASS, AGGREGATE_API_PROVIDER_CLAUDE,
     AGGREGATE_API_PROVIDER_CODEX, AGGREGATE_API_PROVIDER_COMPATIBLE, AGGREGATE_API_PROVIDER_GEMINI,
+};
+use crate::gateway::anthropic_safeguards::{
+    available_results, requested_dangerous_tool_use, unavailable_results, SafeguardEvaluator,
+    SafeguardToolUse,
 };
 use crate::gateway::protocol_adapter::adapt_openai_responses_to_anthropic_messages;
 use crate::gateway::request_log::RequestLogUsage;
@@ -316,6 +321,15 @@ fn should_bridge_responses_to_anthropic(candidate: &AggregateApi, path: &str) ->
         && (path == "/v1/responses" || path.starts_with("/v1/responses?"))
 }
 
+fn should_bridge_anthropic_to_responses(candidate: &AggregateApi, path: &str) -> bool {
+    normalize_provider_type_value(candidate.provider_type.as_str()) == AGGREGATE_API_PROVIDER_CODEX
+        && (path == "/v1/messages" || path.starts_with("/v1/messages?"))
+}
+
+fn anthropic_to_responses_action_path(candidate: &AggregateApi) -> String {
+    effective_action_path(candidate, "/v1/responses")
+}
+
 fn responses_to_anthropic_messages_action_path(candidate: &AggregateApi, path: &str) -> String {
     if candidate.action.is_some() {
         return effective_action_path(candidate, path);
@@ -350,6 +364,322 @@ fn replace_query_param(mut url: reqwest::Url, name: &str, value: &str) -> reqwes
         qp.append_pair(name_trimmed, value);
     }
     url
+}
+
+fn add_aggregate_query_auth(
+    mut url: reqwest::Url,
+    auth_config: &AggregateApiAuthConfig,
+    secret: &str,
+) -> Result<reqwest::Url, String> {
+    match auth_config {
+        AggregateApiAuthConfig::ApiKeyQuery { name } => {
+            url = replace_query_param(url, name.as_str(), secret.trim());
+        }
+        AggregateApiAuthConfig::UserPassQueryPair {
+            username_name,
+            password_name,
+        } => {
+            let parsed: UserPassSecret = serde_json::from_str(secret.trim())
+                .map_err(|_| "invalid aggregate api secret".to_string())?;
+            url = replace_query_param(url, username_name.as_str(), parsed.username.as_str());
+            url = replace_query_param(url, password_name.as_str(), parsed.password.as_str());
+        }
+        _ => {}
+    }
+    Ok(url)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn summarize_compact_via_aggregate_candidate(
+    client: &reqwest::blocking::Client,
+    request: &Request,
+    candidate: &AggregateApi,
+    candidate_url: &str,
+    model_for_log: Option<&str>,
+    secret: &str,
+    auth_config: &AggregateApiAuthConfig,
+    injected_headers: &HashSet<String>,
+    user_agent: &str,
+    parent_deadline: Option<Instant>,
+    method: &reqwest::Method,
+    context_management: &crate::gateway::anthropic_context_management::ContextManagementState,
+) -> Result<crate::gateway::anthropic_context_management::CompactionResult, String> {
+    let compact_request = context_management
+        .compact_request()
+        .ok_or_else(|| "compact request is missing".to_string())?;
+    let model = super::super::super::current_claude_compact_summary_model()
+        .or_else(|| candidate.model_override.clone())
+        .or_else(|| model_for_log.map(str::to_string))
+        .ok_or_else(|| "compact summary model is not configured".to_string())?;
+    let body = super::super::context_summarizer::summary_request_body(
+        model.as_str(),
+        super::super::super::anthropic_context_management::summary_prompt(compact_request).as_str(),
+        super::super::super::current_claude_compact_summary_max_tokens(),
+    );
+    let summary_path = anthropic_to_responses_action_path(candidate);
+    let url = build_upstream_url(candidate_url, summary_path.as_str())
+        .map_err(|_| "invalid aggregate api url for compact summary".to_string())?;
+    let url = add_aggregate_query_auth(url, auth_config, secret)?;
+    let summary_deadline = Some(
+        parent_deadline
+            .map(|deadline| deadline.min(Instant::now() + Duration::from_secs(60)))
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(60)),
+    );
+    let mut request = build_aggregate_api_request(
+        client,
+        request,
+        method,
+        url,
+        &body,
+        secret,
+        auth_config,
+        injected_headers,
+        user_agent,
+        summary_deadline,
+        true,
+    )?;
+    request.headers_mut().insert(
+        HeaderName::from_static("user-agent"),
+        HeaderValue::from_str(user_agent)
+            .map_err(|_| "invalid aggregate api user agent".to_string())?,
+    );
+    request
+        .headers_mut()
+        .remove(HeaderName::from_static("anthropic-version"));
+    let response = client.execute(request).map_err(|err| {
+        let kind = if err.is_timeout() {
+            "timeout"
+        } else if err.is_connect() {
+            "connect"
+        } else {
+            "transport"
+        };
+        format!("compact summary upstream error: {kind}")
+    })?;
+    let status = response.status();
+    let body = response
+        .bytes()
+        .map_err(|err| format!("read compact summary response failed: {err}"))?;
+    if status.as_u16() >= 400 {
+        return Err(format!(
+            "compact summary upstream status {}: {}",
+            status.as_u16(),
+            String::from_utf8_lossy(body.as_ref())
+        ));
+    }
+    super::super::context_summarizer::compaction_summary_result_from_response(body.as_ref())
+}
+
+struct AggregateSafeguardsEvaluator {
+    client: reqwest::blocking::Client,
+    url: reqwest::Url,
+    headers: Vec<(String, String)>,
+    auth_config: AggregateApiAuthConfig,
+    secret: String,
+    user_agent: String,
+    classifier_model: String,
+    classifier_context: String,
+    transcript: String,
+}
+
+impl SafeguardEvaluator for AggregateSafeguardsEvaluator {
+    fn evaluate(&self, tool_uses: &[SafeguardToolUse]) -> Value {
+        if tool_uses.is_empty() {
+            return available_results(BTreeMap::new());
+        }
+        match self.evaluate_inner(tool_uses) {
+            Ok(value) => value,
+            Err(err) => {
+                log::warn!(
+                    "event=gateway_aggregate_safeguards_classifier_failed classifier_model={} error={}",
+                    self.classifier_model,
+                    err
+                );
+                unavailable_results(tool_uses, "error")
+            }
+        }
+    }
+}
+
+impl AggregateSafeguardsEvaluator {
+    fn evaluate_inner(&self, tool_uses: &[SafeguardToolUse]) -> Result<Value, String> {
+        if tool_uses.iter().any(|tool_use| tool_use.truncated) {
+            return Ok(unavailable_results(tool_uses, "truncated"));
+        }
+        let calls = tool_uses
+            .iter()
+            .map(|tool_use| {
+                serde_json::json!({
+                    "id": tool_use.id,
+                    "name": tool_use.name,
+                    "input": tool_use.input
+                })
+            })
+            .collect::<Vec<_>>();
+        let prompt = format!(
+            "Agent environment:\n{}\n\nConversation so far, one JSON line per turn:\n{}\n\nTool calls to classify:\n{}",
+            self.classifier_context,
+            self.transcript,
+            serde_json::to_string(&calls).unwrap_or_else(|_| "[]".to_string())
+        );
+        let body = serde_json::to_vec(&serde_json::json!({
+            "model": self.classifier_model,
+            "instructions": super::super::safeguards_classifier::CLASSIFIER_SYSTEM_PROMPT,
+            "input": [{
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}]
+            }],
+            "reasoning": {"effort": "low", "summary": "auto"},
+            "max_output_tokens": 2048,
+            "parallel_tool_calls": false,
+            "store": false,
+            "stream": true,
+            "include": ["reasoning.encrypted_content"]
+        }))
+        .map_err(|err| format!("serialize classifier request failed: {err}"))?;
+        let mut builder = self
+            .client
+            .post(self.url.clone())
+            .timeout(Duration::from_secs(30))
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .body(body);
+        for (name, value) in &self.headers {
+            builder = builder.header(name, value);
+        }
+        builder = builder.header("user-agent", self.user_agent.as_str());
+        builder = match &self.auth_config {
+            AggregateApiAuthConfig::ApiKeyDefaultBearer => builder.bearer_auth(self.secret.trim()),
+            AggregateApiAuthConfig::ApiKeyHeader { name, format } => {
+                let value = if format == "raw" {
+                    self.secret.trim().to_string()
+                } else {
+                    format!("Bearer {}", self.secret.trim())
+                };
+                builder.header(name, value)
+            }
+            AggregateApiAuthConfig::UserPassBasic => {
+                let parsed: UserPassSecret = serde_json::from_str(self.secret.trim())
+                    .map_err(|_| "invalid aggregate api secret".to_string())?;
+                builder.basic_auth(parsed.username, Some(parsed.password))
+            }
+            AggregateApiAuthConfig::UserPassHeaderPair {
+                username_name,
+                password_name,
+            } => {
+                let parsed: UserPassSecret = serde_json::from_str(self.secret.trim())
+                    .map_err(|_| "invalid aggregate api secret".to_string())?;
+                builder
+                    .header(username_name, parsed.username)
+                    .header(password_name, parsed.password)
+            }
+            AggregateApiAuthConfig::ApiKeyQuery { .. }
+            | AggregateApiAuthConfig::UserPassQueryPair { .. } => builder,
+        };
+        let response = builder.send().map_err(|err| {
+            let kind = if err.is_timeout() {
+                "timeout"
+            } else if err.is_connect() {
+                "connect"
+            } else {
+                "transport"
+            };
+            format!("classifier upstream error: {kind}")
+        })?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .map_err(|err| format!("read classifier response failed: {err}"))?;
+        if status.as_u16() >= 400 {
+            return Err(format!(
+                "classifier upstream returned {}: {}",
+                status.as_u16(),
+                String::from_utf8_lossy(body.as_ref())
+            ));
+        }
+        let text = super::super::safeguards_classifier::extract_response_text(body.as_ref())
+            .ok_or_else(|| "classifier response did not contain text".to_string())?;
+        let verdicts = super::super::safeguards_classifier::parse_verdicts(text.as_str())?;
+        let results = tool_uses
+            .iter()
+            .map(|tool_use| {
+                (
+                    tool_use.id.clone(),
+                    verdicts.get(&tool_use.id).cloned().unwrap_or_else(
+                        || serde_json::json!({"type": "unavailable", "reason": "error"}),
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        Ok(available_results(results))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_aggregate_safeguards_evaluator(
+    original_body: &Bytes,
+    request: &Request,
+    candidate: &AggregateApi,
+    candidate_url: &str,
+    model_for_log: Option<&str>,
+    secret: &str,
+    auth_config: &AggregateApiAuthConfig,
+    injected_headers: &HashSet<String>,
+    user_agent: &str,
+) -> Option<Arc<dyn SafeguardEvaluator>> {
+    let request_value = serde_json::from_slice::<Value>(original_body.as_ref()).ok()?;
+    let safeguards = request_value.get("safeguards")?;
+    let dangerous = requested_dangerous_tool_use(safeguards);
+    let classifier_model = super::super::super::current_claude_safeguards_classifier_model()
+        .or_else(|| candidate.model_override.clone())
+        .or_else(|| model_for_log.map(str::to_string))
+        .or_else(|| {
+            request_value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })?;
+    let classifier_context = dangerous
+        .as_ref()
+        .and_then(|value| value.get("classifier_context"))
+        .map(super::super::safeguards_classifier::render_classifier_context)
+        .unwrap_or_else(|| "{}".to_string());
+    let transcript = super::super::safeguards_classifier::render_transcript(&request_value);
+    let path = anthropic_to_responses_action_path(candidate);
+    let url = build_upstream_url(candidate_url, path.as_str()).ok()?;
+    let url = add_aggregate_query_auth(url, auth_config, secret).ok()?;
+    let headers = request
+        .headers()
+        .iter()
+        .filter(|header| {
+            let name = header.field.as_str().to_ascii_lowercase();
+            !matches!(name.as_str(), "anthropic-version" | "anthropic-beta")
+                && !should_skip_forward_header_for_aggregate_request(
+                    header.field.as_str().into(),
+                    injected_headers,
+                    true,
+                )
+        })
+        .filter_map(|header| {
+            let name = header.field.as_str().to_string();
+            let value = header.value.as_str().to_string();
+            (!value.is_empty()).then_some((name, value))
+        })
+        .collect();
+    Some(Arc::new(AggregateSafeguardsEvaluator {
+        client: super::super::super::upstream_client_for_aggregate_api_candidate(
+            candidate.id.as_str(),
+            candidate_url,
+        ),
+        url,
+        headers,
+        auth_config: auth_config.clone(),
+        secret: secret.to_string(),
+        user_agent: user_agent.to_string(),
+        classifier_model,
+        classifier_context,
+        transcript,
+    }))
 }
 
 fn parse_auth_config(
@@ -848,13 +1178,26 @@ fn build_aggregate_api_request(
     {
         builder = builder.timeout(timeout);
     }
+    let preserve_client_anthropic_headers = request
+        .url()
+        .split('?')
+        .next()
+        .is_some_and(|path| path == "/v1/messages");
     let request_headers = request.headers().to_vec();
     for header in &request_headers {
-        if should_skip_forward_header_for_aggregate_request(
-            header.field.as_str().into(),
-            injected_headers,
-            is_stream,
-        ) {
+        let header_name = header.field.as_str();
+        let preserve_header = preserve_client_anthropic_headers
+            && matches!(
+                header_name.to_ascii_lowercase().as_str(),
+                "user-agent" | "accept"
+            );
+        if !preserve_header
+            && should_skip_forward_header_for_aggregate_request(
+                header.field.as_str().into(),
+                injected_headers,
+                is_stream,
+            )
+        {
             continue;
         }
         if let (Ok(name), Ok(value)) = (
@@ -864,7 +1207,7 @@ fn build_aggregate_api_request(
             builder = builder.header(name, value);
         }
     }
-    if is_stream {
+    if is_stream && !preserve_client_anthropic_headers {
         builder = builder.header(
             HeaderName::from_static("accept"),
             HeaderValue::from_static("text/event-stream"),
@@ -934,11 +1277,13 @@ fn build_aggregate_api_request(
     let mut request = builder
         .build()
         .map_err(|err| format!("build aggregate api request failed: {err}"))?;
-    request.headers_mut().insert(
-        HeaderName::from_static("user-agent"),
-        HeaderValue::from_str(user_agent)
-            .map_err(|_| "invalid aggregate api user agent".to_string())?,
-    );
+    if !preserve_client_anthropic_headers {
+        request.headers_mut().insert(
+            HeaderName::from_static("user-agent"),
+            HeaderValue::from_str(user_agent)
+                .map_err(|_| "invalid aggregate api user agent".to_string())?,
+        );
+    }
     Ok(request)
 }
 
@@ -968,10 +1313,15 @@ fn build_anthropic_bridge_aggregate_api_request(
         request_deadline,
         is_stream,
     )?;
-    request.headers_mut().insert(
-        HeaderName::from_static("anthropic-version"),
-        HeaderValue::from_static("2023-06-01"),
-    );
+    if !request
+        .headers()
+        .contains_key(HeaderName::from_static("anthropic-version"))
+    {
+        request.headers_mut().insert(
+            HeaderName::from_static("anthropic-version"),
+            HeaderValue::from_static("2023-06-01"),
+        );
+    }
     if matches!(auth_config, AggregateApiAuthConfig::ApiKeyDefaultBearer) {
         request.headers_mut().insert(
             HeaderName::from_static("x-api-key"),
@@ -1008,7 +1358,9 @@ pub(crate) fn resolve_aggregate_api_rotation_candidates(
         promote_preferred_aggregate_candidate(&mut candidates, api_id);
     }
     if candidates.is_empty() {
-        Err(format!("aggregate api not found for provider {provider_type}"))
+        Err(format!(
+            "aggregate api not found for provider {provider_type}"
+        ))
     } else {
         Ok(candidates)
     }
@@ -1173,13 +1525,18 @@ pub(in super::super) fn proxy_aggregate_request(
         };
 
         let bridge_responses_to_anthropic = should_bridge_responses_to_anthropic(&candidate, path);
+        let bridge_anthropic_to_responses = should_bridge_anthropic_to_responses(&candidate, path);
         let effective_path = if bridge_responses_to_anthropic {
             responses_to_anthropic_messages_action_path(&candidate, path)
+        } else if bridge_anthropic_to_responses {
+            anthropic_to_responses_action_path(&candidate)
         } else {
             effective_action_path(&candidate, path)
         };
         let response_adapter_for_candidate = if bridge_responses_to_anthropic {
             super::super::super::ResponseAdapter::ResponsesFromAnthropicMessages
+        } else if bridge_anthropic_to_responses {
+            super::super::super::ResponseAdapter::AnthropicMessagesFromResponses
         } else {
             response_adapter
         };
@@ -1204,6 +1561,25 @@ pub(in super::super) fn proxy_aggregate_request(
                     continue;
                 }
             };
+        let safeguards_evaluator = if bridge_anthropic_to_responses
+            && super::super::super::request_has_safeguards(body.as_ref())
+        {
+            request.as_ref().and_then(|request| {
+                build_aggregate_safeguards_evaluator(
+                    body,
+                    request,
+                    &candidate,
+                    candidate_url.as_str(),
+                    model_for_log,
+                    secret.as_str(),
+                    &auth_config,
+                    &injected_headers,
+                    candidate_user_agent.as_str(),
+                )
+            })
+        } else {
+            None
+        };
 
         let base_upstream_url =
             match build_upstream_url(candidate_url.as_str(), effective_path.as_str()) {
@@ -1228,12 +1604,27 @@ pub(in super::super) fn proxy_aggregate_request(
             candidate.supplier_name.as_deref(),
             path,
         );
-        let upstream_body = if bridge_responses_to_anthropic {
+        let (mut upstream_body, mut context_management) = if bridge_responses_to_anthropic {
             match adapt_openai_responses_to_anthropic_messages(
                 candidate_body.as_ref(),
                 candidate.model_override.as_deref(),
             ) {
-                Ok(body) => Bytes::from(body),
+                Ok(body) => (Bytes::from(body), Default::default()),
+                Err(err) => {
+                    last_attempt_url = Some(base_upstream_url.to_string());
+                    last_attempt_supplier_name = candidate_supplier_name.clone();
+                    last_attempt_error = Some(err);
+                    last_failure_status = 502;
+                    continue;
+                }
+            }
+        } else if bridge_anthropic_to_responses {
+            match super::super::super::adapt_request_for_protocol(
+                crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE,
+                path,
+                candidate_body.to_vec(),
+            ) {
+                Ok(adapted) => (Bytes::from(adapted.body), adapted.context_management),
                 Err(err) => {
                     last_attempt_url = Some(base_upstream_url.to_string());
                     last_attempt_supplier_name = candidate_supplier_name.clone();
@@ -1243,8 +1634,55 @@ pub(in super::super) fn proxy_aggregate_request(
                 }
             }
         } else {
-            candidate_body
+            (candidate_body, Default::default())
         };
+        if context_management.needs_compaction_summary() {
+            match summarize_compact_via_aggregate_candidate(
+                &client,
+                request.as_ref().ok_or_else(|| {
+                    "aggregate api request consumed before context summary".to_string()
+                })?,
+                &candidate,
+                candidate_url.as_str(),
+                model_for_log,
+                &secret,
+                &auth_config,
+                &injected_headers,
+                candidate_user_agent.as_str(),
+                request_deadline,
+                method,
+                &context_management,
+            ) {
+                Ok(result) => {
+                    let summary = result.summary.clone();
+                    context_management.record_compaction(result);
+                    upstream_body = Bytes::from(
+                        super::super::super::anthropic_context_management::apply_summary_to_responses_body(
+                            upstream_body.as_ref(),
+                            summary.as_str(),
+                        ),
+                    );
+                }
+                Err(err) => {
+                    log::warn!(
+                        "event=gateway_claude_compact_summary_failed trace_id={} aggregate_api_id={} error={}",
+                        trace_id,
+                        candidate.id,
+                        err
+                    );
+                    context_management.record_compaction_error(
+                        if err.contains("model is not configured") {
+                            "summary_model_not_configured"
+                        } else {
+                            "summary_call_failed"
+                        },
+                    );
+                }
+            }
+        }
+        let context_enrichment = context_management
+            .response_enrichment()
+            .map(std::sync::Arc::new);
 
         let mut succeeded = false;
         for attempt_idx in 0..=AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL {
@@ -1333,7 +1771,7 @@ pub(in super::super) fn proxy_aggregate_request(
             let request_ref = request.as_ref().ok_or_else(|| {
                 "aggregate api request already consumed before upstream attempt".to_string()
             })?;
-            let upstream_request = if bridge_responses_to_anthropic {
+            let mut upstream_request = if bridge_responses_to_anthropic {
                 build_anthropic_bridge_aggregate_api_request(
                     &client,
                     request_ref,
@@ -1362,6 +1800,19 @@ pub(in super::super) fn proxy_aggregate_request(
                     is_stream,
                 )?
             };
+            if bridge_anthropic_to_responses {
+                upstream_request.headers_mut().insert(
+                    HeaderName::from_static("user-agent"),
+                    HeaderValue::from_str(candidate_user_agent.as_str())
+                        .map_err(|_| "invalid aggregate api user agent".to_string())?,
+                );
+                upstream_request
+                    .headers_mut()
+                    .remove(HeaderName::from_static("anthropic-version"));
+                upstream_request
+                    .headers_mut()
+                    .remove(HeaderName::from_static("anthropic-beta"));
+            }
 
             let attempt_started_at = Instant::now();
             let upstream = match client.execute(upstream_request) {
@@ -1428,6 +1879,8 @@ pub(in super::super) fn proxy_aggregate_request(
             let inflight_guard = super::super::super::acquire_account_inflight(key_id);
             let passthrough_sse_protocol =
                 resolve_passthrough_sse_protocol(path, response_adapter_for_candidate);
+            let quota_headers =
+                super::super::super::local_usage::build_key_quota_response_headers(storage, key_id);
             let request = request.take().ok_or_else(|| {
                 "aggregate api request already consumed before bridge".to_string()
             })?;
@@ -1445,6 +1898,9 @@ pub(in super::super) fn proxy_aggregate_request(
                 Some(trace_id),
                 None,
                 started_at,
+                safeguards_evaluator,
+                context_enrichment,
+                &quota_headers,
             )?;
             let bridge_output_text_len = bridge
                 .usage

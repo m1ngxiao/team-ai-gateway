@@ -184,16 +184,21 @@ pub(super) fn cooldown_reason_for_status(status: u16) -> CooldownReason {
 /// # 返回
 /// 返回函数执行结果
 pub(super) fn is_account_in_cooldown(account_id: &str) -> bool {
+    account_cooldown_remaining_secs(account_id).is_some()
+}
+
+/// Returns the remaining cooldown for an account without extending it.
+pub(super) fn account_cooldown_remaining_secs(account_id: &str) -> Option<u64> {
     let lock = ACCOUNT_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(AccountCooldownState::default()));
     let mut state = crate::lock_utils::lock_recover(lock, "account_cooldown_until");
     let now = now_ts();
     match state.entries.get(account_id).copied() {
-        Some(until) if until > now => true,
+        Some(until) if until > now => u64::try_from(until.saturating_sub(now)).ok(),
         Some(_) => {
             state.entries.remove(account_id);
-            false
+            None
         }
-        None => false,
+        None => None,
     }
 }
 

@@ -1354,6 +1354,31 @@ fn responses_official_allowlist_drops_stream_passthrough() {
     assert!(value.get("unknown_field").is_none());
 }
 
+#[test]
+fn responses_codex_allowlist_preserves_chat_sampling_controls() {
+    let _guard = crate::test_env_guard();
+    let _strict_guard = RuntimeEnvGuard::set(STRICT_REQUEST_PARAM_ALLOWLIST_ENV, "true");
+    let body = json!({
+        "model": "gpt-5.4",
+        "input": "hello",
+        "temperature": 0.3,
+        "top_p": 0.9,
+        "max_output_tokens": 64
+    });
+    let out = apply_codex_compat_request_overrides(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+
+    assert_eq!(value["temperature"], 0.3);
+    assert_eq!(value["top_p"], 0.9);
+    assert_eq!(value["max_output_tokens"], 64);
+}
+
 /// 函数 `responses_dynamic_tools_are_mapped_to_tools_for_codex_backend`
 ///
 /// 作者: gaohongshun

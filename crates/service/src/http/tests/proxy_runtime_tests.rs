@@ -2243,16 +2243,65 @@ async fn exhausted_responses_websocket_key_quota_returns_429() {
         &[("OpenAI-Beta", "responses_websockets=2026-02-06")],
     );
 
-    let err = connect_async(request)
+    let (mut client_ws, response) = connect_async(request)
         .await
-        .expect_err("exhausted websocket key should fail");
-    match err {
-        tokio_tungstenite::tungstenite::Error::Http(response) => {
-            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        .expect("exhausted active websocket key connects so local ?usage still works");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "?usage" }]
+                }]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send local ?usage over exhausted key");
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+            .await
+            .expect("local ?usage event timeout")
+            .expect("local ?usage event")
+            .expect("local ?usage event result");
+        if matches!(event, Message::Text(ref text) if text.contains("\"response.completed\"")) {
+            break;
         }
-        other => panic!("unexpected websocket error: {other}"),
     }
 
+    client_ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "response.create",
+                "model": "gpt-4.1",
+                "input": "must be rejected"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send normal response.create over exhausted key");
+    let error = tokio::time::timeout(Duration::from_secs(5), client_ws.next())
+        .await
+        .expect("quota error timeout")
+        .expect("quota error event")
+        .expect("quota error result");
+    match error {
+        Message::Text(text) => {
+            let payload: serde_json::Value =
+                serde_json::from_str(&text).expect("parse quota error event");
+            assert_eq!(payload["status"], 429);
+        }
+        other => panic!("unexpected quota error event: {other:?}"),
+    }
+
+    let _ = client_ws.close(None).await;
     let _ = shutdown_tx.send(());
     server_handle.await.expect("join front proxy");
 }

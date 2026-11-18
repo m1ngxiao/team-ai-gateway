@@ -49,7 +49,7 @@ test("启动快照缓存键包含完整日期边界", async () => {
   const dashboardSource = await readSource("src/hooks/useDashboardStats.ts");
   assert.match(
     dashboardSource,
-    /buildStartupSnapshotQueryKey\(\s*serviceStatus\.addr,\s*requestLogLimit,\s*localDayRange\.dayStartTs,\s*localDayRange\.dayEndTs,\s*includeApiModels,\s*includeApiKeys,\s*includeAccounts,\s*includeUsageSnapshots,\s*includeAccountRuntime,\s*includeAccountDetails,/s,
+    /buildStartupSnapshotQueryKey\(\s*serviceStatus\.addr,\s*requestLogLimit,\s*businessDayRange\.dayStartTs,\s*businessDayRange\.dayEndTs,\s*includeApiModels,\s*includeApiKeys,\s*includeAccounts,\s*includeUsageSnapshots,\s*includeAccountRuntime,\s*includeAccountDetails,/s,
   );
 });
 

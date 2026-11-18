@@ -3,6 +3,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+ErrorLayer = Literal["gateway_pool", "upstream_openai", "member_policy", "client_cancelled"]
+ErrorSeverity = Literal["critical", "warn", "info", "muted"]
+
+
 class ClosedModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
@@ -59,6 +63,10 @@ class Account(ClosedModel):
     weekly_limit_cents: int | None = Field(default=None, ge=0, le=9007199254740991)
     weekly_remaining_cents: int | None = Field(default=None, ge=0, le=9007199254740991)
     weekly_reset_at: int | None = Field(default=None, ge=0)
+    today_requests: int = Field(default=0, ge=0)
+    today_success_rate: float | None = Field(default=None, ge=0, le=100)
+    week_requests: int = Field(default=0, ge=0)
+    last_used_at: int | None = Field(default=None, ge=0)
 
 
 class ClaudeAccount(ClosedModel):
@@ -79,9 +87,17 @@ class ClaudeAccount(ClosedModel):
 
 class FailureLog(ClosedModel):
     occurred_at: int = Field(ge=0)
+    date: str = Field(default="", max_length=10)
     status_code: int = Field(ge=100, le=599)
     category: str = Field(min_length=1, max_length=32)
+    signature: str = Field(default="unknown_error", min_length=1, max_length=48)
+    layer: ErrorLayer = "upstream_openai"
+    severity: ErrorSeverity = "warn"
+    title: str = Field(default="", max_length=80)
+    meaning: str = Field(default="", max_length=240)
+    action: str = Field(default="", max_length=240)
     model: str | None = Field(default=None, max_length=64)
+    key_id: str | None = Field(default=None, pattern=r"^key-[a-f0-9]{12}$")
     key_label: str | None = Field(default=None, max_length=128)
     account_label: str | None = Field(default=None, max_length=32)
     duration_ms: int | None = Field(default=None, ge=0)
@@ -130,6 +146,7 @@ class ModelPrice(ClosedModel):
 class CatalogModel(ClosedModel):
     model: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
     name: str = Field(min_length=1, max_length=128)
+    release_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     description: str = Field(default="", max_length=600)
     origin: Literal["builtin", "custom", "unknown"] = "unknown"
     enabled: bool | None = None
@@ -144,6 +161,19 @@ class CatalogModel(ClosedModel):
 class ModelUsage(ClosedModel):
     model: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
     usage: Usage
+
+
+class ModelWeather(ClosedModel):
+    model: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
+    today_requests: int = Field(default=0, ge=0)
+    week_requests: int = Field(default=0, ge=0)
+    today_success_rate: float | None = Field(default=None, ge=0, le=100)
+    week_effective_success_rate: float | None = Field(default=None, ge=0, le=100)
+    today_overload_count: int = Field(default=0, ge=0)
+    week_overload_count: int = Field(default=0, ge=0)
+    decode_p50: float | None = Field(default=None, ge=0)
+    ttft_p50_ms: float | None = Field(default=None, ge=0)
+    status: Literal["smooth", "busy", "degraded", "idle"] = "idle"
 
 
 class ErrorCategoryCount(ClosedModel):
@@ -162,6 +192,26 @@ class ErrorCategoryCount(ClosedModel):
     count: int = Field(ge=0)
 
 
+class ErrorLayerCount(ClosedModel):
+    layer: ErrorLayer
+    count: int = Field(ge=0)
+
+
+class DailyErrorSignature(ClosedModel):
+    signature: str = Field(min_length=1, max_length=48)
+    layer: ErrorLayer
+    severity: ErrorSeverity
+    title: str = Field(min_length=1, max_length=80)
+    meaning: str = Field(min_length=1, max_length=240)
+    action: str = Field(min_length=1, max_length=240)
+    count: int = Field(ge=0)
+    status_codes: list[int] = Field(default_factory=list, max_length=12)
+    top_models: list[str] = Field(default_factory=list, max_length=6)
+    affected_keys: int = Field(default=0, ge=0)
+    last_seen_at: int | None = Field(default=None, ge=0)
+    sample_message: str = Field(default="", max_length=320)
+
+
 class FailureStatusCount(ClosedModel):
     status_code: int = Field(ge=100, le=599)
     count: int = Field(ge=0)
@@ -172,7 +222,12 @@ class RequestHealthSummary(ClosedModel):
     success: int = Field(ge=0)
     failed: int = Field(ge=0)
     success_rate: float = Field(ge=0, le=100)
+    effective_success_rate: float = Field(default=0.0, ge=0, le=100)
+    client_cancelled_count: int = Field(default=0, ge=0)
+    system_failed_count: int = Field(default=0, ge=0)
     error_categories: list[ErrorCategoryCount] = Field(max_length=10)
+    error_layers: list[ErrorLayerCount] = Field(default_factory=list, max_length=8)
+    signatures: list[DailyErrorSignature] = Field(default_factory=list, max_length=25)
     failure_statuses: list[FailureStatusCount] = Field(max_length=500)
     average_duration_ms: float | None = Field(default=None, ge=0)
     average_first_response_ms: float | None = Field(default=None, ge=0)
@@ -209,6 +264,16 @@ class SpeedStats(SpeedPoint):
     models: list[ModelSpeed] = Field(default_factory=list, max_length=50)
 
 
+class TerminalOriginItem(ClosedModel):
+    label: str = Field(min_length=1, max_length=80)
+    url: str = Field(min_length=1, max_length=200, pattern=r"^https?://[A-Za-z0-9._:-]+$")
+
+
+class TerminalOrigins(ClosedModel):
+    public: TerminalOriginItem
+    intranet: TerminalOriginItem | None = None
+
+
 class Snapshot(ClosedModel):
     schema_version: Literal[1]
     generated_at: int = Field(ge=0)
@@ -222,6 +287,8 @@ class Snapshot(ClosedModel):
     models_week: list[ModelUsage] = Field(max_length=50)
     model_catalog: list[CatalogModel] = Field(default_factory=list, max_length=500)
     catalog_unlisted_count: int = Field(default=0, ge=0)
+    model_weather: list[ModelWeather] = Field(default_factory=list, max_length=50)
     request_health: RequestHealth | None = None
-    recent_failures: list[FailureLog] = Field(default_factory=list, max_length=50)
+    recent_failures: list[FailureLog] = Field(default_factory=list, max_length=250)
     speed: SpeedStats | None = None
+    terminal_origins: TerminalOrigins | None = None

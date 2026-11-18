@@ -4,8 +4,8 @@ use codexmanager_core::rpc::types::{
     ModelGroupUsersSetParams,
 };
 use codexmanager_core::storage::{
-    Account, AggregateApi, Event, ModelCatalogModelRecord, ModelGroup, PluginInstall,
-    PluginRunLog, PluginTask, RequestLog, RequestTokenStat, Token, UsageSnapshotRecord,
+    Account, AggregateApi, Event, ModelCatalogModelRecord, ModelGroup, PluginInstall, PluginRunLog,
+    PluginTask, RequestLog, RequestTokenStat, Token, UsageSnapshotRecord,
 };
 
 /// 函数 `response_result`
@@ -180,9 +180,7 @@ fn admin_actor_cannot_create_client_profile_directories_in_server_mode() {
     let resp = response_result(handle_request_with_actor(req, RpcActor::system_admin()));
 
     assert_eq!(
-        resp.result
-            .get("error")
-            .and_then(|value| value.as_str()),
+        resp.result.get("error").and_then(|value| value.as_str()),
         Some("permission_denied: client profile management is disabled in Docker")
     );
     assert!(resp.result.get("items").is_none(), "{:?}", resp.result);
@@ -943,7 +941,11 @@ fn member_api_key_updates_preserve_admin_routing_fields() {
         ),
         RpcActor::from_parts(Some(ROLE_MEMBER), Some(&member.id)),
     ));
-    assert!(member_confirm.result.get("error").is_none(), "{:?}", member_confirm.result);
+    assert!(
+        member_confirm.result.get("error").is_none(),
+        "{:?}",
+        member_confirm.result
+    );
     assert_eq!(
         storage
             .api_key_requires_route_review(&created.id)

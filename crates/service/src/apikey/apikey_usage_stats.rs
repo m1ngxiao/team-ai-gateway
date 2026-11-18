@@ -9,7 +9,7 @@ pub(crate) fn read_api_key_usage_stats_for_actor(
     actor: &RpcActor,
 ) -> Result<Vec<ApiKeyUsageStatSummary>, String> {
     let storage = open_storage().ok_or_else(|| "open storage failed".to_string())?;
-    let (today_start, today_end) = time_bounds::local_day_bounds_ts()?;
+    let (today_start, today_end) = time_bounds::business_day_bounds_ts()?;
 
     if actor.is_admin() {
         let total_items = storage

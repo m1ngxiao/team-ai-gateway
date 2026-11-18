@@ -124,10 +124,36 @@ def test_old_snapshot_remains_compatible(sample):
     assert parsed.request_health is None
 
 
-@pytest.mark.parametrize("description", list(DESCRIPTION_ZH), ids=["astra", "gpt61-sol", "gpt6-luna", "gpt6-sol", "sol", "terra", "luna", "5.5", "5.4", "mini", "5.2", "image"])
+@pytest.mark.parametrize("description", list(DESCRIPTION_ZH), ids=["gpt62-sol", "gpt62-astra", "gpt61-terra", "astra", "gpt61-sol", "gpt6-luna", "gpt6-sol", "sol", "terra", "luna", "5.5", "5.4", "mini", "5.2", "image"])
 def test_builtin_descriptions_are_translated_without_changing_model_ids(sample, description):
     with sqlite3.connect(sample["db"]) as db:
         db.execute("UPDATE models SET description=?", (description,))
     model = collect(sample["config"], sample["now"])["model_catalog"][0]
     assert model["description"] == DESCRIPTION_ZH[description]
     assert model["model"] == "gpt-6-astra"
+def test_catalog_sorts_by_official_release_date_desc_and_auto_dates_new_models(sample):
+    from datetime import datetime, timezone
+
+    future_ts = int(datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc).timestamp())
+    old_ts = int(datetime(2026, 9, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+    with sqlite3.connect(sample["db"]) as db:
+        db.execute("ALTER TABLE models ADD COLUMN created_at INT")
+        db.execute("UPDATE models SET created_at=?, sort_order=1 WHERE slug='gpt-6-astra'", (old_ts,))
+        for idx, (slug, name, sort_order, created_at) in enumerate([
+            ("gpt-6.2-sol", "GPT-6.2-Sol", 2, old_ts),
+            ("gpt-6.1-terra", "GPT-6.1 Terra", 3, old_ts),
+            ("gpt-6.3-sol", "GPT-6.3-Sol", 1, future_ts),
+        ]):
+            mid = f"m-{idx}"
+            db.execute(
+                "INSERT INTO models(id,slug,display_name,description,origin,enabled,visibility,supported_in_api,instructions_mode,sort_order,created_at) VALUES(?,?,?,'Fast, go-to model for coding and everyday work.','builtin',1,'list',1,'passthrough',?,?)",
+                (mid, slug, name, sort_order, created_at),
+            )
+    catalog = collect(sample["config"], sample["now"])["model_catalog"]
+    ordered = [(item["model"], item["release_date"]) for item in catalog]
+    assert ordered == [
+        ("gpt-6.3-sol", "2026-12-01"),
+        ("gpt-6.2-sol", "2026-11-17"),
+        ("gpt-6.1-terra", "2026-10-26"),
+        ("gpt-6-astra", "2026-09-03"),
+    ]

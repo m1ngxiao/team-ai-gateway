@@ -5,27 +5,61 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-#[derive(Default)]
+const AGGRESSIVE_RETRY_ENV: &str = "CODEXMANAGER_DYNAMIC_OVERLOAD_AGGRESSIVE";
+
 pub(super) struct OverloadRetryBudget {
-    used: bool,
+    backups: usize,
+    max_backups: usize,
+}
+
+impl Default for OverloadRetryBudget {
+    fn default() -> Self {
+        Self::with_max_backups(1)
+    }
 }
 
 impl OverloadRetryBudget {
+    pub(super) fn with_max_backups(max_backups: usize) -> Self {
+        Self {
+            backups: 0,
+            max_backups,
+        }
+    }
+
     pub(super) fn used(&self) -> bool {
-        self.used
+        self.backups > 0
     }
 
     pub(super) fn has_more_candidates(&self, pool_has_more: bool) -> bool {
-        pool_has_more && !self.used
+        pool_has_more && self.backups < self.max_backups
     }
 
     pub(super) fn permits(&self, attempted_accounts: usize, portable_request: bool) -> bool {
-        !self.used && attempted_accounts == 1 && portable_request
+        self.backups < self.max_backups
+            && attempted_accounts == self.backups.saturating_add(1)
+            && portable_request
     }
 
     pub(super) fn consume(&mut self) {
-        self.used = true;
+        self.backups = self.backups.saturating_add(1).min(self.max_backups);
     }
+
+    pub(super) fn max_attempts(&self) -> usize {
+        self.max_backups.saturating_add(1)
+    }
+}
+
+/// Enables best-effort migration of requests that contain account-scoped
+/// history. Backup attempts are rebased to stateless input before sending.
+pub(super) fn aggressive_retry_enabled() -> bool {
+    std::env::var(AGGRESSIVE_RETRY_ENV)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
 }
 
 pub(super) fn retry_delay(
@@ -36,12 +70,11 @@ pub(super) fn retry_delay(
     // Spread concurrent retries without shared mutable state or a new RNG dependency.
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     trace_id.hash(&mut hash);
-    let delay = Duration::from_millis(150 + hash.finish() % 101)
-        .max(retry_after.unwrap_or_default());
+    let delay =
+        Duration::from_millis(150 + hash.finish() % 101).max(retry_after.unwrap_or_default());
     if delay > Duration::from_secs(2)
-        || request_deadline.is_some_and(|deadline| {
-            deadline.saturating_duration_since(Instant::now()) <= delay
-        })
+        || request_deadline
+            .is_some_and(|deadline| deadline.saturating_duration_since(Instant::now()) <= delay)
     {
         return None;
     }
@@ -77,10 +110,19 @@ fn has_account_scoped_context(value: &Value) -> bool {
         Value::Object(object) => {
             object.contains_key("encrypted_content")
                 || object.get("file_id").is_some_and(|value| !value.is_null())
-                || object.get("type").and_then(Value::as_str).is_some_and(|kind| {
-                    matches!(kind, "item_reference" | "compaction" | "compaction_summary"
-                        | "context_compaction" | "encrypted_content")
-                })
+                || object
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| {
+                        matches!(
+                            kind,
+                            "item_reference"
+                                | "compaction"
+                                | "compaction_summary"
+                                | "context_compaction"
+                                | "encrypted_content"
+                        )
+                    })
                 || object.values().any(has_account_scoped_context)
         }
         Value::Array(items) => items.iter().any(has_account_scoped_context),
@@ -91,7 +133,9 @@ fn has_account_scoped_context(value: &Value) -> bool {
 fn is_client_tool(tool: &Value) -> bool {
     match tool.get("type").and_then(Value::as_str) {
         Some("function" | "custom") => true,
-        Some("namespace") => tool.get("tools").and_then(Value::as_array)
+        Some("namespace") => tool
+            .get("tools")
+            .and_then(Value::as_array)
             .is_some_and(|tools| tools.iter().all(is_client_tool)),
         _ => false,
     }
@@ -112,18 +156,39 @@ mod tests {
         assert!(budget.used());
         assert!(!budget.permits(1, true));
         assert!(!budget.has_more_candidates(true));
+        assert_eq!(budget.max_attempts(), 2);
+    }
+
+    #[test]
+    fn aggressive_budget_tries_every_account_once() {
+        let mut budget = OverloadRetryBudget::with_max_backups(2);
+        assert!(budget.permits(1, true));
+        assert!(budget.has_more_candidates(true));
+        budget.consume();
+        assert!(budget.permits(2, true));
+        assert!(budget.has_more_candidates(true));
+        budget.consume();
+        assert!(!budget.permits(3, true));
+        assert!(!budget.has_more_candidates(true));
+        assert_eq!(budget.max_attempts(), 3);
     }
 
     #[test]
     fn retry_after_and_the_original_deadline_bound_backoff() {
         let delay = retry_delay("trace-one", None, None).unwrap();
         assert!((Duration::from_millis(150)..=Duration::from_millis(250)).contains(&delay));
-        assert_eq!(retry_delay("trace-one", Some(Duration::from_secs(1)), None),
-            Some(Duration::from_secs(1)));
+        assert_eq!(
+            retry_delay("trace-one", Some(Duration::from_secs(1)), None),
+            Some(Duration::from_secs(1))
+        );
         assert!(retry_delay("trace-one", Some(Duration::from_secs(3)), None).is_none());
         assert!(retry_delay("trace-one", None, Some(Instant::now())).is_none());
-        assert!(retry_delay("trace-one", Some(Duration::from_secs(2)),
-            Some(Instant::now() + Duration::from_secs(1))).is_none());
+        assert!(retry_delay(
+            "trace-one",
+            Some(Duration::from_secs(2)),
+            Some(Instant::now() + Duration::from_secs(1))
+        )
+        .is_none());
     }
 
     #[test]

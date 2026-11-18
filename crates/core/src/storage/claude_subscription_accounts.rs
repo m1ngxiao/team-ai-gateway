@@ -1,6 +1,8 @@
 use rusqlite::{params, OptionalExtension, Result, Row};
 
-use super::{ClaudeSubscriptionAccount, ClaudeSubscriptionLoginSession, ClaudeSubscriptionUsage, Storage};
+use super::{
+    ClaudeSubscriptionAccount, ClaudeSubscriptionLoginSession, ClaudeSubscriptionUsage, Storage,
+};
 
 const ACCOUNT_SELECT: &str = "SELECT id, label, email, account_uuid, organization_uuid,
     subscription_type, status, sort, access_token, refresh_token, scopes,
@@ -59,24 +61,24 @@ impl Storage {
         &self,
         account_id: &str,
     ) -> Result<Option<ClaudeSubscriptionUsage>> {
-        self.conn.query_row(
-            "SELECT account_id, five_hour_used_percent, five_hour_resets_at,
+        self.conn
+            .query_row(
+                "SELECT account_id, five_hour_used_percent, five_hour_resets_at,
                     seven_day_used_percent, seven_day_resets_at, captured_at,
                     last_attempt_at, next_attempt_at, last_error
              FROM claude_subscription_usage WHERE account_id = ?1",
-            [account_id],
-            read_usage,
-        ).optional()
+                [account_id],
+                read_usage,
+            )
+            .optional()
     }
 
     /// Pick one due account without loading OAuth credentials into the scheduler.
     /// A recent 429 pauses all automatic Claude usage probes until its retry time.
-    pub fn next_claude_subscription_usage_poll_account(
-        &self,
-        now: i64,
-    ) -> Result<Option<String>> {
-        self.conn.query_row(
-            "SELECT account.id
+    pub fn next_claude_subscription_usage_poll_account(&self, now: i64) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT account.id
              FROM claude_subscription_accounts AS account
              LEFT JOIN claude_subscription_usage AS usage
                ON usage.account_id = account.id
@@ -90,9 +92,10 @@ impl Storage {
              ORDER BY usage.last_attempt_at ASC,
                       account.sort ASC, account.created_at ASC, account.id ASC
              LIMIT 1",
-            [now],
-            |row| row.get(0),
-        ).optional()
+                [now],
+                |row| row.get(0),
+            )
+            .optional()
     }
 
     pub fn save_claude_subscription_usage_success(
@@ -377,7 +380,13 @@ impl Storage {
              SET status = 'needs_login', last_error = ?4, updated_at = ?5
              WHERE id = ?1 AND access_token = ?2 AND refresh_token = ?3
                AND status = 'active'",
-            params![id, previous_access_token, previous_refresh_token, error, now],
+            params![
+                id,
+                previous_access_token,
+                previous_refresh_token,
+                error,
+                now
+            ],
         )? == 1)
     }
 
@@ -464,10 +473,22 @@ mod tests {
             .is_none());
 
         assert!(storage
-            .finish_claude_subscription_login_session("login", "completed", None, Some("account"), 1002)
+            .finish_claude_subscription_login_session(
+                "login",
+                "completed",
+                None,
+                Some("account"),
+                1002
+            )
             .expect("finish session"));
         assert!(!storage
-            .finish_claude_subscription_login_session("login", "failed", Some("late error"), None, 1003)
+            .finish_claude_subscription_login_session(
+                "login",
+                "failed",
+                Some("late error"),
+                None,
+                1003
+            )
             .expect("late completion"));
         let finished = storage
             .find_claude_subscription_login_session("login")
@@ -516,19 +537,35 @@ mod tests {
 
         assert!(storage
             .rotate_claude_subscription_token(
-                "claude-a", "claude-a-access-1", "claude-a-refresh-1", "claude-a-access-2",
-                "claude-a-refresh-2", "user:inference", 3000, 2000,
+                "claude-a",
+                "claude-a-access-1",
+                "claude-a-refresh-1",
+                "claude-a-access-2",
+                "claude-a-refresh-2",
+                "user:inference",
+                3000,
+                2000,
             )
             .expect("rotate first account"));
         assert!(!storage
             .rotate_claude_subscription_token(
-                "claude-a", "claude-a-access-1", "claude-a-refresh-1", "stale-access",
-                "stale-refresh", "user:inference", 3001, 2001,
+                "claude-a",
+                "claude-a-access-1",
+                "claude-a-refresh-1",
+                "stale-access",
+                "stale-refresh",
+                "user:inference",
+                3001,
+                2001,
             )
             .expect("stale rotation"));
         assert!(!storage
             .mark_claude_subscription_account_needs_login(
-                "claude-a", "claude-a-access-1", "claude-a-refresh-1", "stale refresh failed", 2002,
+                "claude-a",
+                "claude-a-access-1",
+                "claude-a-refresh-1",
+                "stale refresh failed",
+                2002,
             )
             .expect("stale refresh failure"));
 
@@ -541,18 +578,32 @@ mod tests {
         assert_eq!(first.refresh_token, "claude-a-refresh-2");
         assert!(storage
             .mark_claude_subscription_account_needs_login(
-                "claude-a", "claude-a-access-2", "claude-a-refresh-2", "refresh rejected", 2003,
+                "claude-a",
+                "claude-a-access-2",
+                "claude-a-refresh-2",
+                "refresh rejected",
+                2003,
             )
             .expect("current refresh failure"));
         assert!(storage
             .rotate_claude_subscription_token(
-                "claude-b", "claude-b-access-1", "claude-b-refresh-1", "claude-b-access-2",
-                "claude-b-refresh-1", "user:inference", 3000, 2000,
+                "claude-b",
+                "claude-b-access-1",
+                "claude-b-refresh-1",
+                "claude-b-access-2",
+                "claude-b-refresh-1",
+                "user:inference",
+                3000,
+                2000,
             )
             .expect("rotate while retaining refresh token"));
         assert!(!storage
             .mark_claude_subscription_account_needs_login(
-                "claude-b", "claude-b-access-1", "claude-b-refresh-1", "stale refresh failed", 2001,
+                "claude-b",
+                "claude-b-access-1",
+                "claude-b-refresh-1",
+                "stale refresh failed",
+                2001,
             )
             .expect("stale failure with retained refresh token"));
         let active = storage
@@ -572,23 +623,41 @@ mod tests {
             .expect("insert account");
         assert!(storage
             .rotate_claude_subscription_token(
-                "claude-a", "claude-a-access-1", "claude-a-refresh-1",
-                "claude-a-access-2", "claude-a-refresh-2", "user:inference", 3000, 2000,
+                "claude-a",
+                "claude-a-access-1",
+                "claude-a-refresh-1",
+                "claude-a-access-2",
+                "claude-a-refresh-2",
+                "user:inference",
+                3000,
+                2000,
             )
             .expect("rotate account"));
         assert!(!storage
             .mark_claude_subscription_account_needs_login_if_access_token(
-                "claude-a", "claude-a-access-1", "stale 401", 2001,
+                "claude-a",
+                "claude-a-access-1",
+                "stale 401",
+                2001,
             )
             .expect("stale 401"));
-        assert_eq!(storage.list_active_claude_subscription_accounts().unwrap().len(), 1);
+        assert_eq!(
+            storage
+                .list_active_claude_subscription_accounts()
+                .unwrap()
+                .len(),
+            1
+        );
 
         assert!(storage
             .update_claude_subscription_account_status("claude-a", "disabled", 2002)
             .expect("admin disables account"));
         assert!(!storage
             .mark_claude_subscription_account_needs_login_if_access_token(
-                "claude-a", "claude-a-access-2", "late 401", 2003,
+                "claude-a",
+                "claude-a-access-2",
+                "late 401",
+                2003,
             )
             .expect("late 401"));
         assert_eq!(
@@ -636,7 +705,13 @@ mod tests {
         assert!(storage
             .update_claude_subscription_account_status("claude-a", "active", 2002)
             .expect("activate after new login"));
-        assert_eq!(storage.list_active_claude_subscription_accounts().unwrap().len(), 1);
+        assert_eq!(
+            storage
+                .list_active_claude_subscription_accounts()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -667,13 +742,22 @@ mod tests {
             .expect("insert account");
         assert!(storage
             .mark_claude_subscription_account_needs_login_if_access_token(
-                "claude-a", "claude-a-access-1", "old request returned 401", 2000,
+                "claude-a",
+                "claude-a-access-1",
+                "old request returned 401",
+                2000,
             )
             .expect("mark unauthorized"));
         assert!(storage
             .rotate_claude_subscription_token(
-                "claude-a", "claude-a-access-1", "claude-a-refresh-1",
-                "claude-a-access-2", "claude-a-refresh-2", "user:inference", 3000, 2001,
+                "claude-a",
+                "claude-a-access-1",
+                "claude-a-refresh-1",
+                "claude-a-access-2",
+                "claude-a-refresh-2",
+                "user:inference",
+                3000,
+                2001,
             )
             .expect("save successful refresh"));
         let recovered = storage
@@ -689,8 +773,14 @@ mod tests {
             .expect("admin disables account"));
         assert!(storage
             .rotate_claude_subscription_token(
-                "claude-a", "claude-a-access-2", "claude-a-refresh-2",
-                "claude-a-access-3", "claude-a-refresh-3", "user:inference", 4000, 2003,
+                "claude-a",
+                "claude-a-access-2",
+                "claude-a-refresh-2",
+                "claude-a-access-3",
+                "claude-a-refresh-3",
+                "user:inference",
+                4000,
+                2003,
             )
             .expect("late refresh after admin disable"));
         let disabled = storage
@@ -704,7 +794,8 @@ mod tests {
     #[test]
     fn usage_failure_keeps_last_good_meter_and_account_delete_cascades() {
         let storage = storage();
-        storage.upsert_claude_subscription_account(&account("claude-usage"))
+        storage
+            .upsert_claude_subscription_account(&account("claude-usage"))
             .expect("insert account");
         let good = ClaudeSubscriptionUsage {
             account_id: "claude-usage".to_string(),
@@ -717,64 +808,116 @@ mod tests {
             next_attempt_at: Some(1600),
             last_error: None,
         };
-        storage.save_claude_subscription_usage_success(&good)
+        storage
+            .save_claude_subscription_usage_success(&good)
             .expect("save meter");
-        storage.record_claude_subscription_usage_failure(
-            "claude-usage", 1600, 2500, "HTTP 429",
-        ).expect("save failure without deleting meter");
-        let later = storage.find_claude_subscription_usage("claude-usage")
-            .expect("read meter").expect("meter exists");
+        storage
+            .record_claude_subscription_usage_failure("claude-usage", 1600, 2500, "HTTP 429")
+            .expect("save failure without deleting meter");
+        let later = storage
+            .find_claude_subscription_usage("claude-usage")
+            .expect("read meter")
+            .expect("meter exists");
         assert_eq!(later.five_hour_used_percent, Some(25.0));
         assert_eq!(later.seven_day_used_percent, Some(40.0));
         assert_eq!(later.captured_at, Some(1000));
         assert_eq!(later.last_error.as_deref(), Some("HTTP 429"));
         assert_eq!(later.next_attempt_at, Some(2500));
-        storage.delete_claude_subscription_account("claude-usage")
+        storage
+            .delete_claude_subscription_account("claude-usage")
             .expect("delete account");
-        assert!(storage.find_claude_subscription_usage("claude-usage")
-            .expect("read after deletion").is_none());
+        assert!(storage
+            .find_claude_subscription_usage("claude-usage")
+            .expect("read after deletion")
+            .is_none());
     }
 
     #[test]
     fn usage_poll_selects_one_due_active_account_by_oldest_attempt() {
         let storage = storage();
         for id in ["claude-a", "claude-b", "claude-c", "claude-disabled"] {
-            storage.upsert_claude_subscription_account(&account(id))
+            storage
+                .upsert_claude_subscription_account(&account(id))
                 .expect("insert account");
         }
         let mut needs_login = account("claude-needs-login");
         needs_login.status = "needs_login".to_string();
-        storage.upsert_claude_subscription_account(&needs_login)
+        storage
+            .upsert_claude_subscription_account(&needs_login)
             .expect("insert account requiring login");
-        storage.update_claude_subscription_account_status("claude-disabled", "disabled", 1000)
+        storage
+            .update_claude_subscription_account_status("claude-disabled", "disabled", 1000)
             .expect("disable account");
-        storage.record_claude_subscription_usage_failure("claude-a", 1200, 1500, "network_error")
+        storage
+            .record_claude_subscription_usage_failure("claude-a", 1200, 1500, "network_error")
             .expect("record old attempt");
-        storage.record_claude_subscription_usage_failure("claude-b", 1300, 1600, "network_error")
+        storage
+            .record_claude_subscription_usage_failure("claude-b", 1300, 1600, "network_error")
             .expect("record later attempt");
 
-        assert_eq!(storage.next_claude_subscription_usage_poll_account(1400).unwrap().as_deref(), Some("claude-c"));
-        storage.record_claude_subscription_usage_failure("claude-c", 1400, 1700, "network_error")
+        assert_eq!(
+            storage
+                .next_claude_subscription_usage_poll_account(1400)
+                .unwrap()
+                .as_deref(),
+            Some("claude-c")
+        );
+        storage
+            .record_claude_subscription_usage_failure("claude-c", 1400, 1700, "network_error")
             .expect("record new account attempt");
-        assert!(storage.next_claude_subscription_usage_poll_account(1499).unwrap().is_none());
-        assert_eq!(storage.next_claude_subscription_usage_poll_account(1500).unwrap().as_deref(), Some("claude-a"));
-        assert_eq!(storage.next_claude_subscription_usage_poll_account(1600).unwrap().as_deref(), Some("claude-a"));
-        storage.record_claude_subscription_usage_failure("claude-a", 1600, 1800, "network_error")
+        assert!(storage
+            .next_claude_subscription_usage_poll_account(1499)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            storage
+                .next_claude_subscription_usage_poll_account(1500)
+                .unwrap()
+                .as_deref(),
+            Some("claude-a")
+        );
+        assert_eq!(
+            storage
+                .next_claude_subscription_usage_poll_account(1600)
+                .unwrap()
+                .as_deref(),
+            Some("claude-a")
+        );
+        storage
+            .record_claude_subscription_usage_failure("claude-a", 1600, 1800, "network_error")
             .expect("advance oldest account");
-        assert_eq!(storage.next_claude_subscription_usage_poll_account(1600).unwrap().as_deref(), Some("claude-b"));
+        assert_eq!(
+            storage
+                .next_claude_subscription_usage_poll_account(1600)
+                .unwrap()
+                .as_deref(),
+            Some("claude-b")
+        );
     }
 
     #[test]
     fn usage_poll_429_cools_down_all_accounts_until_retry_time() {
         let storage = storage();
-        storage.upsert_claude_subscription_account(&account("claude-a"))
+        storage
+            .upsert_claude_subscription_account(&account("claude-a"))
             .expect("insert first account");
-        storage.upsert_claude_subscription_account(&account("claude-b"))
+        storage
+            .upsert_claude_subscription_account(&account("claude-b"))
             .expect("insert second account");
-        storage.record_claude_subscription_usage_failure("claude-a", 1000, 1900, "HTTP 429")
+        storage
+            .record_claude_subscription_usage_failure("claude-a", 1000, 1900, "HTTP 429")
             .expect("record rate limit");
 
-        assert!(storage.next_claude_subscription_usage_poll_account(1899).unwrap().is_none());
-        assert_eq!(storage.next_claude_subscription_usage_poll_account(1900).unwrap().as_deref(), Some("claude-b"));
+        assert!(storage
+            .next_claude_subscription_usage_poll_account(1899)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            storage
+                .next_claude_subscription_usage_poll_account(1900)
+                .unwrap()
+                .as_deref(),
+            Some("claude-b")
+        );
     }
 }

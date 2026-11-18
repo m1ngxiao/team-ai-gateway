@@ -9,6 +9,26 @@ use crate::gateway::http_bridge::{
 };
 
 #[test]
+fn byte_stream_read_exposes_a_chunk_before_eof_and_preserves_partial_reads() {
+    let (tx, rx) = mpsc::sync_channel(2);
+    let mut stream = GatewayByteStream::from_receiver(rx);
+    tx.send(GatewayByteStreamItem::Chunk(Bytes::from_static(b"abcdef")))
+        .expect("send active chunk");
+
+    let mut first = [0_u8; 2];
+    assert_eq!(stream.read(&mut first).expect("read first bytes"), 2);
+    assert_eq!(&first, b"ab");
+
+    tx.send(GatewayByteStreamItem::Eof)
+        .expect("send stream EOF");
+    let mut rest = Vec::new();
+    stream
+        .read_to_end(&mut rest)
+        .expect("read remaining stream bytes");
+    assert_eq!(rest, b"cdef");
+}
+
+#[test]
 fn prefetch_caps_the_classification_copy_and_replays_the_full_chunk() {
     let body = Bytes::from(vec![b'x'; 128 * 1024]);
     let stream = GatewayByteStream::from_bytes(body.clone());
@@ -184,26 +204,43 @@ fn dropping_openai_responses_reader_cancels_sidecar_and_silent_upstream() {
     }
 }
 
-fn response_with_health_fixture(content_type: Option<&str>, bytes: Bytes) -> GatewayUpstreamResponse {
+fn response_with_health_fixture(
+    content_type: Option<&str>,
+    bytes: Bytes,
+) -> GatewayUpstreamResponse {
     let mut headers = reqwest::header::HeaderMap::new();
     if let Some(value) = content_type {
-        headers.insert(reqwest::header::CONTENT_TYPE, reqwest::header::HeaderValue::from_str(value).unwrap());
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_str(value).unwrap(),
+        );
     }
     GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
-        reqwest::StatusCode::OK, headers, GatewayByteStream::from_bytes(bytes),
+        reqwest::StatusCode::OK,
+        headers,
+        GatewayByteStream::from_bytes(bytes),
     ))
 }
 
 #[test]
 fn attached_health_detects_sse_independently_of_missing_or_incorrect_content_type() {
     let bytes = Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n");
-    for header in [None, Some("text/event-stream"), Some("Text/Event-Stream; charset=UTF-8"),
-                   Some("application/json"), Some("application/octet-stream")] {
-        let (response, observer) = response_with_health_fixture(header, bytes.clone()).observe_health();
+    for header in [
+        None,
+        Some("text/event-stream"),
+        Some("Text/Event-Stream; charset=UTF-8"),
+        Some("application/json"),
+        Some("application/octet-stream"),
+    ] {
+        let (response, observer) =
+            response_with_health_fixture(header, bytes.clone()).observe_health();
         let (body, _) = response.into_buffered().unwrap();
         assert_eq!(body, bytes);
         let health = observer.snapshot();
-        assert!(health.completed && !health.failed && !health.overloaded, "header={header:?}");
+        assert!(
+            health.completed && !health.failed && !health.overloaded,
+            "header={header:?}"
+        );
         assert_eq!(health.format, "sse");
         assert_eq!(health.bytes_seen, bytes.len() as u64);
         assert_eq!(health.parsed_values, 2);
@@ -215,7 +252,8 @@ fn attached_health_detects_sse_independently_of_missing_or_incorrect_content_typ
 fn attached_health_preserves_json_errors_even_with_an_sse_header() {
     let bytes = Bytes::from_static(b" \n{\"error\":{\"code\":\"server_is_overloaded\"}}");
     for header in [None, Some("application/json"), Some("text/event-stream")] {
-        let (response, observer) = response_with_health_fixture(header, bytes.clone()).observe_health();
+        let (response, observer) =
+            response_with_health_fixture(header, bytes.clone()).observe_health();
         response.into_buffered().unwrap();
         let health = observer.snapshot();
         assert!(health.overloaded && health.failed && !health.completed);
@@ -229,7 +267,8 @@ fn attached_health_preserves_json_errors_even_with_an_sse_header() {
 #[test]
 fn attached_health_observes_late_sse_overload_despite_an_incorrect_header() {
     let bytes = Bytes::from_static(b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"synthetic\"}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_is_overloaded\"}}}\n\n");
-    let (response, observer) = response_with_health_fixture(Some("application/json"), bytes).observe_health();
+    let (response, observer) =
+        response_with_health_fixture(Some("application/json"), bytes).observe_health();
     response.into_buffered().unwrap();
     let health = observer.snapshot();
     assert!(health.overloaded && health.failed && !health.completed);
@@ -238,20 +277,30 @@ fn attached_health_observes_late_sse_overload_despite_an_incorrect_header() {
 
 #[test]
 fn attached_health_follows_prefetch_and_tee_without_double_counting_replay() {
-    let first = Bytes::from_static(b"data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.comp");
+    let first = Bytes::from_static(
+        b"data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.comp",
+    );
     let second = Bytes::from_static(b"leted\"}\r\n\r\n");
     let (tx, rx) = mpsc::sync_channel(3);
-    tx.send(GatewayByteStreamItem::Chunk(first.clone())).unwrap();
-    tx.send(GatewayByteStreamItem::Chunk(second.clone())).unwrap();
+    tx.send(GatewayByteStreamItem::Chunk(first.clone()))
+        .unwrap();
+    tx.send(GatewayByteStreamItem::Chunk(second.clone()))
+        .unwrap();
     tx.send(GatewayByteStreamItem::Eof).unwrap();
     let response = GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
-        reqwest::StatusCode::OK, reqwest::header::HeaderMap::new(), GatewayByteStream::from_receiver(rx),
+        reqwest::StatusCode::OK,
+        reqwest::header::HeaderMap::new(),
+        GatewayByteStream::from_receiver(rx),
     ));
     let (response, observer) = response.observe_health();
-    let (_, response, _) = response.prefetch_stream_prefix(64 * 1024,
-        Some(Duration::from_secs(1)), None, |bytes| !bytes.is_empty());
+    let (_, response, _) =
+        response.prefetch_stream_prefix(64 * 1024, Some(Duration::from_secs(1)), None, |bytes| {
+            !bytes.is_empty()
+        });
     assert_eq!(observer.snapshot().parsed_frames, 1);
-    let GatewayUpstreamResponse::Stream(response) = response else { panic!("expected stream"); };
+    let GatewayUpstreamResponse::Stream(response) = response else {
+        panic!("expected stream");
+    };
     let (left, right) = response.into_body().tee();
     let body = left.read_all_bytes().unwrap();
     assert_eq!(body, right.read_all_bytes().unwrap());
@@ -271,21 +320,32 @@ fn attached_health_producer_close_flushes_complete_json_but_not_partial_or_error
         (b"{\"status\":\"in_progress\"}", false),
     ] {
         let (tx, rx) = mpsc::sync_channel(1);
-        tx.send(GatewayByteStreamItem::Chunk(Bytes::copy_from_slice(body))).unwrap();
+        tx.send(GatewayByteStreamItem::Chunk(Bytes::copy_from_slice(body)))
+            .unwrap();
         drop(tx);
         let response = GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
-            reqwest::StatusCode::OK, reqwest::header::HeaderMap::new(), GatewayByteStream::from_receiver(rx),
+            reqwest::StatusCode::OK,
+            reqwest::header::HeaderMap::new(),
+            GatewayByteStream::from_receiver(rx),
         ));
         let (response, observer) = response.observe_health();
         response.into_buffered().unwrap();
         assert_eq!(observer.snapshot().completed, complete);
     }
     let (tx, rx) = mpsc::sync_channel(2);
-    tx.send(GatewayByteStreamItem::Chunk(Bytes::from_static(b"{\"status\":\"completed\"}"))).unwrap();
-    tx.send(GatewayByteStreamItem::Error("synthetic read failure".into())).unwrap();
+    tx.send(GatewayByteStreamItem::Chunk(Bytes::from_static(
+        b"{\"status\":\"completed\"}",
+    )))
+    .unwrap();
+    tx.send(GatewayByteStreamItem::Error(
+        "synthetic read failure".into(),
+    ))
+    .unwrap();
     drop(tx);
     let response = GatewayUpstreamResponse::Stream(GatewayStreamResponse::new(
-        reqwest::StatusCode::OK, reqwest::header::HeaderMap::new(), GatewayByteStream::from_receiver(rx),
+        reqwest::StatusCode::OK,
+        reqwest::header::HeaderMap::new(),
+        GatewayByteStream::from_receiver(rx),
     ));
     let (response, observer) = response.observe_health();
     assert!(response.into_buffered().is_err());

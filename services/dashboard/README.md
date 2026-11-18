@@ -1,7 +1,3 @@
-> **唯一 dashboard 源码**：本目录（`services/dashboard`）就是构建上下文，不要再复制到 `deploy/shared-dashboard` 或其他目录。
-> 当前线上镜像：`team-ai-gateway-dashboard:newui-live-20261113-v1`。
-> 修改后：`docker build -t team-ai-gateway-dashboard:<tag> .`，再改 `/opt/codexmanager-team-gateway/deploy/linux/compose*.yml` 的 image 并重建 dashboard/collector。
-
 # 团队只读用量看板
 
 独立的 SQLite 采集器、FastAPI 服务与静态页面。看板分别展示 OpenAI 和 Claude.ai 订阅账号池、最近成功采集的额度、平台 Key、模型目录、成员与分组用量，以及按日汇总的请求成功率和脱敏错误分类；不能管理账号、修改密钥或发起模型请求。默认品牌为 Team AI Gateway，部署时可编辑 `dashboard/static/index.html` 中的标题与品牌。

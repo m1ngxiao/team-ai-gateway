@@ -75,5 +75,19 @@ class OfficialPricesTests(unittest.TestCase):
         self.assertEqual(price["price_tiers"][1]["output_microusd_per_1m"], 750000)
 
 
+    def test_html_aria_label_thresholds_fallback_when_js_omits_labels(self):
+        html = (
+            '<button role="radio" aria-label="Short: ≤272K input tokens">Short</button>'
+            '<button role="radio" aria-label="Long: &gt;272K input tokens">Long</button>'
+            + table("standard", [["gpt-6.2-astra", 8, 0.4, 10, 40]])
+        )
+        rates = json.dumps({"gpt-6.2-astra": {"input": 16, "cachedInput": 0.8, "cacheWrite": 20, "output": 60}})
+        js = "var prices={standard:" + rates + "};"
+        price = lookup_official_price(html, "gpt-6.2-astra", js)
+        self.assertIsNotNone(price)
+        self.assertEqual(price["price_tiers"][1]["min_input_tokens"], 272001)
+        self.assertEqual(price["price_tiers"][1]["output_microusd_per_1m"], 60_000_000)
+
+
 if __name__ == "__main__":
     unittest.main()

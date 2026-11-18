@@ -468,6 +468,440 @@ fn gateway_aggregate_responses_bridge_adds_anthropic_headers_and_messages_path()
     assert_eq!(upstream_payload["messages"][0]["role"], "user");
 }
 
+#[test]
+fn gateway_compact_polyfills_summary_call_and_anthropic_response() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-compact-polyfill");
+    let db_path = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
+    let summary_sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"<summary>parser fixed and tests pass</summary>\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":120,\"output_tokens\":20}}}\n\n"
+    );
+    let main_sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"continued from summary\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_main\",\"model\":\"gpt-5.4-mini\",\"status\":\"completed\",\"usage\":{\"input_tokens\":30,\"output_tokens\":6}}}\n\n"
+    );
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![
+                (
+                    200,
+                    summary_sse.to_string(),
+                    "text/event-stream".to_string(),
+                ),
+                (200, main_sse.to_string(), "text/event-stream".to_string()),
+            ],
+            Duration::from_secs(3),
+        );
+    let _upstream_guard = EnvGuard::set(
+        "CODEXMANAGER_UPSTREAM_BASE_URL",
+        &format!("http://{upstream_addr}/backend-api/codex"),
+    );
+    let _proxy_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let now = now_ts();
+    seed_model_catalog_models(&storage, &["gpt-5.4-mini"]);
+    storage
+        .insert_account(&Account {
+            id: "acc-compact-polyfill".to_string(),
+            label: "compact-polyfill".to_string(),
+            issuer: "https://auth.openai.com".to_string(),
+            chatgpt_account_id: Some("chatgpt-compact-polyfill".to_string()),
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert account");
+    storage
+        .insert_token(&Token {
+            account_id: "acc-compact-polyfill".to_string(),
+            id_token: String::new(),
+            access_token: "synthetic-access-token".to_string(),
+            refresh_token: String::new(),
+            api_key_access_token: Some("synthetic-api-key-token".to_string()),
+            last_refresh: now,
+        })
+        .expect("insert token");
+    let platform_key = "pk-compact-polyfill";
+    storage
+        .insert_api_key(&ApiKey {
+            id: "gk-compact-polyfill".to_string(),
+            name: Some("compact-polyfill".to_string()),
+            model_slug: Some("gpt-5.4-mini".to_string()),
+            reasoning_effort: None,
+            service_tier: None,
+            upstream_provider: Default::default(),
+            rotation_strategy: "account_rotation".to_string(),
+            aggregate_api_id: None,
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "claude_code".to_string(),
+            protocol_type: "anthropic_native".to_string(),
+            auth_scheme: "x_api_key".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: hash_platform_key_for_test(platform_key),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        })
+        .expect("insert api key");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let body = serde_json::json!({
+        "model": "gpt-5.4-mini",
+        "max_tokens": 2048,
+        "system": "preserve these system rules",
+        "messages": [
+            {"role": "user", "content": "x".repeat(220_000)},
+            {"role": "assistant", "content": "working"},
+            {"role": "user", "content": "continue"}
+        ],
+        "context_management": {
+            "edits": [{
+                "type": "compact_20260112",
+                "trigger": {"type": "input_tokens", "value": 50_000}
+            }]
+        },
+        "stream": false
+    });
+    let (status, response_body) = post_http_raw(
+        &server.addr,
+        "/v1/messages",
+        &serde_json::to_string(&body).expect("serialize request"),
+        &[
+            ("Content-Type", "application/json"),
+            ("x-api-key", platform_key),
+            ("anthropic-version", "2023-06-01"),
+        ],
+    );
+    server.join();
+    assert_eq!(status, 200, "gateway response: {response_body}");
+    let response: serde_json::Value =
+        serde_json::from_str(&response_body).expect("parse anthropic response");
+    assert_eq!(response["content"][0]["type"], "compaction");
+    assert_eq!(
+        response["content"][0]["content"],
+        "parser fixed and tests pass"
+    );
+    assert_eq!(
+        response["context_management"]["applied_edits"][0]["type"],
+        "compact_20260112"
+    );
+    assert_eq!(response["usage"]["iterations"][0]["type"], "compaction");
+
+    let summary_request = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive summary request");
+    let main_request = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive main request");
+    upstream_join.join().expect("join mock upstream");
+    let summary_body: serde_json::Value =
+        serde_json::from_slice(&decode_upstream_request_body(&summary_request))
+            .expect("summary body");
+    assert!(summary_body["input"][0]["content"][0]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("write a summary")));
+    let main_body: serde_json::Value =
+        serde_json::from_slice(&decode_upstream_request_body(&main_request)).expect("main body");
+    let main_text = serde_json::to_string(&main_body).expect("main request");
+    assert!(main_text.contains("preserve these system rules"));
+    assert!(main_text.contains("Previous conversation summary"));
+    assert!(main_text.contains("parser fixed and tests pass"));
+}
+
+#[test]
+fn gateway_codex_aggregate_bridges_anthropic_messages_to_responses() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-codex-aggregate-messages");
+    let db_path = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let responses_sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"bridge ok\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_bridge\",\"model\":\"gpt-5.4-mini\",\"status\":\"completed\",\"usage\":{\"input_tokens\":8,\"output_tokens\":2}}}\n\n"
+    );
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![(
+                200,
+                responses_sse.to_string(),
+                "text/event-stream".to_string(),
+            )],
+            Duration::from_secs(3),
+        );
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    seed_model_catalog_models(&storage, &["gpt-5.4-mini"]);
+    let now = now_ts();
+    let aggregate_id = "agg-codex-anthropic-messages";
+    storage
+        .insert_aggregate_api(&AggregateApi {
+            id: aggregate_id.to_string(),
+            provider_type: "codex".to_string(),
+            supplier_name: Some("codex-openai-compatible".to_string()),
+            sort: 0,
+            url: format!("http://{upstream_addr}/v1"),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            user_agent: Some("Synthetic-Codex-Upstream/1.0".to_string()),
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+        })
+        .expect("insert aggregate api");
+    storage
+        .upsert_aggregate_api_secret(aggregate_id, "upstream-openai-secret")
+        .expect("insert aggregate secret");
+    seed_model_catalog_route(
+        &storage,
+        "gpt-5.4-mini",
+        "aggregate_api",
+        aggregate_id,
+        "gpt-5.4-mini",
+        10,
+    );
+
+    let platform_key = "pk-codex-aggregate-anthropic-messages";
+    storage
+        .insert_api_key(&ApiKey {
+            id: "gk-codex-aggregate-anthropic-messages".to_string(),
+            name: Some("codex-aggregate-anthropic-messages".to_string()),
+            model_slug: Some("gpt-5.4-mini".to_string()),
+            reasoning_effort: None,
+            service_tier: None,
+            upstream_provider: Default::default(),
+            rotation_strategy: "aggregate_api_rotation".to_string(),
+            aggregate_api_id: Some(aggregate_id.to_string()),
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "claude_code".to_string(),
+            protocol_type: "anthropic_native".to_string(),
+            auth_scheme: "x_api_key".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: hash_platform_key_for_test(platform_key),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        })
+        .expect("insert api key");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let body = serde_json::json!({
+        "model": "gpt-5.4-mini",
+        "max_tokens": 77,
+        "messages": [{"role": "user", "content": "bridge this"}],
+        "stream": false
+    });
+    let (status, response_body) = post_http_raw(
+        &server.addr,
+        "/v1/messages",
+        &serde_json::to_string(&body).expect("serialize request"),
+        &[
+            ("Content-Type", "application/json"),
+            ("x-api-key", platform_key),
+            ("anthropic-version", "2023-06-01"),
+            ("anthropic-beta", "context-management-2025-01-01"),
+        ],
+    );
+    server.join();
+    assert_eq!(status, 200, "gateway response: {response_body}");
+    let response: serde_json::Value = serde_json::from_str(&response_body).expect("anthropic body");
+    assert_eq!(response["type"], "message");
+    assert_eq!(response["content"][0]["text"], "bridge ok");
+
+    let captured = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive upstream request");
+    upstream_join.join().expect("join mock upstream");
+    assert_eq!(captured.path, "/v1/responses");
+    assert_eq!(
+        captured.headers.get("user-agent").map(String::as_str),
+        Some("Synthetic-Codex-Upstream/1.0")
+    );
+    assert!(!captured.headers.contains_key("anthropic-version"));
+    assert!(!captured.headers.contains_key("anthropic-beta"));
+    let upstream_body: serde_json::Value =
+        serde_json::from_slice(&decode_upstream_request_body(&captured))
+            .expect("responses request body");
+    assert_eq!(upstream_body["max_output_tokens"], 77);
+    assert_eq!(upstream_body["input"][0]["role"], "user");
+    assert!(upstream_body.get("messages").is_none());
+}
+
+#[test]
+fn gateway_codex_aggregate_emulates_anthropic_safeguards() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-codex-aggregate-safeguards");
+    let db_path = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let main_sse = concat!(
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"toolu_safe\",\"name\":\"Bash\",\"arguments\":\"{\\\"command\\\":\\\"pwd\\\"}\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_safeguards\",\"model\":\"gpt-5.4-mini\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":8,\"output_tokens\":2}}}\n\n"
+    );
+    let classifier_sse = concat!(
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"verdicts\\\":{\\\"toolu_safe\\\":{\\\"flagged\\\":false,\\\"explanation\\\":\\\"routine workspace inspection\\\"}}}\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":5}}}\n\n"
+    );
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![
+                (200, main_sse.to_string(), "text/event-stream".to_string()),
+                (
+                    200,
+                    classifier_sse.to_string(),
+                    "text/event-stream".to_string(),
+                ),
+            ],
+            Duration::from_secs(3),
+        );
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    seed_model_catalog_models(&storage, &["gpt-5.4-mini"]);
+    let now = now_ts();
+    let aggregate_id = "agg-codex-anthropic-safeguards";
+    storage
+        .insert_aggregate_api(&AggregateApi {
+            id: aggregate_id.to_string(),
+            provider_type: "codex".to_string(),
+            supplier_name: Some("codex-openai-compatible".to_string()),
+            sort: 0,
+            url: format!("http://{upstream_addr}/v1"),
+            auth_type: "apikey".to_string(),
+            auth_params_json: None,
+            action: None,
+            model_override: None,
+            user_agent: Some("Synthetic-Safeguards-Upstream/1.0".to_string()),
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_test_at: None,
+            last_test_status: None,
+            last_test_error: None,
+            balance_query_enabled: false,
+            balance_query_template: None,
+            balance_query_base_url: None,
+            balance_query_user_id: None,
+            balance_query_config_json: None,
+            last_balance_at: None,
+            last_balance_status: None,
+            last_balance_error: None,
+            last_balance_json: None,
+        })
+        .expect("insert aggregate api");
+    storage
+        .upsert_aggregate_api_secret(aggregate_id, "upstream-openai-secret")
+        .expect("insert aggregate secret");
+    seed_model_catalog_route(
+        &storage,
+        "gpt-5.4-mini",
+        "aggregate_api",
+        aggregate_id,
+        "gpt-5.4-mini",
+        10,
+    );
+    let platform_key = "pk-codex-aggregate-safeguards";
+    storage
+        .insert_api_key(&ApiKey {
+            id: "gk-codex-aggregate-safeguards".to_string(),
+            name: Some("codex-aggregate-safeguards".to_string()),
+            model_slug: Some("gpt-5.4-mini".to_string()),
+            reasoning_effort: None,
+            service_tier: None,
+            upstream_provider: Default::default(),
+            rotation_strategy: "aggregate_api_rotation".to_string(),
+            aggregate_api_id: Some(aggregate_id.to_string()),
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "claude_code".to_string(),
+            protocol_type: "anthropic_native".to_string(),
+            auth_scheme: "x_api_key".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: hash_platform_key_for_test(platform_key),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        })
+        .expect("insert api key");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let body = serde_json::json!({
+        "model": "gpt-5.4-mini",
+        "max_tokens": 256,
+        "messages": [{"role": "user", "content": "check the workspace"}],
+        "safeguards": [{
+            "type": "dangerous_tool_use",
+            "classifier_context": {
+                "permission_mode": "auto",
+                "trusted_directories": ["/workspace"]
+            }
+        }],
+        "stream": false
+    });
+    let (status, response_body) = post_http_raw(
+        &server.addr,
+        "/v1/messages",
+        &serde_json::to_string(&body).expect("serialize request"),
+        &[
+            ("Content-Type", "application/json"),
+            ("x-api-key", platform_key),
+            ("anthropic-version", "2023-06-01"),
+            ("anthropic-beta", "safeguards-review-2025"),
+        ],
+    );
+    server.join();
+    assert_eq!(status, 200, "gateway response: {response_body}");
+    let response: serde_json::Value = serde_json::from_str(&response_body).expect("anthropic body");
+    assert_eq!(response["content"][0]["type"], "tool_use");
+    assert_eq!(
+        response["safeguard_results"][0]["status"]["tool_uses"]["toolu_safe"]["outcome"],
+        "not_flagged"
+    );
+
+    let main_request = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive main request");
+    let classifier_request = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive classifier request");
+    upstream_join.join().expect("join mock upstream");
+    let main_body: serde_json::Value =
+        serde_json::from_slice(&decode_upstream_request_body(&main_request)).expect("main body");
+    assert!(main_body.get("safeguards").is_none());
+    let classifier_body: serde_json::Value =
+        serde_json::from_slice(&decode_upstream_request_body(&classifier_request))
+            .expect("classifier body");
+    let classifier_text =
+        serde_json::to_string(&classifier_body["input"]).expect("classifier input");
+    assert!(classifier_text.contains("toolu_safe"));
+    assert!(classifier_text.contains("check the workspace"));
+}
+
 /// 函数 `gateway_claude_messages_stay_on_chatgpt_codex_base`
 ///
 /// 作者: gaohongshun
@@ -1196,4 +1630,201 @@ fn gateway_claude_failover_same_workspace_still_strips_session_affinity_headers(
         account_2.headers.get("conversation_id").map(String::as_str),
         None
     );
+}
+
+fn anthropic_stream_event(value: serde_json::Value) -> String {
+    format!("data: {value}\n\n")
+}
+
+fn read_upstream_request_head(stream: &mut TcpStream) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set upstream read timeout");
+    let mut bytes = Vec::new();
+    let header_end = loop {
+        let mut buffer = [0_u8; 2048];
+        let count = stream.read(&mut buffer).expect("read upstream request");
+        assert!(count > 0, "upstream request closed before headers");
+        bytes.extend_from_slice(&buffer[..count]);
+        if let Some(offset) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+            break offset + 4;
+        }
+        assert!(bytes.len() < 64 * 1024);
+    };
+    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while bytes.len() < header_end + content_length {
+        let mut buffer = [0_u8; 2048];
+        let count = stream
+            .read(&mut buffer)
+            .expect("read upstream request body");
+        assert!(count > 0, "upstream request body ended early");
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+}
+
+fn write_upstream_chunk(stream: &mut TcpStream, body: &str) {
+    write!(stream, "{:x}\r\n{}\r\n", body.len(), body).expect("write upstream stream chunk");
+    stream.flush().expect("flush upstream stream chunk");
+}
+
+#[test]
+fn anthropic_stream_delivers_message_start_before_upstream_completion() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-anthropic-stream-handshake");
+    let db_path = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _proxy_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_PROXY_URL", "");
+
+    let listener = bind_test_listener("anthropic stream handshake upstream");
+    let upstream_addr = listener.local_addr().expect("upstream address");
+    let _upstream_guard = EnvGuard::set(
+        "CODEXMANAGER_UPSTREAM_BASE_URL",
+        &format!("http://{upstream_addr}/backend-api/codex"),
+    );
+    let (release_tx, release_rx) = mpsc::channel();
+    let upstream_join = thread::spawn(move || {
+        let (mut upstream, _) = listener.accept().expect("accept upstream request");
+        read_upstream_request_head(&mut upstream);
+        upstream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .expect("write upstream response headers");
+        let prefix = concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cc_stream\",\"model\":\"gpt-5.6-sol\"}}\n\n",
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"still reasoning\"}\n\n"
+        );
+        write_upstream_chunk(&mut upstream, prefix);
+        release_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("client observed message_start before upstream completion");
+        let suffix = format!(
+            "{}{}",
+            anthropic_stream_event(serde_json::json!({
+                "type": "response.output_text.delta",
+                "delta": "CC_COMPACT_STREAM_OK"
+            })),
+            anthropic_stream_event(serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_cc_stream",
+                    "model": "gpt-5.6-sol",
+                    "status": "completed",
+                    "output": [],
+                    "usage": {"input_tokens": 20, "output_tokens": 4}
+                }
+            }))
+        );
+        write_upstream_chunk(&mut upstream, &suffix);
+        upstream
+            .write_all(b"0\r\n\r\n")
+            .expect("finish upstream response");
+        upstream.flush().expect("flush upstream response");
+    });
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    seed_model_catalog_models(&storage, &["gpt-5.6-sol"]);
+    let now = now_ts();
+    storage
+        .insert_account(&Account {
+            id: "acc_cc_stream".to_string(),
+            label: "cc-stream".to_string(),
+            issuer: "https://auth.openai.com".to_string(),
+            chatgpt_account_id: Some("chatgpt_cc_stream".to_string()),
+            workspace_id: None,
+            group_name: None,
+            sort: 0,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert account");
+    storage
+        .insert_token(&Token {
+            account_id: "acc_cc_stream".to_string(),
+            id_token: String::new(),
+            access_token: "access_cc_stream".to_string(),
+            refresh_token: String::new(),
+            api_key_access_token: Some("api_access_cc_stream".to_string()),
+            last_refresh: now,
+        })
+        .expect("insert token");
+    let platform_key = "pk_cc_stream_handshake";
+    storage
+        .insert_api_key(&ApiKey {
+            id: "gk_cc_stream_handshake".to_string(),
+            name: Some("cc-stream-handshake".to_string()),
+            model_slug: Some("gpt-5.6-sol".to_string()),
+            reasoning_effort: None,
+            service_tier: None,
+            upstream_provider: Default::default(),
+            rotation_strategy: "account_rotation".to_string(),
+            aggregate_api_id: None,
+            account_plan_filter: None,
+            aggregate_api_url: None,
+            client_type: "claude_code".to_string(),
+            protocol_type: "anthropic_native".to_string(),
+            auth_scheme: "x_api_key".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: hash_platform_key_for_test(platform_key),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        })
+        .expect("insert api key");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .expect("build client");
+    let body = serde_json::json!({
+        "model": "gpt-5.6-sol",
+        "max_tokens": 32000,
+        "stream": true,
+        "messages": [{"role": "user", "content": "compact this session"}]
+    });
+    let mut response = client
+        .post(format!("http://{}/v1/messages?beta=true", server.addr))
+        .header("Content-Type", "application/json")
+        .header("Accept", "text/event-stream")
+        .header("x-api-key", platform_key)
+        .header("anthropic-version", "2023-06-01")
+        .body(body.to_string())
+        .send()
+        .expect("send anthropic stream request");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let mut received = Vec::new();
+    while !String::from_utf8_lossy(received.as_slice()).contains("event: message_start") {
+        let mut buffer = [0_u8; 4096];
+        let count = response
+            .read(&mut buffer)
+            .expect("read initial anthropic stream output");
+        assert!(count > 0, "gateway closed stream before message_start");
+        received.extend_from_slice(&buffer[..count]);
+    }
+    release_tx.send(()).expect("release upstream completion");
+
+    response
+        .read_to_end(&mut received)
+        .expect("read completed anthropic stream");
+    server.join();
+    upstream_join.join().expect("join upstream");
+    let output = String::from_utf8(received).expect("utf8 anthropic stream");
+    assert_eq!(output.matches("event: message_start").count(), 1);
+    assert!(output.contains("CC_COMPACT_STREAM_OK"));
+    assert!(output.contains("event: message_stop"));
 }

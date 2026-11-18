@@ -8,7 +8,7 @@ type ThemePreviewSwatchProps = {
 
 const DARK_THEME_IDS = new Set(["dark", "dark-one"]);
 const THEME_PREVIEW_SURFACES: Record<string, { shell: string; panel: string }> = {
-  tech: { shell: "#f7f9fd", panel: "#eef1fc" },
+  tech: { shell: "#f5f2ec", panel: "#eadfd2" },
   dark: { shell: "#0b0d12", panel: "#1b1f29" },
   "dark-one": { shell: "#171a20", panel: "#2a303a" },
   business: { shell: "#fbfaf6", panel: "#f5ecd3" },

@@ -46,6 +46,11 @@ pub(crate) struct QuotaGuardConfig {
     pub allow_all_low_quota_fallback: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LowQuotaRecovery {
+    pub(crate) reset_at: Option<i64>,
+}
+
 impl Default for QuotaGuardConfig {
     fn default() -> Self {
         Self {
@@ -278,6 +283,72 @@ pub(crate) fn set_quota_guard_config(config: QuotaGuardConfig) -> QuotaGuardConf
 pub(crate) fn is_low_quota_snapshot(snap: &UsageSnapshotRecord) -> bool {
     let config = current_quota_guard_config();
     config.enabled && config.has_threshold() && is_low_quota_snapshot_at(snap, config)
+}
+
+/// Returns the first time all quota-guarded windows are expected to reset.
+///
+/// This deliberately reports only snapshot data. When a low window has no future
+/// reset timestamp, callers must describe the reset time as unknown rather than
+/// inventing a short retry delay.
+pub(crate) fn low_quota_recovery(snap: &UsageSnapshotRecord, now: i64) -> Option<LowQuotaRecovery> {
+    let config = current_quota_guard_config();
+    if !config.enabled || !config.has_threshold() {
+        return None;
+    }
+
+    let primary_threshold = quota_guard_threshold_for_window(
+        snap.window_minutes,
+        config.primary_min_remaining_percent,
+        config.secondary_min_remaining_percent,
+        false,
+    );
+    let secondary_threshold = quota_guard_threshold_for_window(
+        snap.secondary_window_minutes,
+        config.primary_min_remaining_percent,
+        config.secondary_min_remaining_percent,
+        true,
+    );
+    let primary_low = primary_threshold > 0.0
+        && snap
+            .used_percent
+            .is_some_and(|pct| remaining_percent(pct) <= primary_threshold);
+    let secondary_low = secondary_threshold > 0.0
+        && snap
+            .secondary_used_percent
+            .is_some_and(|pct| remaining_percent(pct) <= secondary_threshold);
+    if !primary_low && !secondary_low {
+        return None;
+    }
+
+    let reset_at = [
+        primary_low.then_some(snap.resets_at),
+        secondary_low.then_some(snap.secondary_resets_at),
+    ]
+    .into_iter()
+    .flatten()
+    .flatten()
+    .filter(|reset_at| *reset_at > now)
+    .max();
+    let all_low_windows_have_future_resets = [primary_low, secondary_low]
+        .into_iter()
+        .enumerate()
+        .filter(|(_, low)| *low)
+        .all(|(index, _)| {
+            let reset = if index == 0 {
+                snap.resets_at
+            } else {
+                snap.secondary_resets_at
+            };
+            reset.is_some_and(|reset_at| reset_at > now)
+        });
+
+    Some(LowQuotaRecovery {
+        reset_at: if all_low_windows_have_future_resets {
+            reset_at
+        } else {
+            None
+        },
+    })
 }
 
 fn is_low_quota_snapshot_at(snap: &UsageSnapshotRecord, config: QuotaGuardConfig) -> bool {

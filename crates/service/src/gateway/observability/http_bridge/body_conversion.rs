@@ -633,24 +633,38 @@ pub(super) fn chat_response_failure(
     event_type: Option<&str>,
 ) -> Option<(Value, String)> {
     let response = value.get("response").unwrap_or(value);
-    let explicit_error = [value.get("error"), response.get("error"), response.pointer("/status_details/error")]
-        .into_iter().flatten().find(|error| !error.is_null());
+    let explicit_error = [
+        value.get("error"),
+        response.get("error"),
+        response.pointer("/status_details/error"),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|error| !error.is_null());
     let event_type = event_type.or_else(|| value.get("type").and_then(Value::as_str));
     // An incomplete response can be an ordinary output-token budget boundary.
     // Only an explicit error makes that case an API failure here.
     let failed = matches!(event_type, Some("error" | "response.failed"))
-        || matches!(response.get("status").and_then(Value::as_str),
-            Some("failed" | "cancelled" | "canceled"));
+        || matches!(
+            response.get("status").and_then(Value::as_str),
+            Some("failed" | "cancelled" | "canceled")
+        );
     if !failed && explicit_error.is_none() {
         return None;
     }
     let error_source = explicit_error.unwrap_or(value);
-    let code = error_source.get("code").and_then(Value::as_str)
+    let code = error_source
+        .get("code")
+        .and_then(Value::as_str)
         .unwrap_or("upstream_error");
-    let message = error_source.get("message").and_then(Value::as_str)
+    let message = error_source
+        .get("message")
+        .and_then(Value::as_str)
         .or_else(|| error_source.as_str())
         .unwrap_or("Upstream response failed before completion");
-    let error_type = error_source.get("type").and_then(Value::as_str)
+    let error_type = error_source
+        .get("type")
+        .and_then(Value::as_str)
         .filter(|kind| *kind != "error" && !kind.starts_with("response."))
         .unwrap_or("upstream_error");
     let error = json!({"message": message, "type": error_type, "code": code});
@@ -672,9 +686,13 @@ pub(super) fn chat_responses_sse_failure(body: &[u8]) -> Option<(Value, String)>
 
 pub(super) fn chat_response_reached_output_limit(value: &Value, event_type: Option<&str>) -> bool {
     let response = value.get("response").unwrap_or(value);
-    (event_type.or_else(|| value.get("type").and_then(Value::as_str)) == Some("response.incomplete")
+    (event_type.or_else(|| value.get("type").and_then(Value::as_str))
+        == Some("response.incomplete")
         || response.get("status").and_then(Value::as_str) == Some("incomplete"))
-        && response.pointer("/incomplete_details/reason").and_then(Value::as_str) == Some("max_output_tokens")
+        && response
+            .pointer("/incomplete_details/reason")
+            .and_then(Value::as_str)
+            == Some("max_output_tokens")
         && chat_response_failure(value, event_type).is_none()
 }
 
@@ -919,13 +937,17 @@ pub(super) fn chat_completion_body_to_single_sse(body: &[u8]) -> Vec<u8> {
             }
         }
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-            let calls = calls.iter().enumerate().map(|(index, call)| {
-                let mut call = call.clone();
-                if let Some(object) = call.as_object_mut() {
-                    object.insert("index".to_string(), Value::from(index));
-                }
-                call
-            }).collect::<Vec<_>>();
+            let calls = calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    let mut call = call.clone();
+                    if let Some(object) = call.as_object_mut() {
+                        object.insert("index".to_string(), Value::from(index));
+                    }
+                    call
+                })
+                .collect::<Vec<_>>();
             if !calls.is_empty() {
                 delta["tool_calls"] = Value::Array(calls);
             }

@@ -66,7 +66,7 @@ import {
 import { useDashboardStats } from "@/hooks/useDashboardStats";
 import { useDashboardAdminUsageSummary } from "@/hooks/useDashboardAdminUsageSummary";
 import { resolveSessionRole, useAppSession } from "@/hooks/useAppSession";
-import { useLocalDayRange } from "@/hooks/useLocalDayRange";
+import { useBusinessDayRange } from "@/hooks/useBusinessDayRange";
 import { useMemberDashboardSummary } from "@/hooks/useMemberDashboardSummary";
 import { usePageTransitionReady } from "@/hooks/usePageTransitionReady";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
@@ -299,17 +299,17 @@ function MetricCard({
   return (
     <Card
       size="sm"
-      className="glass-card console-metric mission-panel overflow-hidden py-0 shadow-sm transition-colors"
+      className="glass-card console-metric mission-panel group overflow-hidden rounded-[18px] py-0 shadow-sm transition-[border-color,background-color] duration-200 hover:border-border"
     >
-      <CardContent className="flex min-h-[52px] items-center justify-between gap-2 px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <CardTitle className={cn("min-w-0 truncate text-xs font-semibold text-muted-foreground", titleClassName)}>
+      <CardContent className="flex min-h-[164px] flex-col justify-between gap-8 p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle className={cn("min-w-0 truncate text-[12px] font-semibold uppercase tracking-[0.09em] text-muted-foreground", titleClassName)}>
               {title}
             </CardTitle>
             {badge ? (
               <span
-                className="inline-flex max-w-[96px] items-center gap-1 truncate rounded-md border border-primary/20 bg-primary/8 px-1.5 py-0.5 text-[10px] leading-none text-primary"
+                className="mt-2 inline-flex max-w-[180px] items-center gap-1 truncate rounded-full border border-primary/15 bg-primary/7 px-2 py-1 text-[10px] leading-none text-primary"
                 title={badge}
               >
                 <Activity className="h-2.5 w-2.5 shrink-0" />
@@ -317,15 +317,20 @@ function MetricCard({
               </span>
             ) : null}
           </div>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border/70 bg-background/40 text-muted-foreground transition-colors group-hover:text-foreground">
+            <Icon className={cn("h-3.5 w-3.5", color)} />
+          </div>
+        </div>
+        <div className="min-w-0">
           <div
-            className={cn("mt-1 truncate font-mono text-xl font-semibold leading-none tracking-normal text-foreground tabular-nums", valueClassName)}
+            className={cn("truncate font-display text-[2.15rem] font-medium leading-none tracking-[-0.045em] text-foreground tabular-nums", valueClassName)}
             title={detail ? `${sub} · ${detail}` : sub}
           >
             {value}
           </div>
-        </div>
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/65 text-primary shadow-sm">
-          <Icon className={cn("h-3 w-3", color)} />
+          <p className="mt-2 truncate text-xs text-muted-foreground" title={detail ?? sub}>
+            {sub}
+          </p>
         </div>
       </CardContent>
     </Card>
@@ -720,14 +725,16 @@ function AdminUsageAnalyticsCard({
       <CardHeader className="flex flex-col gap-4">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
-            <CardTitle className="flex items-center gap-2 text-base font-semibold">
-              <LineChart className="h-4 w-4 text-primary" />
+            <CardTitle className="flex items-center gap-2 font-display text-xl font-medium tracking-[-0.025em]">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full border border-border/70 bg-background/40">
+                <LineChart className="h-3.5 w-3.5 text-primary" />
+              </span>
               {t("管理员用量分析")}
             </CardTitle>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1.5 text-xs text-muted-foreground">
               {t("按模型查看 token 和请求趋势，支持小时粒度")}
             </p>
-            <div className="mt-2 text-[11px] text-muted-foreground">
+            <div className="mt-2 text-[11px] text-muted-foreground/85">
               {t("当前区间")} {formatShortDateRange(summary.rangeStartTs, summary.rangeEndTs, locale)}
               {" · "}
               {t("图表区域支持鼠标滚轮缩放")}
@@ -758,21 +765,26 @@ function AdminUsageAnalyticsCard({
               </Select>
               <Input
                 type="date"
-                className="w-[144px] bg-background/40 text-xs"
+                className={cn(
+                  "w-[144px] bg-background/40 text-xs",
+                  rangePreset !== "custom" && "hidden",
+                )}
                 value={rangeStartInput}
-                disabled={rangePreset !== "custom"}
                 onChange={(event) => onRangeStartInputChange(event.target.value)}
               />
               <Input
                 type="date"
-                className="w-[144px] bg-background/40 text-xs"
+                className={cn(
+                  "w-[144px] bg-background/40 text-xs",
+                  rangePreset !== "custom" && "hidden",
+                )}
                 value={rangeEndInput}
-                disabled={rangePreset !== "custom"}
                 onChange={(event) => onRangeEndInputChange(event.target.value)}
               />
               <Button
                 size="sm"
                 variant="outline"
+                className={cn(rangePreset !== "custom" && "hidden")}
                 disabled={rangePreset !== "custom" || isCustomRangeInvalid}
                 onClick={onApplyCustomRange}
               >
@@ -860,6 +872,7 @@ function AdminUsageAnalyticsCard({
 }
 
 function AdminDashboard() {
+  const { t, locale } = useI18n();
   const { stats, isLoading, isServiceReady } = useDashboardStats({
     requestLogLimit: 0,
     includeAccountHints: false,
@@ -874,7 +887,7 @@ function AdminDashboard() {
     enabled: true,
     refetchIntervalMs: 10_000,
   });
-  const localDayRange = useLocalDayRange();
+  const businessDayRange = useBusinessDayRange();
   const [adminUsageRangePreset, setAdminUsageRangePreset] =
     useState<AdminUsageRangePreset>("7d");
   const [adminUsageRangeStartInput, setAdminUsageRangeStartInput] = useState("");
@@ -896,8 +909,8 @@ function AdminDashboard() {
     let active = true;
     const nextRange = buildAdminUsagePresetRange(
       adminUsageRangePreset,
-      localDayRange.dayStartTs,
-      localDayRange.dayEndTs,
+      businessDayRange.dayStartTs,
+      businessDayRange.dayEndTs,
     );
     queueMicrotask(() => {
       if (!active) return;
@@ -910,8 +923,8 @@ function AdminDashboard() {
     };
   }, [
     adminUsageRangePreset,
-    localDayRange.dayEndTs,
-    localDayRange.dayStartTs,
+    businessDayRange.dayEndTs,
+    businessDayRange.dayStartTs,
   ]);
 
   const {
@@ -938,9 +951,30 @@ function AdminDashboard() {
       const endTs = parseDateInputEndTs(adminUsageRangeEndInput);
       return startTs == null || endTs == null || endTs <= startTs;
     })();
+  const currentDate = new Intl.DateTimeFormat(
+    intlLocaleFromAppLocale(locale),
+    {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      weekday: "long",
+    },
+  ).format(new Date());
 
   return (
-    <div className="space-y-5 animate-in fade-in duration-500 xl:space-y-7">
+    <div className="space-y-6 animate-in fade-in duration-500 xl:space-y-8">
+      <div className="dashboard-editorial-intro">
+        <div>
+          <span className="dashboard-eyebrow">OPERATIONS / LIVE</span>
+          <h2 className="font-display">{t("路由指挥中心")}</h2>
+          <p>{t("账号状态、模型用量与容量在一处查看。")}</p>
+        </div>
+        <div className="hidden shrink-0 items-center gap-2 rounded-full border border-border/70 bg-background/40 px-3.5 py-2 text-xs text-muted-foreground lg:flex">
+          <span className="h-1.5 w-1.5 rounded-full bg-primary/75" />
+          {currentDate}
+        </div>
+      </div>
+
       <DashboardGatewayStatus
         connected={isServiceReady}
         directMode={isDirectAccountMode}
@@ -954,67 +988,86 @@ function AdminDashboard() {
           reasoningTokens:
             adminUsageSummary?.todayUsage.reasoningOutputTokens ?? stats.reasoningTokens,
           todayCost: adminUsageSummary?.todayUsage.estimatedCostUsd ?? stats.todayCost,
+          todayRequests: adminUsageSummary?.todayUsage.requestCount,
+          successRate:
+            adminUsageSummary && adminUsageSummary.todayUsage.requestCount > 0
+              ? adminUsageSummary.todayUsage.successCount /
+                adminUsageSummary.todayUsage.requestCount
+              : null,
         }}
         isLoading={isLoading}
       />
 
-      <DashboardPoolRemaining
-        primary={stats.poolRemain.primary}
-        secondary={stats.poolRemain.secondary}
-        primaryKnownCount={stats.poolRemain.primaryKnownCount}
-        primaryBucketCount={stats.poolRemain.primaryBucketCount}
-        secondaryKnownCount={stats.poolRemain.secondaryKnownCount}
-        secondaryBucketCount={stats.poolRemain.secondaryBucketCount}
-        isLoading={isLoading}
-      />
+      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <DirectModeUnavailable active={isDirectAccountMode}>
+          <AdminUsageAnalyticsCard
+            summary={adminUsageSummary}
+            isLoading={isLoading || isAdminUsageLoading}
+            isRefreshing={isAdminUsageFetching && !isAdminUsageLoading}
+            isError={isAdminUsageError}
+            rangePreset={adminUsageRangePreset}
+            rangeStartInput={adminUsageRangeStartInput}
+            rangeEndInput={adminUsageRangeEndInput}
+            onRangePresetChange={(preset) => {
+              setAdminUsageRangePreset(preset);
+              if (preset === "custom") {
+                return;
+              }
+              const nextRange = buildAdminUsagePresetRange(
+                preset,
+                businessDayRange.dayStartTs,
+                businessDayRange.dayEndTs,
+              );
+              setAdminUsageRangeStartInput(nextRange.startInput);
+              setAdminUsageRangeEndInput(nextRange.endInput);
+              setAdminUsageRangeParams(nextRange);
+            }}
+            onRangeStartInputChange={setAdminUsageRangeStartInput}
+            onRangeEndInputChange={setAdminUsageRangeEndInput}
+            onApplyCustomRange={() => {
+              const startTs = parseDateInputStartTs(adminUsageRangeStartInput);
+              const endTs = parseDateInputEndTs(adminUsageRangeEndInput);
+              if (startTs == null || endTs == null || endTs <= startTs) {
+                return;
+              }
+              if (endTs - startTs > 31 * 86_400) {
+                setAdminUsageGranularity("day");
+              }
+              setAdminUsageRangeParams({
+                startTs,
+                endTs,
+                startInput: adminUsageRangeStartInput,
+                endInput: adminUsageRangeEndInput,
+              });
+            }}
+            isCustomRangeInvalid={isCustomAdminUsageRangeInvalid}
+            granularity={adminUsageGranularity}
+            onGranularityChange={setAdminUsageGranularity}
+          />
+        </DirectModeUnavailable>
 
-      <DirectModeUnavailable active={isDirectAccountMode}>
-        <AdminUsageAnalyticsCard
-          summary={adminUsageSummary}
-          isLoading={isLoading || isAdminUsageLoading}
-          isRefreshing={isAdminUsageFetching && !isAdminUsageLoading}
-          isError={isAdminUsageError}
-          rangePreset={adminUsageRangePreset}
-          rangeStartInput={adminUsageRangeStartInput}
-          rangeEndInput={adminUsageRangeEndInput}
-          onRangePresetChange={(preset) => {
-            setAdminUsageRangePreset(preset);
-            if (preset === "custom") {
-              return;
-            }
-            const nextRange = buildAdminUsagePresetRange(
-              preset,
-              localDayRange.dayStartTs,
-              localDayRange.dayEndTs,
-            );
-            setAdminUsageRangeStartInput(nextRange.startInput);
-            setAdminUsageRangeEndInput(nextRange.endInput);
-            setAdminUsageRangeParams(nextRange);
-          }}
-          onRangeStartInputChange={setAdminUsageRangeStartInput}
-          onRangeEndInputChange={setAdminUsageRangeEndInput}
-          onApplyCustomRange={() => {
-            const startTs = parseDateInputStartTs(adminUsageRangeStartInput);
-            const endTs = parseDateInputEndTs(adminUsageRangeEndInput);
-            if (startTs == null || endTs == null || endTs <= startTs) {
-              return;
-            }
-            if (endTs - startTs > 31 * 86_400) {
-              setAdminUsageGranularity("day");
-            }
-            setAdminUsageRangeParams({
-              startTs,
-              endTs,
-              startInput: adminUsageRangeStartInput,
-              endInput: adminUsageRangeEndInput,
-            });
-          }}
-          isCustomRangeInvalid={isCustomAdminUsageRangeInvalid}
-          granularity={adminUsageGranularity}
-          onGranularityChange={setAdminUsageGranularity}
-        />
-      </DirectModeUnavailable>
-
+        <aside className="space-y-4 xl:sticky xl:top-3">
+          <DashboardPoolRemaining
+            primary={stats.poolRemain.primary}
+            secondary={stats.poolRemain.secondary}
+            primaryKnownCount={stats.poolRemain.primaryKnownCount}
+            primaryBucketCount={stats.poolRemain.primaryBucketCount}
+            secondaryKnownCount={stats.poolRemain.secondaryKnownCount}
+            secondaryBucketCount={stats.poolRemain.secondaryBucketCount}
+            isLoading={isLoading}
+          />
+          <div className="grid gap-2 rounded-[18px] border border-border/70 bg-background/30 p-4">
+            <a href={buildStaticRouteUrl("/accounts/")} className="dashboard-quiet-link justify-between py-1.5">
+              <span>{t("查看全部账号")}</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </a>
+            <a href={buildStaticRouteUrl("/logs/")} className="dashboard-quiet-link justify-between py-1.5">
+              <span>{t("打开请求日志")}</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
@@ -1054,7 +1107,14 @@ function MemberDashboard() {
       : `${Math.round(summary.usageToday.successRate * 100)}%`;
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-700">
+    <div className="space-y-7 animate-in fade-in duration-700">
+      <div className="dashboard-editorial-intro">
+        <div>
+          <span className="dashboard-eyebrow">PERSONAL / OVERVIEW</span>
+          <h2 className="font-display">{t("我的概览")}</h2>
+          <p>{t("余额、用量与个人密钥保持在一个清晰的工作面上。")}</p>
+        </div>
+      </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <MetricCard
           title={t("钱包余额")}
@@ -1174,7 +1234,7 @@ function MemberKeyUsageCard({
     <Card className={cn("glass-card mission-panel shadow-sm", className)}>
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
         <div>
-          <CardTitle className="text-base font-semibold">{t("我的平台 Key")}</CardTitle>
+          <CardTitle className="font-display text-lg font-medium">{t("我的平台 Key")}</CardTitle>
           <p className="mt-1 text-xs text-muted-foreground">
             {summary.apiKeySummary.totalCount} {t("个 Key")} · {summary.apiKeySummary.enabledCount} {t("个启用")}
           </p>
@@ -1288,7 +1348,7 @@ function MemberUsageTrendCard({
   return (
     <Card className={cn("glass-card mission-panel shadow-sm", className)}>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base font-semibold">
+        <CardTitle className="flex items-center gap-2 font-display text-lg font-medium">
           <LineChart className="h-4 w-4 text-primary" />
           {t("用量趋势")}
         </CardTitle>

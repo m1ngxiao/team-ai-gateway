@@ -51,7 +51,10 @@ impl Read for ChatByteStreamReader {
                 Ok(GatewayByteStreamItem::Error(error)) => return Err(io::Error::other(error)),
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "upstream stream disconnected"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "upstream stream disconnected",
+                    ));
                 }
             }
         }

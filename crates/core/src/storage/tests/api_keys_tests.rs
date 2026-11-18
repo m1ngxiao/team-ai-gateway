@@ -142,7 +142,9 @@ fn upstream_provider_migration_classifies_only_pinned_claude_aggregate_keys() {
         .expect("seed legacy schema");
     storage
         .conn
-        .execute_batch(include_str!("../../../migrations/135_api_keys_upstream_provider.sql"))
+        .execute_batch(include_str!(
+            "../../../migrations/135_api_keys_upstream_provider.sql"
+        ))
         .expect("upgrade legacy schema");
     for (id, expected_provider, expected_status) in [
         ("claude-pinned", "claude", "disabled"),
@@ -205,11 +207,17 @@ fn upstream_provider_migration_keeps_openai_keys_active_without_claude_aggregate
         .expect("seed OpenAI-only legacy schema");
     storage
         .conn
-        .execute_batch(include_str!("../../../migrations/135_api_keys_upstream_provider.sql"))
+        .execute_batch(include_str!(
+            "../../../migrations/135_api_keys_upstream_provider.sql"
+        ))
         .expect("upgrade OpenAI-only schema");
     let disabled: i64 = storage
         .conn
-        .query_row("SELECT COUNT(*) FROM api_keys WHERE status != 'active'", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM api_keys WHERE status != 'active'",
+            [],
+            |row| row.get(0),
+        )
         .expect("read migrated statuses");
     assert_eq!(disabled, 0);
 }
@@ -243,7 +251,9 @@ fn upstream_provider_migration_reviews_shared_compatible_fallbacks() {
         .expect("seed legacy routes");
     storage
         .conn
-        .execute_batch(include_str!("../../../migrations/135_api_keys_upstream_provider.sql"))
+        .execute_batch(include_str!(
+            "../../../migrations/135_api_keys_upstream_provider.sql"
+        ))
         .expect("upgrade legacy routes");
     for (id, needs_review) in [
         ("unpinned", true),

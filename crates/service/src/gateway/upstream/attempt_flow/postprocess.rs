@@ -135,6 +135,9 @@ fn retry_upstream_server_error_once(
     if status.as_u16() != 500 {
         return Ok(None);
     }
+    if super::super::generation_budget::current().is_some_and(|budget| !budget.can_send()) {
+        return Ok(None);
+    }
     if debug {
         log::warn!(
             "event=gateway_upstream_server_error_retry path={} status={} account_id={}",
@@ -217,6 +220,9 @@ fn retry_chatgpt_challenge_without_compression(
     if !should_treat_as_challenge_for_retry(status, upstream_content_type, upstream_cf_ray) {
         return Ok(None);
     }
+    if super::super::generation_budget::current().is_some_and(|budget| !budget.can_send()) {
+        return Ok(None);
+    }
 
     if debug {
         log::warn!(
@@ -281,6 +287,9 @@ fn retry_chatgpt_responses_bad_request_without_session_headers(
     status: reqwest::StatusCode,
 ) -> Option<GatewayUpstreamResponse> {
     if !should_retry_chatgpt_responses_bad_request(upstream_base, url, status.as_u16()) {
+        return None;
+    }
+    if super::super::generation_budget::current().is_some_and(|budget| !budget.can_send()) {
         return None;
     }
     if debug {

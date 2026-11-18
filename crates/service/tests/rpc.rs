@@ -1,8 +1,7 @@
 use codexmanager_core::rpc::types::JsonRpcRequest;
 use codexmanager_core::storage::{
     now_ts, Account, AggregateApi, Event, ManagedModelV2Upsert, ModelRouteV2,
-    ProxyProfileCreateInput, RequestLog, RequestTokenStat, Storage, Token,
-    UsageSnapshotRecord,
+    ProxyProfileCreateInput, RequestLog, RequestTokenStat, Storage, Token, UsageSnapshotRecord,
 };
 use std::fs;
 use std::io::{Read, Write};
@@ -3158,7 +3157,10 @@ fn rpc_chatgpt_auth_tokens_login_enqueues_usage_refresh() {
         {
             break snapshot;
         }
-        assert!(std::time::Instant::now() < deadline, "usage snapshot exists");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "usage snapshot exists"
+        );
         std::thread::sleep(Duration::from_millis(25));
     };
     assert_eq!(snapshot.used_percent, Some(25.0));
@@ -4100,7 +4102,10 @@ fn rpc_apikey_upstream_provider_isolates_claude_account_and_aggregate_routes() {
         .find_api_key_by_id(subscription_key_id)
         .expect("find Claude subscription key")
         .expect("Claude subscription key exists");
-    assert_eq!(subscription_key.upstream_provider, codexmanager_core::storage::UpstreamProvider::Claude);
+    assert_eq!(
+        subscription_key.upstream_provider,
+        codexmanager_core::storage::UpstreamProvider::Claude
+    );
     assert_eq!(subscription_key.rotation_strategy, "account_rotation");
     assert_eq!(subscription_key.aggregate_api_id, None);
 
@@ -4261,7 +4266,9 @@ fn rpc_apikey_upstream_provider_isolates_claude_account_and_aggregate_routes() {
     );
     assert_eq!(unchanged_provider["result"]["ok"], true);
     assert_eq!(
-        storage.api_key_requires_route_review(&key_id).expect("read review marker"),
+        storage
+            .api_key_requires_route_review(&key_id)
+            .expect("read review marker"),
         Some(true)
     );
     let missing_confirmation_provider = rpc(
@@ -4281,10 +4288,15 @@ fn rpc_apikey_upstream_provider_isolates_claude_account_and_aggregate_routes() {
     );
     assert_eq!(confirmed["result"]["ok"], true);
     assert_eq!(
-        storage.api_key_requires_route_review(&key_id).expect("read review marker"),
+        storage
+            .api_key_requires_route_review(&key_id)
+            .expect("read review marker"),
         Some(false)
     );
-    assert_eq!(rpc("apikey/enable", serde_json::json!({"id": key_id}))["result"]["ok"], true);
+    assert_eq!(
+        rpc("apikey/enable", serde_json::json!({"id": key_id}))["result"]["ok"],
+        true
+    );
 
     let invalid_model_update = rpc(
         "apikey/updateModel",
@@ -4336,12 +4348,7 @@ fn rpc_apikey_upstream_provider_isolates_claude_account_and_aggregate_routes() {
     );
 
     storage
-        .update_api_key_rotation_config(
-            &key_id,
-            "hybrid_rotation",
-            Some("agg-claude"),
-            None,
-        )
+        .update_api_key_rotation_config(&key_id, "hybrid_rotation", Some("agg-claude"), None)
         .expect("seed legacy pinned hybrid route");
     let unsafe_hybrid_switch = rpc(
         "apikey/updateModel",
@@ -4351,12 +4358,7 @@ fn rpc_apikey_upstream_provider_isolates_claude_account_and_aggregate_routes() {
         .as_str()
         .is_some_and(|message| message.contains("cannot pin a Claude aggregateApiId")));
     storage
-        .update_api_key_rotation_config(
-            &key_id,
-            "aggregate_api_rotation",
-            Some("agg-claude"),
-            None,
-        )
+        .update_api_key_rotation_config(&key_id, "aggregate_api_rotation", Some("agg-claude"), None)
         .expect("restore aggregate-only route");
 
     let invalid_header_switch = rpc(
@@ -4373,8 +4375,14 @@ fn rpc_apikey_upstream_provider_isolates_claude_account_and_aggregate_routes() {
         .find_api_key_by_id(&key_id)
         .expect("read key after invalid header")
         .expect("key exists");
-    assert_eq!(after_invalid_header.upstream_provider, codexmanager_core::storage::UpstreamProvider::Claude);
-    assert_eq!(after_invalid_header.rotation_strategy, "aggregate_api_rotation");
+    assert_eq!(
+        after_invalid_header.upstream_provider,
+        codexmanager_core::storage::UpstreamProvider::Claude
+    );
+    assert_eq!(
+        after_invalid_header.rotation_strategy,
+        "aggregate_api_rotation"
+    );
 
     let switched = rpc(
         "apikey/updateModel",
@@ -4406,7 +4414,11 @@ fn rpc_apikey_upstream_provider_isolates_claude_account_and_aggregate_routes() {
         .as_str()
         .is_some_and(|message| message.contains("OpenAI model has no active upstream route")));
     assert_eq!(
-        storage.find_api_key_by_id(&key_id).expect("read after rejected route").expect("key").rotation_strategy,
+        storage
+            .find_api_key_by_id(&key_id)
+            .expect("read after rejected route")
+            .expect("key")
+            .rotation_strategy,
         "account_rotation"
     );
 }
@@ -4873,7 +4885,9 @@ fn start_mock_proxy_blocked_server() -> (
     thread::JoinHandle<()>,
 ) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake proxy");
-    listener.set_nonblocking(true).expect("set nonblocking proxy");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking proxy");
     let addr = format!("http://{}", listener.local_addr().expect("fake proxy addr"));
     let (tx, rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();

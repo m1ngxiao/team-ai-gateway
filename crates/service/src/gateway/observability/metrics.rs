@@ -467,6 +467,7 @@ pub(crate) fn gateway_metrics_snapshot() -> GatewayMetricsSnapshot {
 pub(crate) fn gateway_metrics_prometheus() -> String {
     let m = gateway_metrics_snapshot();
     let labeled = gateway_labeled_metrics_prometheus();
+    let per_account = account_inflight_prometheus();
     format!(
         "codexmanager_gateway_requests_total {}\n\
 codexmanager_gateway_requests_active {}\n\
@@ -495,7 +496,7 @@ codexmanager_http_queue_enqueue_failures_total {}\n\
 codexmanager_gateway_upstream_attempt_duration_milliseconds_total {}\n\
 codexmanager_gateway_upstream_attempt_duration_milliseconds_count {}\n\
 codexmanager_gateway_upstream_attempt_errors_total {}\n\
-{}",
+{}{}",
         m.total_requests,
         m.active_requests,
         m.account_inflight_total,
@@ -524,7 +525,23 @@ codexmanager_gateway_upstream_attempt_errors_total {}\n\
         m.gateway_upstream_attempts,
         m.gateway_upstream_attempt_errors,
         labeled,
+        per_account,
     )
+}
+
+fn account_inflight_prometheus() -> String {
+    let lock = ACCOUNT_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()));
+    let map = crate::lock_utils::lock_recover(lock, "account_inflight");
+    let mut entries = map.iter().map(|(k, v)| (k.clone(), *v)).collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut text = String::new();
+    for (account_id, count) in entries {
+        let label = account_id.replace('\\', "\\\\").replace('"', "\\\"");
+        text.push_str(&format!(
+            "codexmanager_gateway_account_inflight{{account_id=\"{label}\"}} {count}\n"
+        ));
+    }
+    text
 }
 
 /// 函数 `gateway_labeled_metrics_prometheus`
@@ -677,13 +694,18 @@ impl AccountInFlightGuard {
     /// delivered. Keeping this inert guard preserves the bridge's ownership
     /// contract, and Drop must not decrement a later request's reservation.
     pub(crate) fn release(&mut self) {
-        if self.released { return; }
+        if self.released {
+            return;
+        }
         self.released = true;
         let lock = ACCOUNT_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()));
         let mut map = crate::lock_utils::lock_recover(lock, "account_inflight");
         if let Some(value) = map.get_mut(&self.account_id) {
-            if *value > 1 { *value -= 1; }
-            else { map.remove(&self.account_id); }
+            if *value > 1 {
+                *value -= 1;
+            } else {
+                map.remove(&self.account_id);
+            }
         }
     }
 }
@@ -699,7 +721,13 @@ pub(crate) fn select_and_acquire_account_inflight(
     let count = map.entry(account_id.clone()).or_insert(0);
     let before = *count;
     *count += 1;
-    Some((AccountInFlightGuard { account_id, released: false }, before))
+    Some((
+        AccountInFlightGuard {
+            account_id,
+            released: false,
+        },
+        before,
+    ))
 }
 
 impl Drop for AccountInFlightGuard {
@@ -764,22 +792,27 @@ mod account_capacity_tests {
         let start = Arc::new(Barrier::new(17));
         let acquired = Arc::new(Barrier::new(17));
         let release = Arc::new(Barrier::new(17));
-        let threads = (0..16).map(|_| {
-            let (start, acquired, release) = (start.clone(), acquired.clone(), release.clone());
-            std::thread::spawn(move || {
-                start.wait();
-                let guard = try_acquire_account_inflight(ACCOUNT, 3);
-                acquired.wait();
-                release.wait();
-                guard.is_some()
+        let threads = (0..16)
+            .map(|_| {
+                let (start, acquired, release) = (start.clone(), acquired.clone(), release.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    let guard = try_acquire_account_inflight(ACCOUNT, 3);
+                    acquired.wait();
+                    release.wait();
+                    guard.is_some()
+                })
             })
-        }).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         start.wait();
         acquired.wait();
         let held = account_inflight_count(ACCOUNT);
         release.wait();
-        let succeeded = threads.into_iter().map(|thread| thread.join().unwrap())
-            .filter(|acquired| *acquired).count();
+        let succeeded = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(|acquired| *acquired)
+            .count();
         assert_eq!(held, 3);
         assert_eq!(succeeded, 3);
         assert_eq!(account_inflight_count(ACCOUNT), 0);

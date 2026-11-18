@@ -203,12 +203,22 @@ fn conversation_binding_cas_and_touch_reject_stale_same_account_generation() {
         .unwrap());
     assert!(!storage
         .touch_conversation_binding_if_current(
-            "key-hash-1", "conv-1", "acc-1", 1, Some("stale"), 400,
+            "key-hash-1",
+            "conv-1",
+            "acc-1",
+            1,
+            Some("stale"),
+            400,
         )
         .unwrap());
     assert!(storage
         .touch_conversation_binding_if_current(
-            "key-hash-1", "conv-1", "acc-1", 3, Some("current"), 300,
+            "key-hash-1",
+            "conv-1",
+            "acc-1",
+            3,
+            Some("current"),
+            300,
         )
         .unwrap());
     let loaded = storage
@@ -226,7 +236,9 @@ fn conversation_binding_cas_does_not_recreate_deleted_binding() {
     storage.init().expect("init schema");
     let original = sample_binding();
     storage.upsert_conversation_binding(&original).unwrap();
-    storage.delete_conversation_binding("key-hash-1", "conv-1").unwrap();
+    storage
+        .delete_conversation_binding("key-hash-1", "conv-1")
+        .unwrap();
     let mut next = original;
     next.account_id = "acc-2".into();
     next.thread_epoch = 2;

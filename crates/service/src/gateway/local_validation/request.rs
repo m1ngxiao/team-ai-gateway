@@ -241,10 +241,11 @@ fn ensure_anthropic_model_is_listed(
             ),
         ));
     }
-    let found = models
-        .models
-        .iter()
-        .any(|item| item.slug.trim().eq_ignore_ascii_case(model));
+    let canonical_model = crate::models_v2::policy_catalog_slug(model);
+    let found = models.models.iter().any(|item| {
+        let slug = item.slug.trim();
+        slug.eq_ignore_ascii_case(model) || slug.eq_ignore_ascii_case(canonical_model)
+    });
     if found {
         Ok(())
     } else {
@@ -510,6 +511,38 @@ fn chat_content_to_responses_parts(
     }
 }
 
+fn chat_content_to_instruction_text(content: &serde_json::Value) -> Vec<String> {
+    match content {
+        serde_json::Value::String(text) => (!text.trim().is_empty())
+            .then(|| text.to_string())
+            .into_iter()
+            .collect(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                let obj = part.as_object()?;
+                let kind = obj.get("type").and_then(serde_json::Value::as_str)?;
+                if !matches!(kind, "text" | "input_text" | "output_text") {
+                    return None;
+                }
+                obj.get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+                    .map(str::to_string)
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn chat_tool_output_to_string(content: Option<&serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(content) => serde_json::to_string(content).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
 fn chat_tool_to_responses_tool(tool: &serde_json::Value) -> Option<serde_json::Value> {
     let obj = tool.as_object()?;
     if obj.get("type").and_then(serde_json::Value::as_str) != Some("function") {
@@ -659,6 +692,7 @@ fn adapt_openai_chat_completions_body_to_responses(body: Vec<u8>) -> Result<Vec<
         rewritten.insert("model".to_string(), model.clone());
     }
     let mut input = Vec::new();
+    let mut instruction_parts = Vec::new();
     if let Some(messages) = obj.get("messages").and_then(serde_json::Value::as_array) {
         for message in messages {
             let Some(message_obj) = message.as_object() else {
@@ -669,10 +703,7 @@ fn adapt_openai_chat_completions_body_to_responses(body: Vec<u8>) -> Result<Vec<
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("user");
             if role == "tool" {
-                let output = message_obj
-                    .get("content")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::Value::String(String::new()));
+                let output = chat_tool_output_to_string(message_obj.get("content"));
                 input.push(serde_json::json!({
                     "type": "function_call_output",
                     "call_id": message_obj
@@ -683,8 +714,13 @@ fn adapt_openai_chat_completions_body_to_responses(body: Vec<u8>) -> Result<Vec<
                 }));
                 continue;
             }
+            if matches!(role, "system" | "developer") {
+                if let Some(content) = message_obj.get("content") {
+                    instruction_parts.extend(chat_content_to_instruction_text(content));
+                }
+                continue;
+            }
             let responses_role = match role {
-                "system" | "developer" => "developer",
                 "assistant" => "assistant",
                 _ => "user",
             };
@@ -733,6 +769,23 @@ fn adapt_openai_chat_completions_body_to_responses(body: Vec<u8>) -> Result<Vec<
         }
     }
     rewritten.insert("input".to_string(), serde_json::Value::Array(input));
+    if !instruction_parts.is_empty() {
+        rewritten.insert(
+            "instructions".to_string(),
+            serde_json::Value::String(instruction_parts.join("\n\n")),
+        );
+    }
+    for key in ["temperature", "top_p"] {
+        if let Some(value) = obj.get(key) {
+            rewritten.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(max_output_tokens) = obj
+        .get("max_completion_tokens")
+        .or_else(|| obj.get("max_tokens"))
+    {
+        rewritten.insert("max_output_tokens".to_string(), max_output_tokens.clone());
+    }
     if let Some(stream) = obj.get("stream") {
         rewritten.insert("stream".to_string(), stream.clone());
     }
@@ -1907,6 +1960,110 @@ pub(super) fn build_local_validation_result(
         )
     })?;
     let initial_request_value = super::super::parse_request_json_value(&body);
+    let initial_request_meta = initial_request_value
+        .as_ref()
+        .map(super::super::parse_request_metadata_from_value)
+        .unwrap_or_default();
+    let native_codex_client = is_native_codex_client_request(&incoming_headers);
+    let local_usage_is_shortcut = super::super::local_usage::is_usage_endpoint_path(
+        normalized_path.as_str(),
+    ) || super::super::local_usage::detect_chat_usage_command(
+        logical_path.as_str(),
+        request_method.as_str(),
+        initial_request_value.as_ref(),
+    )
+    .is_some();
+    if local_usage_is_shortcut {
+        let model_for_log = initial_request_meta
+            .model
+            .clone()
+            .or_else(|| api_key.model_slug.clone());
+        let reasoning_for_log = initial_request_meta
+            .reasoning_effort
+            .clone()
+            .or_else(|| api_key.reasoning_effort.clone());
+        let is_stream = resolve_client_is_stream(
+            effective_protocol_type,
+            logical_path.as_str(),
+            initial_request_meta.is_stream,
+            initial_request_meta.stream_specified,
+            native_codex_client,
+        );
+        return Ok(LocalValidationResult {
+            trace_id,
+            incoming_headers,
+            storage,
+            original_path: normalized_path,
+            passthrough_path: logical_path.clone(),
+            path: logical_path,
+            passthrough_body: Bytes::from(body.clone()),
+            body: Bytes::from(body),
+            is_stream,
+            has_prompt_cache_key: initial_request_meta.has_prompt_cache_key,
+            request_shape: initial_request_meta.request_shape,
+            protocol_type: effective_protocol_type.to_string(),
+            upstream_provider: api_key.upstream_provider,
+            rotation_strategy: api_key.rotation_strategy,
+            aggregate_api_id: api_key.aggregate_api_id,
+            account_group_filter,
+            account_plan_filter: api_key.account_plan_filter,
+            response_adapter: super::super::ResponseAdapter::Passthrough,
+            gemini_stream_output_mode: None,
+            tool_name_restore_map: super::super::ToolNameRestoreMap::default(),
+            context_management: Default::default(),
+            request_method,
+            key_id: api_key.id,
+            platform_key_hash: api_key.key_hash,
+            local_conversation_id: None,
+            route_conversation_id: None,
+            route_conversation_source: None,
+            conversation_binding: None,
+            client_model_for_log: initial_request_meta.model,
+            model_for_log,
+            model_source_for_log: None,
+            client_reasoning_for_log: initial_request_meta.reasoning_effort,
+            reasoning_for_log,
+            reasoning_source_for_log: None,
+            service_tier_for_log: initial_request_meta.service_tier.clone(),
+            effective_service_tier_for_log: initial_request_meta.service_tier,
+            service_tier_source_for_log: None,
+            gateway_mode_for_log: Some("local_usage".to_string()),
+            method,
+            has_anthropic_safeguards: false,
+            anthropic_safeguards_capability: None,
+        });
+    }
+    let has_anthropic_safeguards = super::super::request_has_safeguards(body.as_slice());
+    let anthropic_safeguards_capability = super::super::safeguards_request_capability_kind(
+        body.as_slice(),
+        effective_protocol_type,
+        api_key.upstream_provider,
+    );
+    if anthropic_safeguards_capability
+        == Some(super::super::anthropic_safeguards::SafeguardsCapability::Unsupported)
+    {
+        log::warn!(
+            "event=anthropic_safeguards_capability trace_id={} capability=unsupported provider={:?} protocol={} path={}",
+            trace_id,
+            api_key.upstream_provider,
+            effective_protocol_type,
+            logical_path,
+        );
+        return Err(LocalValidationError::new(
+            501,
+            crate::gateway::bilingual_error(
+                "当前上游不支持 Anthropic server-side safeguards",
+                "anthropic safeguards capability=false: configure a native Anthropic upstream",
+            ),
+        ));
+    }
+    if logical_path.split('?').next() == Some("/v1/messages") {
+        super::super::log_messages_ingress(
+            trace_id.as_str(),
+            request,
+            initial_request_value.as_ref(),
+        );
+    }
     let initial_service_tier_diagnostic = initial_request_value
         .as_ref()
         .map(|value| super::super::inspect_service_tier_value(value.get("service_tier")))
@@ -1919,11 +2076,6 @@ pub(super) fn build_local_validation_result(
         initial_service_tier_diagnostic.raw_value.as_deref(),
         initial_service_tier_diagnostic.normalized_value.as_deref(),
     );
-    let initial_request_meta = initial_request_value
-        .as_ref()
-        .map(super::super::parse_request_metadata_from_value)
-        .unwrap_or_default();
-    let native_codex_client = is_native_codex_client_request(&incoming_headers);
     let compact_gateway_mode =
         is_compact_subagent_request(normalized_path.as_str(), &incoming_headers)
             .then_some("compact".to_string());
@@ -2077,6 +2229,7 @@ pub(super) fn build_local_validation_result(
             ),
             gemini_stream_output_mode: None,
             tool_name_restore_map: super::super::ToolNameRestoreMap::default(),
+            context_management: Default::default(),
             request_method,
             key_id: api_key.id,
             platform_key_hash: api_key.key_hash,
@@ -2095,6 +2248,8 @@ pub(super) fn build_local_validation_result(
             service_tier_source_for_log,
             gateway_mode_for_log: compact_gateway_mode,
             method,
+            has_anthropic_safeguards,
+            anthropic_safeguards_capability,
         });
     }
 
@@ -2148,8 +2303,23 @@ pub(super) fn build_local_validation_result(
     )
     .map_err(|err| LocalValidationError::new(400, err.message()))?;
     let original_body = body.clone();
+    let mut context_management = Default::default();
     let (mut path, mut response_adapter, mut gemini_stream_output_mode, mut tool_name_restore_map) =
-        if effective_protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
+        if has_anthropic_safeguards
+            && anthropic_safeguards_capability
+                == Some(super::super::anthropic_safeguards::SafeguardsCapability::Native)
+        {
+            // A safeguards request must stay on the native Messages contract all the way to
+            // the Claude upstream. The compatibility adapter intentionally understands only
+            // the common request shape and therefore cannot be the source of truth here.
+            body = passthrough_body.clone();
+            (
+                logical_path.clone(),
+                super::super::ResponseAdapter::Passthrough,
+                None,
+                super::super::ToolNameRestoreMap::default(),
+            )
+        } else if effective_protocol_type == crate::apikey_profile::PROTOCOL_OPENAI_COMPAT
             && is_openai_images_generations_path(normalized_path.as_str())
             && should_adapt_openai_images_request(native_codex_client, &incoming_headers)
         {
@@ -2217,6 +2387,7 @@ pub(super) fn build_local_validation_result(
                     crate::gateway::bilingual_error("请求协议适配失败", err),
                 )
             })?;
+            context_management = adapted.context_management;
             body = adapted.body;
             (
                 adapted.path,
@@ -2287,13 +2458,19 @@ pub(super) fn build_local_validation_result(
     }
     let instruction_model = effective_model
         .as_deref()
+        .or(passthrough_policy_model.as_deref())
         .or(initial_request_meta.model.as_deref());
-    body = apply_model_instructions_policy(
-        &storage,
-        instruction_model,
-        body,
-        crate::models_v2::instructions::InstructionProtocolV2::OpenAi,
-    )?;
+    if !(has_anthropic_safeguards
+        && anthropic_safeguards_capability
+            == Some(super::super::anthropic_safeguards::SafeguardsCapability::Native))
+    {
+        body = apply_model_instructions_policy(
+            &storage,
+            instruction_model,
+            body,
+            crate::models_v2::instructions::InstructionProtocolV2::OpenAi,
+        )?;
+    }
     let preferred_prompt_cache_key = resolve_preferred_client_prompt_cache_key(
         effective_protocol_type,
         &incoming_headers,
@@ -2496,6 +2673,7 @@ pub(super) fn build_local_validation_result(
         response_adapter,
         gemini_stream_output_mode,
         tool_name_restore_map,
+        context_management,
         request_method,
         key_id: api_key.id,
         platform_key_hash: api_key.key_hash,
@@ -2518,6 +2696,8 @@ pub(super) fn build_local_validation_result(
         service_tier_source_for_log,
         gateway_mode_for_log: compact_gateway_mode,
         method,
+        has_anthropic_safeguards,
+        anthropic_safeguards_capability,
     })
 }
 

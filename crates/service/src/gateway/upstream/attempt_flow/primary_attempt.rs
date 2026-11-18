@@ -65,6 +65,29 @@ where
         Ok(resp) => PrimaryAttemptResult::Upstream(resp),
         Err(err) => {
             let err_msg = err.to_string();
+            if super::super::generation_budget::is_deadline_error_message(&err_msg) {
+                log_gateway_result(Some(url), 504, Some(err_msg.as_str()));
+                return PrimaryAttemptResult::Terminal {
+                    status_code: 504,
+                    message: err_msg,
+                };
+            }
+            if super::super::generation_budget::is_budget_error_message(&err_msg) {
+                log::warn!(
+                    "event=gateway_primary_attempt_budget_exhausted path={} account_id={} reason={}",
+                    request_ctx.request_path,
+                    account.id,
+                    err_msg
+                );
+                return if has_more_candidates {
+                    PrimaryAttemptResult::Failover
+                } else {
+                    PrimaryAttemptResult::Terminal {
+                        status_code: 503,
+                        message: err_msg,
+                    }
+                };
+            }
             super::super::super::mark_account_cooldown(
                 &account.id,
                 super::super::super::CooldownReason::Network,

@@ -1,10 +1,13 @@
 "use client";
 
-export interface LocalDayRange {
+export interface BusinessDayRange {
   dayStartTs: number;
   dayEndTs: number;
   timeZone: string | null;
 }
+
+export const BUSINESS_TIME_ZONE = "Asia/Shanghai";
+const BUSINESS_TIME_ZONE_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function getPreferredLocale(): string | undefined {
   if (typeof document !== "undefined") {
@@ -30,30 +33,19 @@ export function getBrowserTimeZone(): string | null {
   }
 }
 
-export function getLocalDayRange(referenceDate = new Date()): LocalDayRange {
-  const start = new Date(
-    referenceDate.getFullYear(),
-    referenceDate.getMonth(),
-    referenceDate.getDate(),
-    0,
-    0,
-    0,
-    0,
-  );
-  const end = new Date(
-    referenceDate.getFullYear(),
-    referenceDate.getMonth(),
-    referenceDate.getDate() + 1,
-    0,
-    0,
-    0,
-    0,
-  );
+export function getBusinessDayRange(referenceDate = new Date()): BusinessDayRange {
+  const shanghaiTime = new Date(referenceDate.getTime() + BUSINESS_TIME_ZONE_OFFSET_MS);
+  const startMs =
+    Date.UTC(
+      shanghaiTime.getUTCFullYear(),
+      shanghaiTime.getUTCMonth(),
+      shanghaiTime.getUTCDate(),
+    ) - BUSINESS_TIME_ZONE_OFFSET_MS;
 
   return {
-    dayStartTs: Math.floor(start.getTime() / 1000),
-    dayEndTs: Math.floor(end.getTime() / 1000),
-    timeZone: getBrowserTimeZone(),
+    dayStartTs: Math.floor(startMs / 1000),
+    dayEndTs: Math.floor((startMs + 24 * 60 * 60 * 1000) / 1000),
+    timeZone: BUSINESS_TIME_ZONE,
   };
 }
 

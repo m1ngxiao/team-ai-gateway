@@ -61,10 +61,10 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
       >
         <div
           data-slot="app-main-scale"
-          className="flex h-full w-full origin-top-left flex-col xl:h-[111.111111%] xl:w-[111.111111%] xl:scale-90"
+          className="flex h-full w-full flex-col"
         >
           <Header />
-          <main className="relative min-w-0 flex-1 overflow-y-auto px-4 pb-7 pt-4 no-scrollbar lg:px-5 lg:pt-5 xl:pb-10 xl:pl-[26px] xl:pr-[45px] xl:pt-[26px]">
+          <main className="relative min-w-0 flex-1 overflow-y-auto px-4 pb-10 pt-5 no-scrollbar lg:px-7 lg:pt-6 xl:px-8 xl:pb-12 xl:pt-7">
             <RouteTransitionOverlay />
             <PageKeepAliveViewport initialChildren={children} />
           </main>

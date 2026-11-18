@@ -190,6 +190,9 @@ test("GPT-6 Sol uses the official Codex Fast tier description", () => {
 });
 
 for (const [slug, description] of [
+  ["gpt-6.2-astra", "2x speed, increased usage"],
+  ["gpt-6.2-sol", "2x speed, increased usage"],
+  ["gpt-6.1-terra", "1.5x speed"],
   ["gpt-6.1-sol", "2x speed, increased usage"],
   ["gpt-6-luna", "1.5x speed"],
 ]) {

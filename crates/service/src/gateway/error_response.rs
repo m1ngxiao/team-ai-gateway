@@ -55,14 +55,18 @@ pub(super) fn terminal_text_response(
         500..=599 => "server_error",
         _ => "api_error",
     };
-    let body = json!({
+    let mut body = json!({
+        "type": "error",
         "error": {
             "message": message,
             "type": error_type,
             "code": code,
         }
-    })
-    .to_string();
+    });
+    if let Some(trace_id) = trace_id.map(str::trim).filter(|value| !value.is_empty()) {
+        body["request_id"] = json!(trace_id);
+    }
+    let body = body.to_string();
     let mut response = Response::from_string(body).with_status_code(status_code);
     if let Ok(header) = Header::from_bytes(
         b"Content-Type".as_slice(),

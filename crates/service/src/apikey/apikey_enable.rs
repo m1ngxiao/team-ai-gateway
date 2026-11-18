@@ -23,8 +23,7 @@ pub(crate) fn enable_api_key(key_id: &str) -> Result<(), String> {
     {
         Some(true) => {
             return Err(
-                "api key requires administrator upstream provider review before enable"
-                    .to_string(),
+                "api key requires administrator upstream provider review before enable".to_string(),
             );
         }
         None => return Err("api key not found".to_string()),

@@ -1,10 +1,12 @@
 use codexmanager_core::storage::{now_ts, AggregateApi, Storage};
 
 use super::{
-    build_aggregate_api_request, build_anthropic_bridge_aggregate_api_request, build_upstream_url,
-    effective_action_path, resolve_aggregate_api_rotation_candidates,
-    resolve_passthrough_sse_protocol, responses_to_anthropic_messages_action_path,
-    rewrite_body_model_override, should_bridge_responses_to_anthropic, AggregateApiAuthConfig,
+    anthropic_to_responses_action_path, build_aggregate_api_request,
+    build_anthropic_bridge_aggregate_api_request, build_upstream_url, effective_action_path,
+    resolve_aggregate_api_rotation_candidates, resolve_passthrough_sse_protocol,
+    responses_to_anthropic_messages_action_path, rewrite_body_model_override,
+    should_bridge_anthropic_to_responses, should_bridge_responses_to_anthropic,
+    AggregateApiAuthConfig,
 };
 use crate::aggregate_api::{
     AGGREGATE_API_AUTH_APIKEY, AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX,
@@ -207,6 +209,68 @@ fn anthropic_bridge_request_adds_required_messages_headers_with_default_auth() {
 }
 
 #[test]
+fn aggregate_messages_request_keeps_anthropic_header_duplicates_and_unknown_headers() {
+    let request: tiny_http::Request = tiny_http::TestRequest::new()
+        .with_header(
+            tiny_http::Header::from_bytes("anthropic-beta", "safeguards-review-2025")
+                .expect("safeguards beta"),
+        )
+        .with_header(
+            tiny_http::Header::from_bytes("anthropic-beta", "interleaved-thinking-2025-05-14")
+                .expect("thinking beta"),
+        )
+        .with_header(
+            tiny_http::Header::from_bytes("anthropic-version", "2023-06-01").expect("version"),
+        )
+        .with_header(
+            tiny_http::Header::from_bytes("x-claude-code-experimental", "retain-me")
+                .expect("unknown Claude header"),
+        )
+        .into();
+    let built = build_aggregate_api_request(
+        &reqwest::blocking::Client::new(),
+        &request,
+        &reqwest::Method::POST,
+        reqwest::Url::parse("https://api.anthropic.com/v1/messages").expect("url"),
+        &Bytes::from_static(br#"{"model":"claude-test","messages":[]}"#),
+        "sk-ant-test",
+        &AggregateApiAuthConfig::ApiKeyHeader {
+            name: "x-api-key".to_string(),
+            format: "raw".to_string(),
+        },
+        &std::collections::HashSet::from(["x-api-key".to_string()]),
+        "aggregate-client/1.0",
+        None,
+        false,
+    )
+    .expect("build aggregate request");
+    let beta_values = built
+        .headers()
+        .get_all("anthropic-beta")
+        .iter()
+        .map(|value| value.to_str().expect("beta value"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        beta_values,
+        vec!["safeguards-review-2025", "interleaved-thinking-2025-05-14"]
+    );
+    assert_eq!(
+        built
+            .headers()
+            .get("anthropic-version")
+            .and_then(|value| value.to_str().ok()),
+        Some("2023-06-01")
+    );
+    assert_eq!(
+        built
+            .headers()
+            .get("x-claude-code-experimental")
+            .and_then(|value| value.to_str().ok()),
+        Some("retain-me")
+    );
+}
+
+#[test]
 fn aggregate_request_user_agent_override_replaces_conflicting_auth_header() {
     let request: tiny_http::Request = tiny_http::TestRequest::new()
         .with_header(
@@ -335,6 +399,28 @@ fn compatible_candidate_does_not_enter_claude_key_pool() {
         &compatible,
         "/v1/responses"
     ));
+}
+
+#[test]
+fn codex_aggregate_candidate_bridges_anthropic_messages_to_responses() {
+    let mut candidate = aggregate_api_with_action(None);
+    candidate.provider_type = AGGREGATE_API_PROVIDER_CODEX.to_string();
+    assert!(should_bridge_anthropic_to_responses(
+        &candidate,
+        "/v1/messages?beta=true"
+    ));
+    assert!(!should_bridge_anthropic_to_responses(
+        &candidate,
+        "/v1/responses"
+    ));
+    assert!(!should_bridge_anthropic_to_responses(
+        &candidate,
+        "/v1/messages/count_tokens"
+    ));
+    assert_eq!(
+        anthropic_to_responses_action_path(&candidate),
+        "/v1/responses"
+    );
 }
 
 #[test]

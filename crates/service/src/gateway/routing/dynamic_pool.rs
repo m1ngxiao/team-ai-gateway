@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use super::metrics::{select_and_acquire_account_inflight, AccountInFlightGuard};
 
 const ENV_ENABLED: &str = "CODEXMANAGER_DYNAMIC_OVERLOAD_ENABLED";
-const RECOVERY_LIMIT: usize = 2;
+const ENV_RECOVERY_LIMIT: &str = "CODEXMANAGER_DYNAMIC_RECOVERY_LIMIT";
+const DEFAULT_RECOVERY_LIMIT: usize = 8;
+const MAX_RECOVERY_LIMIT: usize = 64;
 const RECOVERY_MS: u64 = 30_000;
 const RECOVERY_SUCCESSES: u32 = 3;
 const RESET_BACKOFF_MS: u64 = 300_000;
@@ -24,6 +26,7 @@ const MAINTENANCE_INTERVAL_MS: u64 = 60_000;
 
 static RUNTIME: OnceLock<Arc<Runtime>> = OnceLock::new();
 static ENABLED: OnceLock<bool> = OnceLock::new();
+static RECOVERY_LIMIT: OnceLock<usize> = OnceLock::new();
 
 /// A startup-only switch. It intentionally cannot change during a request.
 pub(crate) fn enabled() -> bool {
@@ -49,6 +52,17 @@ fn runtime() -> Arc<Runtime> {
         .clone()
 }
 
+fn recovery_limit() -> usize {
+    *RECOVERY_LIMIT.get_or_init(|| {
+        std::env::var(ENV_RECOVERY_LIMIT)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|limit| *limit > 0)
+            .map(|limit| limit.min(MAX_RECOVERY_LIMIT))
+            .unwrap_or(DEFAULT_RECOVERY_LIMIT)
+    })
+}
+
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 struct CircuitKey {
     account: String,
@@ -61,7 +75,10 @@ struct PoolKey {
 }
 impl PoolKey {
     fn new(pool: &str, model: &str) -> Self {
-        Self { pool: pool.to_owned(), model: model.to_owned() }
+        Self {
+            pool: pool.to_owned(),
+            model: model.to_owned(),
+        }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,8 +108,14 @@ struct Circuit {
 impl Circuit {
     fn new(now: u64) -> Self {
         // A restart has no durable evidence of health. Admit one real request
-        // as a probe, then at most two concurrent requests during recovery.
-        Self { phase: Phase::Open { until: now }, generation: 0, backoff_level: 0, inflight: 0, last_used: now }
+        // as a probe, then use the configured recovery concurrency limit.
+        Self {
+            phase: Phase::Open { until: now },
+            generation: 0,
+            backoff_level: 0,
+            inflight: 0,
+            last_used: now,
+        }
     }
     fn promote_stable_recovery(&mut self, now: u64) {
         if let Phase::Recovering { since, successes } = self.phase {
@@ -116,8 +139,13 @@ struct PoolState {
 }
 impl PoolState {
     fn new(now: u64) -> Self {
-        Self { last_selected: None, retry_units: BUCKET_CAPACITY,
-            last_used: now, active_permits: 0, retry_reservations: 0 }
+        Self {
+            last_selected: None,
+            retry_units: BUCKET_CAPACITY,
+            last_used: now,
+            active_permits: 0,
+            retry_reservations: 0,
+        }
     }
 }
 #[derive(Default)]
@@ -129,19 +157,27 @@ struct State {
 }
 impl State {
     fn maintain(&mut self, now: u64) {
-        if now.saturating_sub(self.last_maintenance) < MAINTENANCE_INTERVAL_MS { return; }
+        if now.saturating_sub(self.last_maintenance) < MAINTENANCE_INTERVAL_MS {
+            return;
+        }
         self.last_maintenance = now;
         self.circuits.retain(|_, circuit| {
-            circuit.inflight > 0 || now.saturating_sub(circuit.last_used) < IDLE_TTL_MS
+            circuit.inflight > 0
+                || now.saturating_sub(circuit.last_used) < IDLE_TTL_MS
                 || matches!(circuit.phase, Phase::Open { until } if now < until)
                 || matches!(circuit.phase, Phase::HalfOpen { .. })
         });
-        self.pools.retain(|_, pool| pool.active_permits > 0 || pool.retry_reservations > 0
-            || now.saturating_sub(pool.last_used) < IDLE_TTL_MS);
+        self.pools.retain(|_, pool| {
+            pool.active_permits > 0
+                || pool.retry_reservations > 0
+                || now.saturating_sub(pool.last_used) < IDLE_TTL_MS
+        });
     }
 
     fn pool_mut(&mut self, key: PoolKey, now: u64) -> Option<&mut PoolState> {
-        if !self.pools.contains_key(&key) && self.pools.len() >= MAX_POOLS { return None; }
+        if !self.pools.contains_key(&key) && self.pools.len() >= MAX_POOLS {
+            return None;
+        }
         let pool = self.pools.entry(key).or_insert_with(|| PoolState::new(now));
         pool.last_used = now;
         Some(pool)
@@ -167,56 +203,92 @@ pub(crate) struct DynamicAccountPermit {
     account_guard: Option<AccountInFlightGuard>,
 }
 impl DynamicAccountPermit {
-    pub(crate) fn account_id(&self) -> &str { &self.key.account }
-    pub(crate) fn generation(&self) -> u64 { self.generation }
-    pub(crate) fn phase(&self) -> &'static str { self.phase }
-    pub(crate) fn inflight_before(&self) -> usize { self.inflight_before }
+    pub(crate) fn account_id(&self) -> &str {
+        &self.key.account
+    }
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub(crate) fn phase(&self) -> &'static str {
+        self.phase
+    }
+    pub(crate) fn inflight_before(&self) -> usize {
+        self.inflight_before
+    }
 
     /// Transfer only the global load guard into the existing response bridge.
     /// Keep this permit alive alongside that bridge to record semantic health.
     /// The guard must be transferred exactly once.
     pub(crate) fn take_inflight_guard(&mut self) -> AccountInFlightGuard {
-        self.account_guard.take().expect("dynamic account guard transferred once")
+        self.account_guard
+            .take()
+            .expect("dynamic account guard transferred once")
     }
 
     /// Record only an explicitly classified semantic capacity failure. The
     /// first failure in a generation opens the circuit; concurrent old failures
     /// cannot repeatedly extend or double the same failure wave's cooldown.
     pub(crate) fn record_overload(&mut self, retry_after: Option<Duration>) {
-        if self.completed { return; }
+        if self.completed {
+            return;
+        }
         self.completed = true;
         let now = self.runtime.clock.millis();
         let mut state = crate::lock_utils::lock_recover(&self.runtime.state, "dynamic_pool");
-        let Some(circuit) = state.circuits.get_mut(&self.key) else { return; };
+        let Some(circuit) = state.circuits.get_mut(&self.key) else {
+            return;
+        };
         circuit.last_used = now;
-        if circuit.generation != self.generation { return; }
+        if circuit.generation != self.generation {
+            return;
+        }
         circuit.backoff_level = circuit.backoff_level.saturating_add(1).min(3);
         circuit.generation = circuit.generation.saturating_add(1);
         let base = 30_000u64 << (circuit.backoff_level - 1);
-        let cooldown = jittered_cooldown(base, &self.key, circuit.generation)
-            .max(retry_after.map(|d| d.as_millis().min(u64::MAX as u128) as u64).unwrap_or(0));
-        circuit.phase = Phase::Open { until: now.saturating_add(cooldown) };
+        let cooldown = jittered_cooldown(base, &self.key, circuit.generation).max(
+            retry_after
+                .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
+                .unwrap_or(0),
+        );
+        circuit.phase = Phase::Open {
+            until: now.saturating_add(cooldown),
+        };
     }
 
     /// Requires complete upstream semantic success. HTTP 200, a first token,
     /// and a client disconnect are deliberately not sufficient.
     pub(crate) fn record_success(&mut self) {
-        if self.completed { return; }
+        if self.completed {
+            return;
+        }
         self.completed = true;
         let now = self.runtime.clock.millis();
         let mut state = crate::lock_utils::lock_recover(&self.runtime.state, "dynamic_pool");
-        let Some(circuit) = state.circuits.get_mut(&self.key) else { return; };
+        let Some(circuit) = state.circuits.get_mut(&self.key) else {
+            return;
+        };
         circuit.last_used = now;
-        if circuit.generation != self.generation { return; }
+        if circuit.generation != self.generation {
+            return;
+        }
         match circuit.phase {
             Phase::HalfOpen { owner } if owner == self.owner => {
-                circuit.phase = Phase::Recovering { since: now, successes: 0 };
+                circuit.phase = Phase::Recovering {
+                    since: now,
+                    successes: 0,
+                };
             }
             Phase::Recovering { since, successes } => {
-                circuit.phase = Phase::Recovering { since, successes: successes.saturating_add(1) };
+                circuit.phase = Phase::Recovering {
+                    since,
+                    successes: successes.saturating_add(1),
+                };
             }
             Phase::Healthy { since, successes } => {
-                circuit.phase = Phase::Healthy { since, successes: successes.saturating_add(1) };
+                circuit.phase = Phase::Healthy {
+                    since,
+                    successes: successes.saturating_add(1),
+                };
             }
             _ => {}
         }
@@ -255,7 +327,35 @@ pub(crate) fn select_and_reserve(
     account_limit: usize,
     allow_probe: bool,
 ) -> Option<DynamicAccountPermit> {
-    runtime().select(pool, model, eligible_accounts, excluded_accounts, account_limit, allow_probe)
+    runtime().select(
+        pool,
+        model,
+        eligible_accounts,
+        excluded_accounts,
+        account_limit,
+        allow_probe,
+    )
+}
+
+/// Select from an already ranked candidate list. Circuit health still wins so
+/// recovery probes are not starved, but equal-health candidates follow the
+/// caller's ordering instead of being reshuffled by global in-flight load.
+pub(crate) fn select_and_reserve_ranked(
+    pool: &str,
+    model: &str,
+    eligible_accounts: &[String],
+    excluded_accounts: &[String],
+    account_limit: usize,
+    allow_probe: bool,
+) -> Option<DynamicAccountPermit> {
+    runtime().select_ranked(
+        pool,
+        model,
+        eligible_accounts,
+        excluded_accounts,
+        account_limit,
+        allow_probe,
+    )
 }
 
 /// Preserve normal session affinity while enforcing the same circuit and cap.
@@ -266,11 +366,23 @@ pub(crate) fn reserve_account(
     account_limit: usize,
     allow_probe: bool,
 ) -> Option<DynamicAccountPermit> {
-    select_and_reserve(pool, model, &[account_id.to_owned()], &[], account_limit, allow_probe)
+    select_and_reserve(
+        pool,
+        model,
+        &[account_id.to_owned()],
+        &[],
+        account_limit,
+        allow_probe,
+    )
 }
 
 impl Runtime {
-    fn new(clock: Arc<dyn Clock>) -> Self { Self { state: Mutex::new(State::default()), clock } }
+    fn new(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            state: Mutex::new(State::default()),
+            clock,
+        }
+    }
 
     fn select(
         self: &Arc<Self>,
@@ -281,19 +393,74 @@ impl Runtime {
         account_limit: usize,
         allow_probe: bool,
     ) -> Option<DynamicAccountPermit> {
+        self.select_with_order(
+            pool,
+            model,
+            eligible_accounts,
+            excluded_accounts,
+            account_limit,
+            allow_probe,
+            false,
+        )
+    }
+
+    fn select_ranked(
+        self: &Arc<Self>,
+        pool: &str,
+        model: &str,
+        eligible_accounts: &[String],
+        excluded_accounts: &[String],
+        account_limit: usize,
+        allow_probe: bool,
+    ) -> Option<DynamicAccountPermit> {
+        self.select_with_order(
+            pool,
+            model,
+            eligible_accounts,
+            excluded_accounts,
+            account_limit,
+            allow_probe,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn select_with_order(
+        self: &Arc<Self>,
+        pool: &str,
+        model: &str,
+        eligible_accounts: &[String],
+        excluded_accounts: &[String],
+        account_limit: usize,
+        allow_probe: bool,
+        prefer_input_order: bool,
+    ) -> Option<DynamicAccountPermit> {
         let now = self.clock.millis();
         let mut state = crate::lock_utils::lock_recover(&self.state, "dynamic_pool");
         state.maintain(now);
         let pool_key = PoolKey::new(pool, model);
         state.pool_mut(pool_key.clone(), now)?;
-        let exclusions = excluded_accounts.iter().map(String::as_str).collect::<HashSet<_>>();
+        let exclusions = excluded_accounts
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
         let mut unique = HashSet::new();
         let mut eligible = Vec::new();
-        for account in eligible_accounts {
-            if exclusions.contains(account.as_str()) || !unique.insert(account.as_str()) { continue; }
-            let key = CircuitKey { account: account.clone(), model: model.to_owned() };
-            if !state.circuits.contains_key(&key) && state.circuits.len() >= MAX_CIRCUITS { continue; }
-            let circuit = state.circuits.entry(key).or_insert_with(|| Circuit::new(now));
+        for (rank, account) in eligible_accounts.iter().enumerate() {
+            if exclusions.contains(account.as_str()) || !unique.insert(account.as_str()) {
+                continue;
+            }
+            let key = CircuitKey {
+                account: account.clone(),
+                model: model.to_owned(),
+            };
+            if !state.circuits.contains_key(&key) && state.circuits.len() >= MAX_CIRCUITS {
+                continue;
+            }
+            let circuit = state
+                .circuits
+                .entry(key)
+                .or_insert_with(|| Circuit::new(now));
             circuit.last_used = now;
             circuit.promote_stable_recovery(now);
             let probe_priority = match circuit.phase {
@@ -301,22 +468,31 @@ impl Runtime {
                 // healthy accounts would otherwise starve recovery indefinitely.
                 Phase::Open { until } if allow_probe && now >= until => 0,
                 Phase::Healthy { .. } => 1,
-                Phase::Recovering { .. } if circuit.inflight < RECOVERY_LIMIT => 1,
+                Phase::Recovering { .. } if circuit.inflight < recovery_limit() => 1,
                 _ => continue,
             };
-            eligible.push((account.clone(), probe_priority));
+            eligible.push((account.clone(), probe_priority, rank));
         }
         let pool_state = state.pools.get_mut(&pool_key).expect("reserved pool state");
         let (guard, inflight_before) = select_and_acquire_account_inflight(|counts| {
-            eligible.iter()
-                .filter(|(account, _)| account_limit == 0 || counts.get(account).copied().unwrap_or(0) < account_limit)
-                .min_by_key(|(account, probe_priority)| (
-                    *probe_priority,
-                    counts.get(account).copied().unwrap_or(0),
-                    pool_state.last_selected.as_ref().is_some_and(|last| account <= last),
-                    account.as_str(),
-                ))
-                .map(|(account, _)| account.clone())
+            eligible
+                .iter()
+                .filter(|(account, _, _)| {
+                    account_limit == 0 || counts.get(account).copied().unwrap_or(0) < account_limit
+                })
+                .min_by_key(|(account, probe_priority, rank)| {
+                    (
+                        *probe_priority,
+                        if prefer_input_order { *rank } else { 0 },
+                        counts.get(account).copied().unwrap_or(0),
+                        pool_state
+                            .last_selected
+                            .as_ref()
+                            .is_some_and(|last| account <= last),
+                        account.as_str(),
+                    )
+                })
+                .map(|(account, _, _)| account.clone())
         })?;
         // The selected ID is carried by the guard; avoid another load read.
         let account = guard.account_id().to_owned();
@@ -324,15 +500,28 @@ impl Runtime {
         pool_state.active_permits += 1;
         state.next_owner = state.next_owner.wrapping_add(1);
         let owner = state.next_owner;
-        let key = CircuitKey { account, model: model.to_owned() };
-        let circuit = state.circuits.get_mut(&key).expect("selected eligible circuit");
+        let key = CircuitKey {
+            account,
+            model: model.to_owned(),
+        };
+        let circuit = state
+            .circuits
+            .get_mut(&key)
+            .expect("selected eligible circuit");
         if matches!(circuit.phase, Phase::Open { .. }) {
             circuit.phase = Phase::HalfOpen { owner };
         }
         circuit.inflight += 1;
         Some(DynamicAccountPermit {
-            runtime: self.clone(), key, pool_key, generation: circuit.generation, owner,
-            phase: circuit.phase.name(), inflight_before, completed: false, account_guard: Some(guard),
+            runtime: self.clone(),
+            key,
+            pool_key,
+            generation: circuit.generation,
+            owner,
+            phase: circuit.phase.name(),
+            inflight_before,
+            completed: false,
+            account_guard: Some(guard),
         })
     }
 
@@ -340,7 +529,9 @@ impl Runtime {
         let now = self.clock.millis();
         let mut state = crate::lock_utils::lock_recover(&self.state, "dynamic_pool");
         state.maintain(now);
-        let Some(bucket) = state.pool_mut(PoolKey::new(pool, model), now) else { return; };
+        let Some(bucket) = state.pool_mut(PoolKey::new(pool, model), now) else {
+            return;
+        };
         bucket.retry_units = bucket.retry_units.saturating_add(1).min(BUCKET_CAPACITY);
     }
 
@@ -350,10 +541,16 @@ impl Runtime {
         let mut state = crate::lock_utils::lock_recover(&self.state, "dynamic_pool");
         state.maintain(now);
         let bucket = state.pool_mut(key.clone(), now)?;
-        if bucket.retry_units < RETRY_COST { return None; }
+        if bucket.retry_units < RETRY_COST {
+            return None;
+        }
         bucket.retry_units -= RETRY_COST;
         bucket.retry_reservations += 1;
-        Some(RetryReservation { runtime: self.clone(), key, committed: false })
+        Some(RetryReservation {
+            runtime: self.clone(),
+            key,
+            committed: false,
+        })
     }
 }
 
@@ -379,7 +576,9 @@ pub(crate) fn reserve_retry(pool: &str, model: &str) -> Option<RetryReservation>
 pub(crate) fn retry_available(pool: &str, model: &str) -> bool {
     let runtime = runtime();
     let state = crate::lock_utils::lock_recover(&runtime.state, "dynamic_pool");
-    state.pools.get(&PoolKey::new(pool, model))
+    state
+        .pools
+        .get(&PoolKey::new(pool, model))
         .map(|bucket| bucket.retry_units >= RETRY_COST)
         .unwrap_or(state.pools.len() < MAX_POOLS)
 }
@@ -393,7 +592,9 @@ impl RetryReservation {
     /// Commit immediately before an extra generation POST. Committed tokens
     /// are never refunded, even when the send fails before receiving headers.
     pub(crate) fn commit(&mut self) {
-        if self.committed { return; }
+        if self.committed {
+            return;
+        }
         let mut state = crate::lock_utils::lock_recover(&self.runtime.state, "dynamic_pool");
         if let Some(bucket) = state.pools.get_mut(&self.key) {
             bucket.retry_reservations = bucket.retry_reservations.saturating_sub(1);
@@ -404,12 +605,17 @@ impl RetryReservation {
 }
 impl Drop for RetryReservation {
     fn drop(&mut self) {
-        if self.committed { return; }
+        if self.committed {
+            return;
+        }
         let mut state = crate::lock_utils::lock_recover(&self.runtime.state, "dynamic_pool");
         if let Some(bucket) = state.pools.get_mut(&self.key) {
             bucket.retry_reservations = bucket.retry_reservations.saturating_sub(1);
             bucket.last_used = self.runtime.clock.millis();
-            bucket.retry_units = bucket.retry_units.saturating_add(RETRY_COST).min(BUCKET_CAPACITY);
+            bucket.retry_units = bucket
+                .retry_units
+                .saturating_add(RETRY_COST)
+                .min(BUCKET_CAPACITY);
         }
     }
 }

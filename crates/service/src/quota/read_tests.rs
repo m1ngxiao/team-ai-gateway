@@ -144,17 +144,20 @@ fn api_available_model_slugs_preserves_catalog_sort_order() {
     storage.init().expect("init storage");
     let models = api_available_model_slugs(&storage).expect("available models");
 
-    assert_eq!(models.len(), 12);
+    assert_eq!(models.len(), 15);
     assert_eq!(
-        &models[..5],
+        &models[..7],
         [
             "gpt-5.6-sol",
             "gpt-6-astra",
             "gpt-6.1-sol",
+            "gpt-6.2-sol",
             "gpt-5.6-terra",
-            "gpt-6-sol"
+            "gpt-6-sol",
+            "gpt-6.2-astra"
         ]
     );
+    assert!(models.iter().any(|model| model == "gpt-6.1-terra"));
     assert!(models.iter().any(|model| model == "gpt-6-luna"));
     assert!(!models.iter().any(|model| model == "codex-auto-review"));
     assert!(models.iter().any(|model| model == "gpt-image-2"));

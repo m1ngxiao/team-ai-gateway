@@ -109,6 +109,22 @@ fn seed_openai_compat_gateway(storage: &Storage, platform_key: &str, key_id: &st
     platform_key_hash
 }
 
+fn seed_usage_percent(storage: &Storage, account_id: &str, used_percent: f64, captured_at: i64) {
+    storage
+        .insert_usage_snapshot(&UsageSnapshotRecord {
+            account_id: account_id.to_string(),
+            used_percent: Some(used_percent),
+            window_minutes: Some(300),
+            resets_at: None,
+            secondary_used_percent: None,
+            secondary_window_minutes: None,
+            secondary_resets_at: None,
+            credits_json: None,
+            captured_at,
+        })
+        .expect("insert routing usage snapshot");
+}
+
 fn post_responses(server_addr: &str, platform_key: &str, body: serde_json::Value) {
     post_responses_with_headers(server_addr, platform_key, body, &[]);
 }
@@ -969,5 +985,157 @@ fn gateway_streaming_sse_uses_existing_root_cache_binding() {
         body.get("prompt_cache_key")
             .and_then(serde_json::Value::as_str),
         Some(prompt_cache_key)
+    );
+}
+
+#[test]
+fn gateway_quota_aware_routes_new_session_to_quota_and_keeps_it_sticky() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-quota-aware-sticky");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _route_guard = EnvGuard::set("CODEXMANAGER_ROUTE_STRATEGY", "quota_aware");
+    let _cache_guard = EnvGuard::set("CODEXMANAGER_QUOTA_AWARE_SNAPSHOT_TTL_MS", "0");
+
+    let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_sequence(vec![
+        (200, ok_response("resp_quota_sticky_1")),
+        (200, ok_response("resp_quota_sticky_2")),
+    ]);
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let platform_key = "pk_quota_aware_sticky";
+    let key_hash = seed_openai_compat_gateway(&storage, platform_key, "gk_quota_aware_sticky");
+    let prompt_cache_key = "quota-aware-sticky-session";
+    let route_id = prompt_cache_route_id(&key_hash, prompt_cache_key);
+    let now = now_ts();
+    seed_usage_percent(&storage, "acc_prompt_cache_a", 90.0, now);
+    seed_usage_percent(&storage, "acc_prompt_cache_b", 20.0, now);
+
+    let server = TestServer::start();
+    post_responses(
+        &server.addr,
+        platform_key,
+        serde_json::json!({
+            "model": MODEL,
+            "input": "quota-aware first turn",
+            "stream": false,
+            "prompt_cache_key": prompt_cache_key
+        }),
+    );
+
+    seed_usage_percent(&storage, "acc_prompt_cache_a", 1.0, now + 1);
+    seed_usage_percent(&storage, "acc_prompt_cache_b", 60.0, now + 1);
+    post_responses(
+        &server.addr,
+        platform_key,
+        serde_json::json!({
+            "model": MODEL,
+            "input": "quota-aware second turn",
+            "stream": false,
+            "prompt_cache_key": prompt_cache_key
+        }),
+    );
+    drop(server);
+
+    let first = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive first non-stream request");
+    let second = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive second non-stream request");
+    upstream_join.join().expect("join mock upstream");
+    assert_eq!(auth_account(&first), "acc_prompt_cache_b");
+    assert_eq!(
+        auth_account(&second),
+        "acc_prompt_cache_b",
+        "recent session must stay bound even after another account becomes quota-preferred"
+    );
+
+    let binding = storage
+        .get_conversation_binding(&key_hash, &route_id)
+        .expect("load sticky binding")
+        .expect("sticky binding exists");
+    assert_eq!(binding.account_id, "acc_prompt_cache_b");
+    assert_eq!(binding.thread_epoch, 1);
+}
+
+#[test]
+fn gateway_quota_aware_stream_rebinds_idle_conversation() {
+    let _lock = test_env_guard();
+    let dir = new_test_dir("codexmanager-gateway-quota-aware-stream-rebind");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _route_guard = EnvGuard::set("CODEXMANAGER_ROUTE_STRATEGY", "quota_aware");
+    let _cache_guard = EnvGuard::set("CODEXMANAGER_QUOTA_AWARE_SNAPSHOT_TTL_MS", "0");
+
+    let (upstream_addr, upstream_rx, upstream_join) =
+        start_mock_upstream_sequence_lenient_with_content_types(
+            vec![(
+                200,
+                ok_sse_response("resp_quota_stream_rebind"),
+                "text/event-stream".to_string(),
+            )],
+            Duration::from_secs(3),
+        );
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let platform_key = "pk_quota_aware_stream_rebind";
+    let key_hash =
+        seed_openai_compat_gateway(&storage, platform_key, "gk_quota_aware_stream_rebind");
+    let prompt_cache_key = "quota-aware-stream-rebind";
+    let route_id = prompt_cache_route_id(&key_hash, prompt_cache_key);
+    let now = now_ts();
+    seed_usage_percent(&storage, "acc_prompt_cache_a", 80.0, now);
+    seed_usage_percent(&storage, "acc_prompt_cache_b", 10.0, now);
+    storage
+        .upsert_conversation_binding(&ConversationBinding {
+            platform_key_hash: key_hash.clone(),
+            conversation_id: route_id.clone(),
+            account_id: "acc_prompt_cache_a".to_string(),
+            thread_epoch: 1,
+            thread_anchor: route_id.clone(),
+            status: "active".to_string(),
+            last_model: Some(MODEL.to_string()),
+            last_switch_reason: None,
+            created_at: now.saturating_sub(7_200),
+            updated_at: now.saturating_sub(7_200),
+            last_used_at: now.saturating_sub(7_200),
+        })
+        .expect("seed idle conversation binding");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    post_responses(
+        &server.addr,
+        platform_key,
+        serde_json::json!({
+            "model": MODEL,
+            "input": "stream after idle",
+            "stream": true,
+            "prompt_cache_key": prompt_cache_key
+        }),
+    );
+    server.join();
+
+    let captured = upstream_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("receive streaming request after idle");
+    upstream_join.join().expect("join mock upstream");
+    assert_eq!(auth_account(&captured), "acc_prompt_cache_b");
+
+    let binding = storage
+        .get_conversation_binding(&key_hash, &route_id)
+        .expect("load rebound binding")
+        .expect("rebound binding exists");
+    assert_eq!(binding.account_id, "acc_prompt_cache_b");
+    assert_eq!(binding.thread_epoch, 2);
+    assert_eq!(
+        binding.last_switch_reason.as_deref(),
+        Some("automatic_account_switch")
     );
 }

@@ -1,7 +1,11 @@
 #[path = "gateway_logs/anthropic.rs"]
 mod anthropic;
+#[path = "gateway_logs/artifacts.rs"]
+mod artifacts;
 #[path = "gateway_logs/basic.rs"]
 mod basic;
+#[path = "gateway_logs/claude_code_e2e.rs"]
+mod claude_code_e2e;
 #[path = "gateway_logs/fast_policy.rs"]
 mod fast_policy;
 #[path = "gateway_logs/hybrid_routing.rs"]

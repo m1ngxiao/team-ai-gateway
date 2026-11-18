@@ -1,4 +1,7 @@
-use super::{copy_upstream_response_headers, upstream_response_metadata};
+use super::{
+    copy_upstream_response_headers, copy_upstream_response_headers_with_extras,
+    upstream_response_metadata,
+};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 
 #[test]
@@ -52,4 +55,43 @@ fn copy_upstream_response_headers_filters_hop_by_hop_and_adds_trace_id() {
     assert!(!names.contains(&"transfer-encoding".to_string()));
     assert!(!names.contains(&"content-length".to_string()));
     assert!(!names.contains(&"connection".to_string()));
+}
+
+#[test]
+fn copy_upstream_response_headers_replaces_account_quota_headers_and_preserves_turn_state() {
+    let mut upstream = HeaderMap::new();
+    upstream.insert("content-type", HeaderValue::from_static("text/event-stream"));
+    upstream.insert("x-codex-turn-state", HeaderValue::from_static("turn-keep-me"));
+    upstream.insert("x-codex-primary-used-percent", HeaderValue::from_static("88"));
+    upstream.insert("x-codex-primary-window-minutes", HeaderValue::from_static("300"));
+    upstream.insert("x-codex-secondary-used-percent", HeaderValue::from_static("61"));
+    upstream.insert("x-codex-credits-balance", HeaderValue::from_static("999.99"));
+    upstream.insert("x-codex-active-limit", HeaderValue::from_static("codex_other"));
+
+    let extras = vec![
+        tiny_http::Header::from_bytes("x-codex-primary-used-percent", "22").expect("hdr"),
+        tiny_http::Header::from_bytes("x-codex-primary-window-minutes", "10080").expect("hdr"),
+        tiny_http::Header::from_bytes("x-codex-credits-balance", "186.40").expect("hdr"),
+        tiny_http::Header::from_bytes("x-team-key-remaining-usd", "186.40").expect("hdr"),
+    ];
+
+    let headers = copy_upstream_response_headers_with_extras(&upstream, Some("tr-1"), &extras);
+    let pairs: Vec<(String, String)> = headers
+        .iter()
+        .map(|h| {
+            (
+                h.field.as_str().as_str().to_ascii_lowercase(),
+                h.value.as_str().to_string(),
+            )
+        })
+        .collect();
+
+    assert!(pairs.contains(&("x-codex-turn-state".to_string(), "turn-keep-me".to_string())));
+    assert!(pairs.contains(&("x-codex-primary-used-percent".to_string(), "22".to_string())));
+    assert!(pairs.contains(&("x-codex-primary-window-minutes".to_string(), "10080".to_string())));
+    assert!(pairs.contains(&("x-codex-credits-balance".to_string(), "186.40".to_string())));
+    assert!(pairs.contains(&("x-team-key-remaining-usd".to_string(), "186.40".to_string())));
+    assert!(!pairs.iter().any(|(k, v)| k == "x-codex-primary-used-percent" && v == "88"));
+    assert!(!pairs.iter().any(|(k, _)| k.starts_with("x-codex-secondary-")));
+    assert!(!pairs.iter().any(|(k, _)| k == "x-codex-active-limit"));
 }
