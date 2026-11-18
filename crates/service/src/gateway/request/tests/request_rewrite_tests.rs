@@ -1540,7 +1540,10 @@ fn responses_preserves_priority_service_tier_for_codex_backend() {
             .and_then(serde_json::Value::as_str),
         Some("priority")
     );
-    assert!(value.get("temperature").is_none());
+    assert_eq!(
+        value.get("temperature").and_then(serde_json::Value::as_f64),
+        Some(0.7)
+    );
     assert!(value.get("user").is_none());
 }
 
@@ -1591,6 +1594,7 @@ fn responses_codex_backend_keeps_conservative_field_snapshot() {
         "include",
         "input",
         "instructions",
+        "max_output_tokens",
         "model",
         "parallel_tool_calls",
         "prompt_cache_key",
@@ -1598,9 +1602,11 @@ fn responses_codex_backend_keeps_conservative_field_snapshot() {
         "service_tier",
         "store",
         "stream",
+        "temperature",
         "text",
         "tool_choice",
         "tools",
+        "top_p",
     ]
     .into_iter()
     .collect::<std::collections::BTreeSet<_>>();
@@ -1608,10 +1614,10 @@ fn responses_codex_backend_keeps_conservative_field_snapshot() {
     assert_eq!(keys, expected);
     assert_eq!(value["reasoning"]["context"], "current_turn");
     assert_eq!(value["reasoning"]["summary"], "auto");
-    assert!(object.get("max_output_tokens").is_none());
+    assert_eq!(value["max_output_tokens"], 1024);
     assert!(object.get("metadata").is_none());
-    assert!(object.get("temperature").is_none());
-    assert!(object.get("top_p").is_none());
+    assert_eq!(value["temperature"], 0.2);
+    assert_eq!(value["top_p"], 0.9);
     assert!(object.get("truncation").is_none());
     assert!(object.get("user").is_none());
     assert!(object.get("previous_response_id").is_none());

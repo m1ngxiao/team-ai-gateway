@@ -352,7 +352,7 @@ fn claude_code_2_1_312_uses_candidate_gateway() {
         .insert_token(&Token {
             account_id: "acc-cc-e2e".to_string(),
             id_token: String::new(),
-            access_token: "synthetic-access-token".to_string(),
+            access_token: "tok-cc-e2e".to_string(),
             refresh_token: String::new(),
             api_key_access_token: Some("synthetic-api-key-token".to_string()),
             last_refresh: now,

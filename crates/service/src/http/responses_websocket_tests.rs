@@ -1394,6 +1394,7 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
         "include",
         "input",
         "instructions",
+        "max_output_tokens",
         "model",
         "parallel_tool_calls",
         "previous_response_id",
@@ -1401,9 +1402,11 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
         "reasoning",
         "service_tier",
         "store",
+        "temperature",
         "text",
         "tool_choice",
         "tools",
+        "top_p",
         "type",
     ]
     .into_iter()
@@ -1431,10 +1434,10 @@ fn websocket_response_create_keeps_codex_field_snapshot() {
         value["client_metadata"]["x-codex-turn-metadata"],
         "turn-meta-1"
     );
-    assert!(object.get("max_output_tokens").is_none());
+    assert_eq!(value["max_output_tokens"], 1024);
     assert!(object.get("metadata").is_none());
-    assert!(object.get("temperature").is_none());
-    assert!(object.get("top_p").is_none());
+    assert_eq!(value["temperature"], 0.2);
+    assert_eq!(value["top_p"], 0.9);
     assert!(object.get("truncation").is_none());
     assert!(object.get("user").is_none());
     assert!(object.get("unknown_field").is_none());

@@ -368,7 +368,7 @@ mod tests {
         let (storage, _env_lock, _db_env, _cleanup) = setup_test_key(
             "codexmanager-lv-anthropic",
             "gk_lv_anthropic",
-            "sk-lv-anthropic-secret",
+            "test-lv-anthropic-key",
             crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE,
         );
         drop(storage);
@@ -377,7 +377,7 @@ mod tests {
             .with_method(tiny_http::Method::Post)
             .with_path("/v1/messages")
             .with_header(
-                tiny_http::Header::from_bytes("x-api-key", "sk-lv-anthropic-secret")
+                tiny_http::Header::from_bytes("x-api-key", "test-lv-anthropic-key")
                     .expect("x-api-key header"),
             )
             .with_body(r#"{"model":"nonexistent-v25-model","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#)

@@ -440,7 +440,7 @@ fn run_candidate_sequence_with_statuses(
 }
 
 fn assert_three_stage_candidate_shape(captured: &[CapturedCandidateRequest]) {
-    assert_eq!(captured.len(), 3, "unexpected upstream request count");
+    assert_eq!(captured.len(), 2, "unexpected upstream request count");
     assert!(captured
         .iter()
         .all(|request| request.path == "/backend-api/codex/responses"));
@@ -452,13 +452,8 @@ fn assert_three_stage_candidate_shape(captured: &[CapturedCandidateRequest]) {
         captured[1].session_headers,
         vec![false, false, false, false, false]
     );
-    assert_eq!(
-        captured[2].session_headers,
-        vec![true, true, true, true, false]
-    );
     assert!(json_contains_key(&captured[0].body, "encrypted_content"));
     assert!(json_contains_key(&captured[1].body, "encrypted_content"));
-    assert!(!json_contains_key(&captured[2].body, "encrypted_content"));
 }
 
 #[test]

@@ -19,7 +19,7 @@ fn prices() -> (Storage, Vec<CatalogModelPrice>) {
 #[test]
 fn catalog_prices_are_exact_and_missing_prices_do_not_fallback() {
     let (_storage, prices) = prices();
-    assert_eq!(prices.len(), 13);
+    assert_eq!(prices.len(), 16);
     let gpt6_sol = resolve_model_price_from_catalog(&prices, "gpt-6-sol", 0).expect("GPT-6 Sol");
     assert_close(gpt6_sol.input_price_per_1m, 2.0);
     assert_close(gpt6_sol.cached_input_price_per_1m, 0.2);

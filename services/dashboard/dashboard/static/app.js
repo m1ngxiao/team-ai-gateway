@@ -6,10 +6,20 @@
 
 const STORAGE_MEMBER_KEY = "stats_selected_member_key_id";
 const STORAGE_ERROR_LAYER = "stats_selected_error_layer";
-const TERMINAL_ORIGINS = {
-  public: { label: "公网入口 (codex.xiaomingwiki.cn)", url: "https://codex.xiaomingwiki.cn" },
-  intranet: { label: "校内直连 (172.25.228.51:58760)", url: "http://172.25.228.51:58760" },
+const DEFAULT_TERMINAL_ORIGINS = {
+  public: { label: "公网入口 (api.example.com)", url: "https://api.example.com" },
+  intranet: { label: "内网直连 (127.0.0.1:48760)", url: "http://127.0.0.1:48760" },
 };
+function resolveTerminalOrigins() {
+  const cfg = snapshot && snapshot.terminal_origins;
+  if (cfg && cfg.public && cfg.public.url) {
+    return {
+      public: cfg.public,
+      intranet: cfg.intranet && cfg.intranet.url ? cfg.intranet : DEFAULT_TERMINAL_ORIGINS.intranet,
+    };
+  }
+  return DEFAULT_TERMINAL_ORIGINS;
+}
 let terminalOriginMode = "public";
 
 const VIEW_META = {
@@ -1823,12 +1833,13 @@ function renderTerminalModal() {
   const body = byId("terminal-modal-body");
   if (!body) return;
   const selected = findSelectedKey();
-  const originCfg = TERMINAL_ORIGINS[terminalOriginMode] || TERMINAL_ORIGINS.public;
+  const terminalOrigins = resolveTerminalOrigins();
+  const originCfg = terminalOrigins[terminalOriginMode] || terminalOrigins.public;
   const originUrl = originCfg.url;
   const nowSec = Math.floor(Date.now() / 1000);
   const preview = buildTerminalPreviewText(selected, nowSec);
 
-  const pubBtn = el("button", `origin-btn${terminalOriginMode === "public" ? " is-active" : ""}`, TERMINAL_ORIGINS.public.label);
+  const pubBtn = el("button", `origin-btn${terminalOriginMode === "public" ? " is-active" : ""}`, terminalOrigins.public.label);
   pubBtn.id = "terminal-origin-public";
   pubBtn.type = "button";
   pubBtn.addEventListener("click", () => {
@@ -1836,7 +1847,7 @@ function renderTerminalModal() {
     renderTerminalModal();
   });
 
-  const lanBtn = el("button", `origin-btn${terminalOriginMode === "intranet" ? " is-active" : ""}`, TERMINAL_ORIGINS.intranet.label);
+  const lanBtn = el("button", `origin-btn${terminalOriginMode === "intranet" ? " is-active" : ""}`, terminalOrigins.intranet.label);
   lanBtn.id = "terminal-origin-intranet";
   lanBtn.type = "button";
   lanBtn.addEventListener("click", () => {

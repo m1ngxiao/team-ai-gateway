@@ -373,7 +373,7 @@ test("terminal quota modal opens from topbar & personal cabin and toggles origin
 
   const modalText = elements.get("terminal-modal-body").textContent;
   assert.match(modalText, /张测试/);
-  assert.match(modalText, /https:\/\/codex\.xiaomingwiki\.cn/);
+  assert.match(modalText, /https:\/\/api\.example\.com/);
   assert.match(modalText, /\$TEAM_GATEWAY_ORIGIN\/v1\/usage\?pretty=1/);
   assert.match(modalText, /\/v1\/usage\?format=statusline/);
   assert.match(modalText, /\?usage/);
@@ -383,7 +383,7 @@ test("terminal quota modal opens from topbar & personal cabin and toggles origin
 
   // Toggle to intranet entry
   elements.get("terminal-modal-body").children[0].children[0].children[1].listeners.click();
-  assert.match(elements.get("terminal-modal-body").textContent, /http:\/\/172\.25\.228\.51:58760/);
+  assert.match(elements.get("terminal-modal-body").textContent, /http:\/\/127\.0\.0\.1:48760/);
 
   // Close & reopen from Personal Cabin CTA
   elements.get("terminal-modal-close").listeners.click();

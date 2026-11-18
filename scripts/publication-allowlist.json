@@ -590,12 +590,6 @@
       "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
     },
     {
-      "path": "services/dashboard/tests/test_frontend.mjs",
-      "category": "embedded-secret",
-      "sha256": "d3ca1796182ca4584e4b90c8c4feb3c298bad710185d218cd6c60ca7deba5cce",
-      "reason": "Reviewed synthetic fixture or generic documentation example; exact matched text digest only."
-    },
-    {
       "path": "services/dashboard/tests/test_server.py",
       "category": "credential-url",
       "sha256": "093866188144b0216fb125431572e8ac2df8980dfeeb6ebeb3d9f3987d1e4c1d",

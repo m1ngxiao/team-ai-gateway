@@ -1169,10 +1169,10 @@ mod tests {
 
     #[test]
     fn text_usage_contains_visual_card() {
-        let body = render_usage_text("肖明", "active", 0, 24_000, 24_000, None, None, 1_800_000_000);
+        let body = render_usage_text("Alice", "active", 0, 24_000, 24_000, None, None, 1_800_000_000);
         assert!(body.contains("GPT USAGE"));
         assert!(body.contains("MEMBER"));
-        assert!(body.contains("肖明"));
+        assert!(body.contains("Alice"));
         assert!(body.contains("$240.00"));
         assert!(body.contains("0.0% of window"));
         assert!(body.contains("rolling 7 days"));
@@ -1182,7 +1182,7 @@ mod tests {
     fn text_usage_shows_release_amount_and_countdown() {
         let now = 1_800_000_000;
         let body = render_usage_text(
-            "肖明",
+            "Alice",
             "active",
             5_360,
             24_000,

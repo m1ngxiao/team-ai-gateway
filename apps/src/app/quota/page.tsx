@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { postJsonRpc } from "@/lib/api/rpc-http";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/lib/i18n/provider";
 
 type QuotaKey = {
   keyId: string;
@@ -51,6 +52,7 @@ function meterClass(percent: number): string {
 }
 
 export default function QuotaPage() {
+  const { t } = useI18n();
   const [data, setData] = useState<QuotaOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -79,7 +81,7 @@ export default function QuotaPage() {
 
   const resetKey = async (key: QuotaKey) => {
     const label = key.name?.trim() || key.keyId;
-    if (!window.confirm(`确认将「${label}」的滚动 7 天额度清零？`)) return;
+    if (!window.confirm(t("确认将「{label}」的滚动 7 天额度清零？", { label }))) return;
     setBusy(true);
     setError("");
     try {
@@ -97,7 +99,7 @@ export default function QuotaPage() {
   const officialReset = async () => {
     if (
       !window.confirm(
-        "确认这是 OpenAI 官方全局重置？这会把所有 Key 的滚动 7 天额度清零（包括已停用的 Key）。"
+        t("确认这是 OpenAI 官方全局重置？这会把所有 Key 的滚动 7 天额度清零（包括已停用的 Key）。")
       )
     ) {
       return;
@@ -120,17 +122,17 @@ export default function QuotaPage() {
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-4 md:p-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">额度</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("额度")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            每 Key 滚动 7 天 $240；每账号自然周 $1,200。这里只做运营查看与重置。
+            {t("每 Key 滚动 7 天 $240；每账号自然周 $1,200。这里只做运营查看与重置。")}
           </p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => void load()} disabled={loading || busy}>
-            刷新
+            {t("刷新")}
           </Button>
           <Button variant="destructive" onClick={() => void officialReset()} disabled={busy}>
-            官方全局重置
+            {t("官方全局重置")}
           </Button>
         </div>
       </div>
@@ -142,16 +144,16 @@ export default function QuotaPage() {
       ) : null}
 
       <section className="rounded-xl border bg-card p-4">
-        <h2 className="text-sm font-semibold">账号</h2>
+        <h2 className="text-sm font-semibold">{t("账号")}</h2>
         <div className="mt-3 overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="text-xs uppercase text-muted-foreground">
               <tr>
-                <th className="pb-2 pr-4 font-medium">账号</th>
-                <th className="pb-2 pr-4 font-medium">状态</th>
-                <th className="pb-2 pr-4 font-medium">已用</th>
-                <th className="pb-2 pr-4 font-medium">剩余</th>
-                <th className="pb-2 pr-4 font-medium">重置时间</th>
+                <th className="pb-2 pr-4 font-medium">{t("账号")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("状态")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("已用")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("剩余")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("重置时间")}</th>
               </tr>
             </thead>
             <tbody>
@@ -187,21 +189,21 @@ export default function QuotaPage() {
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">Key</h2>
           <span className="text-xs text-muted-foreground">
-            {data ? `生成于 ${formatTime(data.generatedAt)}` : ""}
+            {data ? t("生成于 {time}", { time: formatTime(data.generatedAt) }) : ""}
           </span>
         </div>
         {loading ? (
-          <p className="mt-3 text-sm text-muted-foreground">加载中…</p>
+          <p className="mt-3 text-sm text-muted-foreground">{t("加载中…")}</p>
         ) : (
           <div className="mt-3 overflow-x-auto">
             <table className="w-full min-w-[820px] text-left text-sm">
               <thead className="text-xs uppercase text-muted-foreground">
                 <tr>
-                  <th className="pb-2 pr-4 font-medium">名称</th>
-                  <th className="pb-2 pr-4 font-medium">状态</th>
-                  <th className="pb-2 pr-4 font-medium">已用</th>
-                  <th className="pb-2 pr-4 font-medium">剩余</th>
-                  <th className="pb-2 pr-4 font-medium">操作</th>
+                  <th className="pb-2 pr-4 font-medium">{t("名称")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("状态")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("已用")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("剩余")}</th>
+                  <th className="pb-2 pr-4 font-medium">{t("操作")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -227,7 +229,7 @@ export default function QuotaPage() {
                           disabled={busy}
                           onClick={() => void resetKey(key)}
                         >
-                          清零
+                          {t("清零")}
                         </Button>
                       </td>
                     </tr>

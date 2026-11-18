@@ -523,7 +523,7 @@ fn gateway_compact_polyfills_summary_call_and_anthropic_response() {
         .insert_token(&Token {
             account_id: "acc-compact-polyfill".to_string(),
             id_token: String::new(),
-            access_token: "synthetic-access-token".to_string(),
+            access_token: "tok-compact".to_string(),
             refresh_token: String::new(),
             api_key_access_token: Some("synthetic-api-key-token".to_string()),
             last_refresh: now,
@@ -1753,7 +1753,7 @@ fn anthropic_stream_delivers_message_start_before_upstream_completion() {
         .insert_token(&Token {
             account_id: "acc_cc_stream".to_string(),
             id_token: String::new(),
-            access_token: "access_cc_stream".to_string(),
+            access_token: "tok_cc_stream".to_string(),
             refresh_token: String::new(),
             api_key_access_token: Some("api_access_cc_stream".to_string()),
             last_refresh: now,

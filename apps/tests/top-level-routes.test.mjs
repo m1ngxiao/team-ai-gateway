@@ -54,7 +54,7 @@ test("accounts 模式管理员菜单按任务域分组并保留账号体系入�
     [
       ["/"],
       ["/accounts", "/claude-accounts", "/aggregate-api"],
-      ["/platform-mode", "/apikeys"],
+      ["/platform-mode", "/apikeys", "/quota"],
       ["/models", "/model-groups"],
       ["/account-manager"],
       ["/logs"],
@@ -88,6 +88,7 @@ test("none/password 单人管理员模式隐藏账号体系入口但保留单人
         "/aggregate-api",
         "/platform-mode",
         "/apikeys",
+        "/quota",
         "/models",
         "/logs",
         "/settings",
@@ -153,7 +154,7 @@ test("accounts 模式成员菜单只保留自助入口", () => {
   );
   assert.deepEqual(
     sections.map((section) => section.routes.map((route) => route.path)),
-    [["/"], ["/apikeys"], ["/models"], ["/logs"], ["/settings"]]
+    [["/"], ["/apikeys"], ["/models"], ["/quota", "/logs"], ["/settings"]]
   );
   assert.equal(routes.getTopLevelRouteLabel("/apikeys", access), "我的密钥");
   assert.equal(routes.getTopLevelRouteLabel("/models", access), "可用模型");

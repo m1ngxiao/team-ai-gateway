@@ -1702,4 +1702,13 @@ export const EN_MESSAGES: MessageCatalog = {
   未分配: "Unassigned",
   按我的平台密钥累计: "Accumulated by my platform keys",
   归属成员: "Owner member",
+  "我的额度": "My Quota",
+  "每 Key 滚动 7 天 $240；每账号自然周 $1,200。这里只做运营查看与重置。": "$240 per key (rolling 7d); $1,200 per account (calendar week). Operations view and reset only.",
+  "官方全局重置": "Official Global Reset",
+  "重置时间": "Reset Time",
+  "生成于 {time}": "Generated at {time}",
+  "加载中…": "Loading…",
+  "清零": "Reset",
+  "确认将「{label}」的滚动 7 天额度清零？": "Reset the rolling 7-day quota for \"{label}\" to zero?",
+  "确认这是 OpenAI 官方全局重置？这会把所有 Key 的滚动 7 天额度清零（包括已停用的 Key）。": "Confirm OpenAI official global reset? This resets the rolling 7-day quota for all keys (including disabled keys).",
 };
